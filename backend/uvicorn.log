@@ -1,0 +1,338 @@
+INFO:     Started server process [35304]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50972 - "GET /health HTTP/1.1" 200 OK
+2026-08-04 23:44:40,860 | ERROR    | yfinance | HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: CYBR"}}}
+2026-08-04 23:44:41,050 | ERROR    | yfinance | HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: FI"}}}
+2026-08-04 23:44:41,201 | ERROR    | yfinance | $CYBR: possibly delisted; no timezone found
+2026-08-04 23:44:41,231 | ERROR    | yfinance | $FI: possibly delisted; no timezone found
+2026-08-04 23:44:42,701 | ERROR    | yfinance | 
+2 Failed downloads:
+2026-08-04 23:44:42,701 | ERROR    | yfinance | ['CYBR', 'FI']: possibly delisted; no timezone found
+INFO:     127.0.0.1:50981 - "GET /api/v1/market/tickers/PANW/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52179 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60862 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52179 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60862 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60862 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52179 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52179 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60862 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60862 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56100 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60862 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52179 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55350 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56100 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56100 - "OPTIONS /api/v1/market/tickers/PANW/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55350 - "GET /api/v1/market/tickers/PANW/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55350 - "OPTIONS /api/v1/market/tickers/MSFT/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56100 - "GET /api/v1/market/tickers/MSFT/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61401 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56060 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61401 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56060 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56060 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61401 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61401 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56060 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56060 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61401 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55095 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61401 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56060 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65321 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65321 - "OPTIONS /api/v1/market/tickers/CRWD/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56060 - "GET /api/v1/market/tickers/CRWD/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60094 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57066 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60094 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57066 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57066 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60094 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60094 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57066 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57066 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60094 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50373 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57066 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60094 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52143 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52143 - "OPTIONS /api/v1/market/tickers/PANW/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60094 - "GET /api/v1/market/tickers/PANW/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60094 - "OPTIONS /api/v1/market/tickers/MSFT/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52143 - "GET /api/v1/market/tickers/MSFT/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50104 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63027 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50104 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63027 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63027 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50104 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50104 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63027 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63027 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50104 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56311 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50104 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63027 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56213 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56213 - "OPTIONS /api/v1/market/tickers/CRWD/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63027 - "GET /api/v1/market/tickers/CRWD/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64165 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56473 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64165 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56473 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56473 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64165 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64165 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56473 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56473 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64165 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64165 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49195 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56473 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49392 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49392 - "OPTIONS /api/v1/market/tickers/PANW/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56473 - "GET /api/v1/market/tickers/PANW/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56473 - "OPTIONS /api/v1/market/tickers/MSFT/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49392 - "GET /api/v1/market/tickers/MSFT/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63687 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57402 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63687 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57402 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57402 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57402 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57402 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63687 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63687 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57402 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59920 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63687 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57402 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55431 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55431 - "OPTIONS /api/v1/market/tickers/CRWD/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57402 - "GET /api/v1/market/tickers/CRWD/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52379 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54965 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52379 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54965 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54965 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52379 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52379 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54965 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54965 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52379 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54965 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54773 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52379 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56057 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58536 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54536 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54536 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58536 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58536 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54536 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58536 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54536 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54536 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58536 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57687 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54536 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58536 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57687 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55209 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55209 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61830 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55209 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61830 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49757 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55209 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49838 - "OPTIONS /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49838 - "OPTIONS /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49838 - "GET /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54026 - "GET /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61418 - "OPTIONS /api/v1/market/tickers/AMZN/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61418 - "GET /api/v1/market/tickers/AMZN/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56823 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56823 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59173 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56823 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59173 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63272 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56823 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56823 - "OPTIONS /api/v1/market/tickers/AAPL/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56823 - "GET /api/v1/market/tickers/AAPL/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59296 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59296 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63669 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59296 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50811 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63669 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59296 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58242 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65403 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65403 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58242 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58242 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65403 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58242 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65403 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65403 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58242 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63668 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65085 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65085 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60729 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+2026-08-05 00:20:52,553 | ERROR    | yfinance | $CYBR: possibly delisted; no timezone found
+2026-08-05 00:20:52,990 | ERROR    | yfinance | $FI: possibly delisted; no timezone found
+INFO:     127.0.0.1:65085 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+2026-08-05 00:20:54,897 | ERROR    | yfinance | 
+2 Failed downloads:
+2026-08-05 00:20:54,898 | ERROR    | yfinance | ['CYBR', 'FI']: possibly delisted; no timezone found
+INFO:     127.0.0.1:61616 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60729 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+2026-08-05 00:20:56,312 | ERROR    | yfinance | $CYBR: possibly delisted; no timezone found
+2026-08-05 00:20:56,800 | ERROR    | yfinance | $FI: possibly delisted; no timezone found
+INFO:     127.0.0.1:60729 - "OPTIONS /api/v1/market/tickers/AAPL/analysis HTTP/1.1" 200 OK
+2026-08-05 00:20:59,752 | ERROR    | yfinance | 
+2 Failed downloads:
+2026-08-05 00:20:59,752 | ERROR    | yfinance | ['CYBR', 'FI']: possibly delisted; no timezone found
+2026-08-05 00:21:01,341 | ERROR    | yfinance | $CYBR: possibly delisted; no timezone found
+2026-08-05 00:21:01,934 | ERROR    | yfinance | $FI: possibly delisted; no timezone found
+INFO:     127.0.0.1:49160 - "OPTIONS /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49160 - "OPTIONS /api/v1/market/context HTTP/1.1" 200 OK
+2026-08-05 00:21:05,204 | ERROR    | yfinance | 
+2 Failed downloads:
+2026-08-05 00:21:05,205 | ERROR    | yfinance | ['CYBR', 'FI']: possibly delisted; no timezone found
+INFO:     127.0.0.1:63241 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55444 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55444 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63241 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55444 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63007 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63241 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59976 - "OPTIONS /api/v1/market/universe HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56101 - "OPTIONS /api/v1/market/screener?sort_by=change_1d&sort_dir=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61881 - "OPTIONS /api/v1/market/universe HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54343 - "OPTIONS /api/v1/market/screener?sort_by=change_1d&sort_dir=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56101 - "GET /api/v1/market/universe HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61881 - "GET /api/v1/market/universe HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54343 - "GET /api/v1/market/screener?sort_by=change_1d&sort_dir=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61881 - "GET /api/v1/market/screener?sort_by=change_1d&sort_dir=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61881 - "GET /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54343 - "GET /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54606 - "OPTIONS /api/v1/market/movers HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54606 - "OPTIONS /api/v1/market/movers HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54606 - "GET /api/v1/market/movers HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54606 - "GET /api/v1/market/movers HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54606 - "OPTIONS /api/v1/market/industries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52966 - "OPTIONS /api/v1/market/industries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52966 - "GET /api/v1/market/industries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54606 - "GET /api/v1/market/industries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50058 - "OPTIONS /api/v1/market/trend HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55678 - "OPTIONS /api/v1/market/trend/detail HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50058 - "OPTIONS /api/v1/market/trend HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55678 - "OPTIONS /api/v1/market/trend/detail HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50058 - "GET /api/v1/market/trend HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55678 - "GET /api/v1/market/trend/detail HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55678 - "GET /api/v1/market/trend/detail HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50058 - "GET /api/v1/market/trend HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49418 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63745 - "OPTIONS /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64673 - "OPTIONS /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49418 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64673 - "GET /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63745 - "GET /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49418 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57016 - "OPTIONS /api/v1/market/levels/proximity?threshold=0.01 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57016 - "GET /api/v1/market/levels/proximity?threshold=0.01 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56472 - "OPTIONS /api/v1/market/levels/proximity?threshold=0.02 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56472 - "GET /api/v1/market/levels/proximity?threshold=0.02 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56472 - "GET /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56472 - "GET /api/v1/market/industries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56472 - "GET /api/v1/market/industries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56252 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56252 - "GET /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56252 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50871 - "GET /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56252 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51166 - "GET /api/v1/market/movers HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53195 - "GET /api/v1/market/movers HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53195 - "GET /api/v1/market/industries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51166 - "GET /api/v1/market/industries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59691 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62257 - "OPTIONS /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62257 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59691 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59691 - "OPTIONS /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62257 - "OPTIONS /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59691 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62257 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62257 - "OPTIONS /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59691 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55737 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62257 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59691 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+2026-08-05 00:45:07,014 | ERROR    | yfinance | $CYBR: possibly delisted; no timezone found
+2026-08-05 00:45:07,338 | ERROR    | yfinance | $FI: possibly delisted; no timezone found
+2026-08-05 00:45:09,349 | ERROR    | yfinance | 
+2 Failed downloads:
+2026-08-05 00:45:09,349 | ERROR    | yfinance | ['CYBR', 'FI']: possibly delisted; no timezone found
+INFO:     127.0.0.1:55737 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55737 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04&benchmark_ticker=Q HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55737 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04&benchmark_ticker=Q HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50159 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04&benchmark_ticker=QQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59626 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04&benchmark_ticker=QQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54935 - "OPTIONS /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04&benchmark_ticker=QQQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62383 - "OPTIONS /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04&benchmark_ticker=QQQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55737 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04&benchmark_ticker=Q HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52101 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04&benchmark_ticker=Q HTTP/1.1" 200 OK
+2026-08-05 00:45:15,614 | ERROR    | yfinance | $QQ: possibly delisted; no price data found  (1d 2026-02-04 -> 2026-08-04)
+INFO:     127.0.0.1:59626 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04&benchmark_ticker=QQ HTTP/1.1" 200 OK
+2026-08-05 00:45:15,628 | ERROR    | yfinance | $QQ: possibly delisted; no price data found  (1d 2026-02-04 -> 2026-08-04)
+INFO:     127.0.0.1:50159 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04&benchmark_ticker=QQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62383 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04&benchmark_ticker=QQQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55737 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04&benchmark_ticker=QQQ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57919 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57919 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51940 - "OPTIONS /api/v1/portfolios/3/metrics?start=2025-12-31&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51940 - "OPTIONS /api/v1/portfolios/3/history?start=2025-12-31&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62766 - "GET /api/v1/portfolios/3/history?start=2025-12-31&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51940 - "GET /api/v1/portfolios/3/metrics?start=2025-12-31&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57406 - "OPTIONS /api/v1/market/tickers/QQQ/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57406 - "GET /api/v1/market/tickers/QQQ/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "OPTIONS /api/v1/market/universe HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "OPTIONS /api/v1/market/screener?sort_by=change_1d&sort_dir=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "OPTIONS /api/v1/market/universe HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "OPTIONS /api/v1/market/screener?sort_by=change_1d&sort_dir=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "OPTIONS /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "OPTIONS /api/v1/market/context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59457 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "GET /api/v1/portfolios/3/transactions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59457 - "GET /api/v1/portfolios/3/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63422 - "GET /api/v1/portfolios/3/history?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52176 - "GET /api/v1/portfolios/3/metrics?start=2026-02-04&end=2026-08-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59457 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56476 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52456 - "OPTIONS /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63722 - "OPTIONS /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56476 - "GET /api/v1/portfolios HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63722 - "GET /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63722 - "OPTIONS /api/v1/market/watchlist HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61442 - "OPTIONS /api/v1/market/watchlist HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56476 - "GET /api/v1/market/levels/proximity?threshold=0.03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65157 - "GET /api/v1/market/watchlist HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56476 - "GET /api/v1/market/watchlist HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52456 - "GET /api/v1/portfolios/3/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62819 - "OPTIONS /api/v1/market/watchlist?horizon=short HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62819 - "GET /api/v1/market/watchlist?horizon=short HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52281 - "GET /docs HTTP/1.1" 200 OK
+2026-08-05 02:49:57,103 | ERROR    | yfinance | $CYBR: possibly delisted; no timezone found
+2026-08-05 02:49:57,437 | ERROR    | yfinance | $FI: possibly delisted; no timezone found
+2026-08-05 02:49:59,309 | ERROR    | yfinance | 
+2 Failed downloads:
+2026-08-05 02:49:59,310 | ERROR    | yfinance | ['CYBR', 'FI']: possibly delisted; no timezone found
+INFO:     127.0.0.1:57742 - "GET /api/v1/market/tickers/AAPL/analysis HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58392 - "GET /api/v1/market/tickers/AAPL/analysis HTTP/1.1" 200 OK

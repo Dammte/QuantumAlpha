@@ -1,0 +1,271 @@
+import pytest
+from fastapi.testclient import TestClient
+
+
+def test_create_and_get_portfolio(client: TestClient) -> None:
+    response = client.post("/api/v1/portfolios", json={"name": "Main", "base_currency": "USD"})
+    assert response.status_code == 201
+    portfolio_id = response.json()["id"]
+
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}")
+    assert response.status_code == 200
+    assert response.json()["name"] == "Main"
+
+
+def test_get_unknown_portfolio_returns_404(client: TestClient) -> None:
+    response = client.get("/api/v1/portfolios/999")
+    assert response.status_code == 404
+
+
+def test_add_transaction_and_summary(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+
+    response = client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    assert response.status_code == 201
+
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["positions"]) == 1
+    position = body["positions"][0]
+    assert position["ticker"] == "AAPL"
+    assert position["quantity"] == 10
+    assert position["current_price"] == 150.0
+    assert position["unrealized_pnl"] == (150.0 - 100) * 10
+
+
+def test_realized_pnl_from_a_full_sell(client: TestClient) -> None:
+    """Buy 10 @ 100, sell all 10 @ 150: the $500 gain must show up as realized
+    P&L even though the position is now fully closed (0 shares, not listed
+    among `positions` at all) - this is exactly the "does my sell get counted"
+    check the gain must survive after a position no longer exists."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "sell", "quantity": 10, "price": 150},
+    )
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["positions"] == []
+    assert body["total_realized_pnl"] == pytest.approx(500.0)
+    assert body["total_unrealized_pnl"] == 0.0
+    assert body["total_pnl"] == pytest.approx(500.0)
+
+
+def test_realized_pnl_from_a_partial_sell_keeps_average_cost(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "sell", "quantity": 4, "price": 150},
+    )
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["total_realized_pnl"] == pytest.approx((150 - 100) * 4)  # 200
+
+    position = body["positions"][0]
+    assert position["quantity"] == pytest.approx(6)
+    assert position["average_cost"] == pytest.approx(100)  # unchanged by the sell
+    assert position["unrealized_pnl"] == pytest.approx((150.0 - 100) * 6)  # fake quote price is 150
+
+    # Total accumulated gain = realized (banked) + unrealized (still held)
+    assert body["total_pnl"] == pytest.approx(body["total_realized_pnl"] + body["total_unrealized_pnl"])
+
+
+def test_realized_pnl_accumulates_across_multiple_sells(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 20, "price": 100},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "sell", "quantity": 5, "price": 120},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "sell", "quantity": 5, "price": 90},
+    )
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    expected = (120 - 100) * 5 + (90 - 100) * 5  # +100 then -50 = +50
+    assert body["total_realized_pnl"] == pytest.approx(expected)
+
+
+def test_selling_more_than_held_is_rejected(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 5, "price": 100},
+    )
+
+    response = client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "sell", "quantity": 10, "price": 150},
+    )
+    assert response.status_code == 400
+
+    # The rejected sell must not have been recorded (realized P&L unaffected)
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["total_realized_pnl"] == 0.0
+    assert body["positions"][0]["quantity"] == 5
+
+
+def test_position_with_unavailable_quote_degrades_gracefully(client: TestClient) -> None:
+    """A ticker the provider can't quote right now (delisted, mistyped, a
+    momentary hiccup) must show up as "unavailable" for that one position, not
+    take down the whole portfolio summary with a 500."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "UNKNOWN", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/summary")
+    assert response.status_code == 200
+    body = response.json()
+    position = body["positions"][0]
+    assert position["current_price"] is None
+    assert position["market_value"] is None
+    assert position["unrealized_pnl"] is None
+    assert body["total_market_value"] == 0.0  # the unpriced position contributes nothing, not a crash
+
+
+def test_daily_change_reported_on_summary(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    # Fake provider: price=150, previous_close=148
+    position = body["positions"][0]
+    assert position["day_change"] == pytest.approx((150.0 - 148.0) * 10)
+    assert position["day_change_pct"] == pytest.approx((150.0 - 148.0) / 148.0)
+    assert body["total_day_change"] == pytest.approx((150.0 - 148.0) * 10)
+
+
+def test_multi_currency_positions_convert_to_base_currency_for_totals(client: TestClient) -> None:
+    """A EUR-priced position must still show its own price in EUR (native,
+    per-row) but contribute a properly FX-converted amount to the portfolio's
+    USD totals - never dollars and euros summed as if they were the same
+    unit. Fake provider: EURO.DE quotes at €100 (prev close €98), EURUSD
+    fake rate is 1.1."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main", "base_currency": "USD"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "EURO.DE", "transaction_type": "buy", "quantity": 10, "price": 90},
+    )
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    euro_position = next(p for p in body["positions"] if p["ticker"] == "EURO.DE")
+    assert euro_position["currency"] == "EUR"
+    assert euro_position["current_price"] == 100.0  # native EUR, not converted
+    assert euro_position["market_value"] == 1000.0  # 10 x €100, still in EUR
+    assert euro_position["market_value_base"] == pytest.approx(1000.0 * 1.1)  # converted for weights/totals
+
+    aapl_market_value_usd = 10 * 150.0
+    euro_market_value_usd = 10 * 100.0 * 1.1  # converted at the fake EURUSD rate
+    assert body["total_market_value"] == pytest.approx(aapl_market_value_usd + euro_market_value_usd)
+
+
+def test_portfolio_history(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={
+            "ticker": "AAPL",
+            "transaction_type": "buy",
+            "quantity": 10,
+            "price": 100,
+            "executed_at": "2024-01-03T00:00:00",
+        },
+    )
+
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/history?start=2024-01-01&end=2024-01-05")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["base_currency"] == "USD"
+    # The leading zero-value days (before the buy settles) are trimmed off the front.
+    assert [p["date"] for p in body["points"]] == ["2024-01-03", "2024-01-04", "2024-01-05"]
+    assert body["points"][0]["value"] == pytest.approx(10 * 102)
+    assert body["benchmark_points"] is None
+
+
+def test_portfolio_history_unknown_portfolio_returns_404(client: TestClient) -> None:
+    response = client.get("/api/v1/portfolios/999/history")
+    assert response.status_code == 404
+
+
+def test_delete_transaction(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    tx = client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    ).json()
+
+    response = client.delete(f"/api/v1/portfolios/{portfolio_id}/transactions/{tx['id']}")
+    assert response.status_code == 204
+
+    remaining = client.get(f"/api/v1/portfolios/{portfolio_id}/transactions").json()
+    assert remaining == []
+
+    response = client.delete(f"/api/v1/portfolios/{portfolio_id}/transactions/{tx['id']}")
+    assert response.status_code == 404
+
+
+def test_portfolio_risk_for_unknown_portfolio_returns_404(client: TestClient) -> None:
+    response = client.get("/api/v1/portfolios/999/risk")
+    assert response.status_code == 404
+
+
+def test_portfolio_risk_empty_portfolio_returns_no_positions(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Empty"}).json()["id"]
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/risk")
+    assert response.status_code == 200
+    assert response.json()["positions"] == []
+
+
+def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "MSFT", "transaction_type": "buy", "quantity": 5, "price": 200},
+    )
+
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/risk")
+    assert response.status_code == 200
+    positions = response.json()["positions"]
+    assert {p["ticker"] for p in positions} == {"AAPL", "MSFT"}
+    for p in positions:
+        assert p["signal"] in {"exit_warning", "add_candidate", "watch", "hold"}
+        assert isinstance(p["score"], int)
+        assert len(p["reasons"]) > 0
+        # Full quant suite - the same one "Analizar activo" runs - backs every holding now
+        assert {"garch", "markov", "monte_carlo", "backtest", "position_sizing"} <= p["signals"].keys()
+        assert p["signals"]["recommendation"]["verdict"] in {"comprar", "esperar", "evitar"}
+
+
+def test_health_check(client: TestClient) -> None:
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

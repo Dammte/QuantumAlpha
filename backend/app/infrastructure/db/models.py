@@ -1,0 +1,60 @@
+from datetime import UTC, date, datetime
+
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy import ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.domain.models.asset import AssetClass
+from app.domain.models.transaction import TransactionType
+from app.infrastructure.db.session import Base
+
+
+class PortfolioORM(Base):
+    __tablename__ = "portfolios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    base_currency: Mapped[str] = mapped_column(String(3), default="USD")
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+    transactions: Mapped[list["TransactionORM"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+
+
+class AssetORM(Base):
+    __tablename__ = "assets"
+
+    ticker: Mapped[str] = mapped_column(String(20), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    asset_class: Mapped[AssetClass] = mapped_column(SAEnum(AssetClass))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+
+
+class TransactionORM(Base):
+    __tablename__ = "transactions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
+    ticker: Mapped[str] = mapped_column(ForeignKey("assets.ticker"))
+    transaction_type: Mapped[TransactionType] = mapped_column(SAEnum(TransactionType))
+    quantity: Mapped[float] = mapped_column(Numeric(20, 8))
+    price: Mapped[float] = mapped_column(Numeric(20, 8))
+    fees: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
+    executed_at: Mapped[datetime]
+
+    portfolio: Mapped["PortfolioORM"] = relationship(back_populates="transactions")
+
+
+class PriceBarORM(Base):
+    __tablename__ = "price_bars"
+    __table_args__ = (UniqueConstraint("ticker", "trade_date", name="uq_price_bar_ticker_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticker: Mapped[str] = mapped_column(ForeignKey("assets.ticker"), index=True)
+    trade_date: Mapped[date] = mapped_column(index=True)
+    open: Mapped[float] = mapped_column(Numeric(20, 8))
+    high: Mapped[float] = mapped_column(Numeric(20, 8))
+    low: Mapped[float] = mapped_column(Numeric(20, 8))
+    close: Mapped[float] = mapped_column(Numeric(20, 8))
+    volume: Mapped[float] = mapped_column(Numeric(20, 4))

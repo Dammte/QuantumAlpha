@@ -1,0 +1,368 @@
+"""Technical-analysis primitives shared by the market screener, movers, sector
+strength and support/resistance features.
+
+Pure functions over pandas/numpy, no framework or I/O dependencies, so they're
+cheap to unit test in isolation - same philosophy as `metrics_service.py`.
+"""
+
+from dataclasses import dataclass
+from enum import Enum
+
+import numpy as np
+import pandas as pd
+
+
+def sma(series: pd.Series, window: int) -> pd.Series:
+    return series.rolling(window=window, min_periods=window).mean()
+
+
+def ema(series: pd.Series, window: int) -> pd.Series:
+    return series.ewm(span=window, adjust=False, min_periods=window).mean()
+
+
+def bollinger_bands(
+    closes: pd.Series, window: int = 20, num_std: float = 2.0
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Middle band (SMA), upper and lower bands (+/- `num_std` standard deviations).
+    Price hugging the upper band signals strength (not automatically "overbought");
+    a squeeze (bands narrowing) often precedes a volatility expansion/breakout."""
+    middle = sma(closes, window)
+    std = closes.rolling(window=window, min_periods=window).std()
+    upper = middle + num_std * std
+    lower = middle - num_std * std
+    return middle, upper, lower
+
+
+def rsi(closes: pd.Series, window: int = 14) -> pd.Series:
+    """Wilder's RSI."""
+    delta = closes.diff()
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+    avg_gain = gains.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+    avg_loss = losses.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    result = 100 - (100 / (1 + rs))
+    return result.where(avg_loss != 0, 100.0)
+
+
+def macd(
+    closes: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    macd_line = ema(closes, fast) - ema(closes, slow)
+    signal_line = macd_line.ewm(span=signal, adjust=False, min_periods=signal).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
+    prev_close = close.shift(1)
+    ranges = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    )
+    return ranges.max(axis=1)
+
+
+def atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    return true_range(high, low, close).ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+
+
+def atr_multiple_from_sma(
+    close: pd.Series, high: pd.Series, low: pd.Series, sma_window: int = 50, atr_window: int = 14
+) -> float | None:
+    """How many ATRs the latest close sits above/below its SMA - a simple
+    overextension/"euphoria" gauge: a large positive value means the price has
+    run far above its average trend and a mean-reversion or blow-off top is more
+    likely than a continuation at the same pace."""
+    if len(close) < max(sma_window, atr_window) + 1:
+        return None
+    moving_avg = sma(close, sma_window).iloc[-1]
+    latest_atr = atr(high, low, close, atr_window).iloc[-1]
+    if pd.isna(moving_avg) or pd.isna(latest_atr) or latest_atr == 0:
+        return None
+    return float((close.iloc[-1] - moving_avg) / latest_atr)
+
+
+def relative_volume(volume: pd.Series, window: int = 20) -> float | None:
+    """Today's volume vs the average of the prior `window` sessions (excluding today)."""
+    if len(volume) < window + 1:
+        return None
+    baseline = volume.iloc[-(window + 1) : -1].mean()
+    if pd.isna(baseline) or baseline == 0:
+        return None
+    return float(volume.iloc[-1] / baseline)
+
+
+def pct_change_over(closes: pd.Series, periods: int) -> float | None:
+    if len(closes) <= periods:
+        return None
+    previous = closes.iloc[-(periods + 1)]
+    if pd.isna(previous) or previous == 0:
+        return None
+    return float(closes.iloc[-1] / previous - 1)
+
+
+def distance_to_rolling_extreme(closes: pd.Series, window: int, kind: str) -> float | None:
+    """% distance of the latest close from its rolling max (`kind="high"`) or
+    min (`kind="low"`) over `window` sessions - e.g. distance to the 52-week high."""
+    if closes.empty:
+        return None
+    windowed = closes.iloc[-window:] if len(closes) > window else closes
+    extreme = windowed.max() if kind == "high" else windowed.min()
+    if pd.isna(extreme) or extreme == 0:
+        return None
+    return float(closes.iloc[-1] / extreme - 1)
+
+
+def rolling_extreme_price(closes: pd.Series, window: int, kind: str) -> float | None:
+    """Same as `distance_to_rolling_extreme` but returns the raw price level
+    instead of a % distance - used by the Minervini checklist, which tests
+    against the actual 52-week high/low price."""
+    if closes.empty:
+        return None
+    windowed = closes.iloc[-window:] if len(closes) > window else closes
+    extreme = windowed.max() if kind == "high" else windowed.min()
+    return None if pd.isna(extreme) else float(extreme)
+
+
+def dmi(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> tuple[pd.Series, pd.Series]:
+    """Wilder's +DI / -DI (Directional Indicators)."""
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=high.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=high.index)
+
+    smoothed_tr = true_range(high, low, close).ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+    smoothed_plus_dm = plus_dm.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+    smoothed_minus_dm = minus_dm.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+
+    plus_di = 100 * smoothed_plus_dm / smoothed_tr.replace(0, np.nan)
+    minus_di = 100 * smoothed_minus_dm / smoothed_tr.replace(0, np.nan)
+    return plus_di, minus_di
+
+
+def adx(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    """Wilder's ADX: how strongly a market is trending (either direction) - see
+    `dmi` for the directional component. Standard read: <20 choppy/range-bound,
+    20-25 ambiguous, >25 trending, >40 a strong (possibly overextended) trend."""
+    plus_di, minus_di = dmi(high, low, close, window)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    return dx.ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
+
+
+def mansfield_rs(closes: pd.Series, benchmark_closes: pd.Series, window: int = 200) -> pd.Series:
+    """Stan Weinstein's relative-strength line: the stock/benchmark ratio expressed
+    as a % deviation from its own rolling average. Positive & rising = outperforming
+    the benchmark; a cross from negative to positive is Weinstein's Stage 2
+    confirmation, the reverse cross a Stage 4 warning. `window=200` daily sessions
+    approximates his original 52-week-on-weekly-bars parameter.
+    """
+    aligned = pd.concat([closes, benchmark_closes], axis=1, join="inner")
+    ratio = aligned.iloc[:, 0] / aligned.iloc[:, 1]
+    baseline = sma(ratio, window)
+    return (ratio / baseline - 1) * 100
+
+
+def rs_raw_score(closes: pd.Series) -> float | None:
+    """IBD-style weighted composite return: the trailing quarter counts double
+    each of the other three quarters, so a stock that's turned it on recently
+    outranks one coasting on an old move. Feed this into a cross-sectional
+    percentile rank (1-99) across your universe to get an RS Rating."""
+    periods = {63: 0.4, 126: 0.2, 189: 0.2, 252: 0.2}
+    components = {n: pct_change_over(closes, n) for n in periods}
+    if any(v is None for v in components.values()):
+        return None
+    return sum(components[n] * weight for n, weight in periods.items())
+
+
+def sma_slope_positive(series: pd.Series, lookback: int = 25) -> bool | None:
+    """Whether a moving-average series has been rising over the last `lookback`
+    bars - the "is the 200-day MA trending up" leg of the Minervini checklist."""
+    valid = series.dropna()
+    if len(valid) <= lookback:
+        return None
+    previous = valid.iloc[-lookback - 1]
+    if pd.isna(previous) or previous == 0:
+        return None
+    return bool(valid.iloc[-1] > previous)
+
+
+class Stage(str, Enum):
+    STAGE_1 = "stage1"  # basing / accumulation
+    STAGE_2 = "stage2"  # advancing / markup
+    STAGE_3 = "stage3"  # topping / distribution
+    STAGE_4 = "stage4"  # declining / markdown
+
+
+def classify_stage(
+    price: float, sma_trend: pd.Series, lookback: int = 20, flat_threshold: float = 0.005
+) -> Stage | None:
+    """Weinstein's 4-stage cycle, proxied with a daily `sma_trend` (canonically
+    the 150-day MA, standing in for his 30-week MA on weekly bars). A clearly
+    rising MA with price above it is Stage 2 (the only stage worth buying in);
+    a clearly falling MA with price below it is Stage 4 (be out or short). A
+    flat MA is either Stage 1 or Stage 3 depending on whether the flattening
+    followed a prior decline (basing) or a prior advance (topping) - inferred
+    from where the MA sat ~100 bars ago.
+    """
+    valid = sma_trend.dropna()
+    if len(valid) <= lookback:
+        return None
+    sma_now = valid.iloc[-1]
+    sma_prev = valid.iloc[-lookback - 1]
+    if pd.isna(sma_now) or pd.isna(sma_prev) or sma_prev == 0:
+        return None
+    slope_pct = (sma_now - sma_prev) / sma_prev
+
+    if slope_pct > flat_threshold and price > sma_now:
+        return Stage.STAGE_2
+    if slope_pct < -flat_threshold and price < sma_now:
+        return Stage.STAGE_4
+
+    long_lookback = 100
+    if len(valid) > long_lookback:
+        sma_long_ago = valid.iloc[-long_lookback - 1]
+        if not pd.isna(sma_long_ago) and sma_long_ago != 0:
+            if sma_now > sma_long_ago * 1.03:
+                return Stage.STAGE_3
+            if sma_now < sma_long_ago * 0.97:
+                return Stage.STAGE_1
+    return Stage.STAGE_1
+
+
+def minervini_checklist(
+    price: float,
+    sma50: float | None,
+    sma150: float | None,
+    sma200: float | None,
+    sma200_trending_up: bool | None,
+    price_52w_low: float | None,
+    price_52w_high: float | None,
+    rs_rating: int | None,
+) -> dict[str, bool]:
+    """Mark Minervini's 8-point "Trend Template" - a stock must pass all 8 to
+    count as a confirmed Stage 2 leader worth buying. Returns each criterion so
+    the caller can show partial credit, not just pass/fail."""
+    return {
+        "price_above_150_and_200": sma150 is not None and sma200 is not None and price > sma150 and price > sma200,
+        "150_above_200": sma150 is not None and sma200 is not None and sma150 > sma200,
+        "200_trending_up": bool(sma200_trending_up),
+        "50_above_150_and_200": (
+            sma50 is not None and sma150 is not None and sma200 is not None and sma50 > sma150 and sma50 > sma200
+        ),
+        "price_above_50": sma50 is not None and price > sma50,
+        "price_25pct_above_52w_low": (
+            price_52w_low is not None and price_52w_low > 0 and price >= price_52w_low * 1.25
+        ),
+        "price_within_25pct_of_52w_high": (
+            price_52w_high is not None and price_52w_high > 0 and price >= price_52w_high * 0.75
+        ),
+        "rs_rating_70_plus": rs_rating is not None and rs_rating >= 70,
+    }
+
+
+class TrendState(str, Enum):
+    UPTREND = "uptrend"
+    DOWNTREND = "downtrend"
+    SIDEWAYS = "sideways"
+
+
+def classify_trend(price: float, sma20: float | None, sma50: float | None, sma200: float | None) -> TrendState:
+    """Ordered moving averages (price > MA20 > MA50 > MA200, or the mirror) read as a
+    clean trend; anything tangled in between reads as sideways/transition."""
+    if sma20 is None or sma50 is None or sma200 is None:
+        return TrendState.SIDEWAYS
+    if price > sma20 > sma50 > sma200:
+        return TrendState.UPTREND
+    if price < sma20 < sma50 < sma200:
+        return TrendState.DOWNTREND
+    return TrendState.SIDEWAYS
+
+
+def detect_recent_cross(fast: pd.Series, slow: pd.Series, lookback: int = 5) -> str | None:
+    """"golden" if `fast` crossed above `slow` within the last `lookback` bars,
+    "death" if it crossed below, else None. Used for MA50/MA200 and MACD/signal crosses."""
+    diff = (fast - slow).dropna()
+    if len(diff) < 2:
+        return None
+    window = diff.iloc[-lookback:] if len(diff) > lookback else diff
+    signs = np.sign(window)
+    changes = signs.diff().dropna()
+    if (changes > 0).any() and signs.iloc[-1] > 0:
+        return "golden"
+    if (changes < 0).any() and signs.iloc[-1] < 0:
+        return "death"
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class PriceLevel:
+    price: float
+    kind: str  # "support" | "resistance"
+    strength: int  # how many pivots clustered into this level
+    distance_pct: float  # % distance from the current price
+
+
+def _fractal_pivots(series: pd.Series, left: int, right: int, kind: str) -> list[float]:
+    """A bar is a pivot high if it's the max of its `left`+`right` neighborhood
+    (mirror for pivot low) - the standard "fractal" swing-point definition."""
+    values = series.to_numpy()
+    pivots = []
+    for i in range(left, len(values) - right):
+        window = values[i - left : i + right + 1]
+        center = values[i]
+        if kind == "high" and center == window.max() and np.count_nonzero(window == center) == 1:
+            pivots.append(float(center))
+        elif kind == "low" and center == window.min() and np.count_nonzero(window == center) == 1:
+            pivots.append(float(center))
+    return pivots
+
+
+def _cluster_levels(prices: list[float], tolerance_pct: float) -> list[tuple[float, int]]:
+    """Merges nearby pivot prices into levels (price = cluster average, strength =
+    number of pivots in it) - several swing points bunched together make a level
+    more significant than a single isolated touch."""
+    if not prices:
+        return []
+    clusters: list[list[float]] = []
+    for price in sorted(prices):
+        if clusters and abs(price - np.mean(clusters[-1])) / np.mean(clusters[-1]) <= tolerance_pct / 100:
+            clusters[-1].append(price)
+        else:
+            clusters.append([price])
+    return [(float(np.mean(c)), len(c)) for c in clusters]
+
+
+def support_resistance_levels(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    left: int = 3,
+    right: int = 3,
+    tolerance_pct: float = 1.5,
+    max_levels: int = 5,
+) -> list[PriceLevel]:
+    """Real swing-pivot support/resistance detection: find fractal swing highs/lows,
+    cluster the ones that sit close together into levels, then keep the strongest
+    levels nearest to the current price on each side."""
+    if close.empty:
+        return []
+    current_price = float(close.iloc[-1])
+
+    resistance_pivots = [p for p in _fractal_pivots(high, left, right, "high") if p > current_price]
+    support_pivots = [p for p in _fractal_pivots(low, left, right, "low") if p < current_price]
+
+    levels: list[PriceLevel] = []
+    for price, strength in _cluster_levels(resistance_pivots, tolerance_pct):
+        levels.append(
+            PriceLevel(price=price, kind="resistance", strength=strength, distance_pct=price / current_price - 1)
+        )
+    for price, strength in _cluster_levels(support_pivots, tolerance_pct):
+        levels.append(
+            PriceLevel(price=price, kind="support", strength=strength, distance_pct=price / current_price - 1)
+        )
+
+    resistances = sorted((lv for lv in levels if lv.kind == "resistance"), key=lambda lv: lv.price)[:max_levels]
+    supports = sorted((lv for lv in levels if lv.kind == "support"), key=lambda lv: lv.price, reverse=True)[
+        :max_levels
+    ]
+    return sorted(supports + resistances, key=lambda lv: lv.price)

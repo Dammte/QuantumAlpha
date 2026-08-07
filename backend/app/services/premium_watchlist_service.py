@@ -1,0 +1,212 @@
+"""Builds a small, curated "premium" watchlist.
+
+`watchlist_service.py` already surfaces every ticker that matches a cheap
+technical rule - useful, but with ~170 tickers in the universe that can still
+be dozens of names to review by hand. This module is different on purpose:
+instead of a rule match, a ticker only makes this list if it's run through the
+*exact same* deep-dive pipeline "Analizar activo" uses (recommendation, GARCH,
+Markov, Monte Carlo, walk-forward backtest, Kelly sizing - see
+`compute_core_signals()` in `ticker_analysis_service.py`) and that full
+analysis actually endorses it. This is the same objectivity principle the
+market-regime banner and the sector-rotation read already apply at the
+market-wide level, now applied per-ticker: a name is never "premium" merely
+because a cheap rule matched today.
+
+Three priority tiers, one per review cadence a personal investor actually
+follows - daily/weekly/monthly - each reusing the existing short/medium/long
+horizon buckets from `watchlist_service.py` as its cheap pre-filter, and each
+with a cache TTL matching its own name: there is no point re-running the full
+quant pipeline for the "monthly" tier on every request when a month's worth of
+history barely moves it.
+"""
+
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+
+from app.domain.models.ticker_snapshot import TickerSnapshot
+from app.services import watchlist_service as wl
+from app.services.market_data_service import MarketDataService
+from app.services.market_screener_service import MarketScreenerService
+from app.services.market_universe import DEFAULT_REGION, benchmark_for_region, currency_of
+from app.services.ticker_analysis_service import CoreTickerSignals, compute_core_signals
+
+DAILY = "daily"
+WEEKLY = "weekly"
+MONTHLY = "monthly"
+TIERS = (DAILY, WEEKLY, MONTHLY)
+
+# Refresh cadence per tier, matching the tier's own name - the "daily" list is
+# worth recomputing once a day, the "monthly" one only once a month.
+CACHE_TTL = {
+    DAILY: timedelta(days=1),
+    WEEKLY: timedelta(days=7),
+    MONTHLY: timedelta(days=30),
+}
+
+# Which cheap pre-filter horizon (watchlist_service.py) and which Monte Carlo
+# horizon preset (ticker_analysis_service.py) each premium tier maps onto.
+_PREFILTER_HORIZON = {DAILY: wl.SHORT_TERM, WEEKLY: wl.MEDIUM_TERM, MONTHLY: wl.LONG_TERM}
+_MONTE_CARLO_HORIZON = {DAILY: "1m", WEEKLY: "3m", MONTHLY: "6m"}
+
+MAX_CANDIDATES_PER_TIER = 15  # how many cheap pre-filter matches get the expensive full analysis
+MAX_APPROVED_PER_TIER = 10  # size cap of the final "premium" list - a handful of excellent names, not a scan
+HISTORY_YEARS = 10
+BACKTEST_COMPARISON = "comprar vs evitar"
+BACKTEST_EDGE_BONUS = 3.0
+KELLY_SETUP_BONUS = 1.0
+MONTE_CARLO_EDGE_WEIGHT = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class PremiumWatchlistItem:
+    ticker: str
+    sector: str
+    industry: str | None
+    cap_tier: str
+    currency: str
+    region: str
+    tier: str
+    reasons: list[str]  # why the cheap pre-filter even considered this ticker
+    signals: CoreTickerSignals  # the full deep-dive result that got it approved
+    premium_score: float
+
+
+def _approval_score(signals: CoreTickerSignals) -> float | None:
+    """Returns a ranking score for a candidate that earns a spot on the premium
+    list, or None to reject it. A rule-based "comprar" score alone isn't enough:
+    a ticker whose OWN walk-forward backtest shows "evitar" has historically beaten
+    "comprar" is excluded outright, regardless of today's score - the same
+    objectivity principle the market regime and sector rotation reads apply."""
+    if signals.recommendation.verdict != "comprar":
+        return None
+
+    backtest_edge = None
+    if signals.backtest is not None:
+        backtest_edge = next(
+            (t for t in signals.backtest.significance_tests if t.comparison == BACKTEST_COMPARISON), None
+        )
+    backtest_contradicts = (
+        backtest_edge is not None and backtest_edge.significant_at_5pct and backtest_edge.mean_difference <= 0
+    )
+    if backtest_contradicts:
+        return None
+
+    score = float(signals.recommendation.score)
+    backtest_confirms = (
+        backtest_edge is not None and backtest_edge.significant_at_5pct and backtest_edge.mean_difference > 0
+    )
+    if backtest_confirms:
+        score += BACKTEST_EDGE_BONUS
+    if signals.monte_carlo is not None and signals.monte_carlo.probability_target_before_stop is not None:
+        score += signals.monte_carlo.probability_target_before_stop * MONTE_CARLO_EDGE_WEIGHT
+    if signals.position_sizing is not None:
+        score += KELLY_SETUP_BONUS  # a genuinely sizeable, favorable-odds trade setup
+    return score
+
+
+def build_premium_watchlist(
+    universe_snapshot: list[TickerSnapshot],
+    market_data: MarketDataService,
+    region: str = DEFAULT_REGION,
+    tiers: list[str] | None = None,
+) -> list[PremiumWatchlistItem]:
+    tiers = tiers if tiers else list(TIERS)
+
+    candidates_by_tier: dict[str, list[wl.WatchlistItem]] = {}
+    all_candidate_tickers: set[str] = set()
+    for t in tiers:
+        items = wl.build_watchlist(universe_snapshot, horizon=_PREFILTER_HORIZON[t])
+        top = items[:MAX_CANDIDATES_PER_TIER]
+        candidates_by_tier[t] = top
+        all_candidate_tickers.update(item.ticker for item in top)
+
+    if not all_candidate_tickers:
+        return []
+
+    benchmark_ticker = benchmark_for_region(region)
+    end = date.today()
+    start = end - timedelta(days=365 * HISTORY_YEARS)
+    ohlcv = market_data.get_bulk_ohlcv([*all_candidate_tickers, benchmark_ticker], start, end)
+    benchmark_df = ohlcv.get(benchmark_ticker)
+    benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
+
+    results: list[PremiumWatchlistItem] = []
+    for t in tiers:
+        scored: list[tuple[float, PremiumWatchlistItem]] = []
+        for candidate in candidates_by_tier[t]:
+            df = ohlcv.get(candidate.ticker)
+            if df is None:
+                continue
+            signals = compute_core_signals(
+                df["close"],
+                df["high"],
+                df["low"],
+                df["volume"],
+                benchmark_close,
+                candidate.snapshot.rs_rating,
+                horizon=_MONTE_CARLO_HORIZON[t],
+            )
+            if signals is None:
+                continue
+            score = _approval_score(signals)
+            if score is None:
+                continue
+            scored.append(
+                (
+                    score,
+                    PremiumWatchlistItem(
+                        ticker=candidate.ticker,
+                        sector=candidate.sector,
+                        industry=candidate.industry,
+                        cap_tier=candidate.cap_tier,
+                        currency=currency_of(candidate.ticker),
+                        region=region,
+                        tier=t,
+                        reasons=candidate.reasons,
+                        signals=signals,
+                        premium_score=score,
+                    ),
+                )
+            )
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        results.extend(item for _, item in scored[:MAX_APPROVED_PER_TIER])
+    return results
+
+
+class PremiumWatchlistService:
+    """Singleton wrapper (see `deps.py`) holding a per-(region, tier) in-process
+    cache so the daily list only actually re-runs the full pipeline once a day,
+    the weekly one once a week, and the monthly one once a month - independently
+    for each region."""
+
+    def __init__(self, market_data: MarketDataService, screener: MarketScreenerService) -> None:
+        self.market_data = market_data
+        self.screener = screener
+        self._cache: dict[tuple[str, str], tuple[datetime, list[PremiumWatchlistItem]]] = {}
+
+    def get_premium_watchlist(
+        self, region: str = DEFAULT_REGION, tier: str | None = None, force_refresh: bool = False
+    ) -> list[PremiumWatchlistItem]:
+        tiers = [tier] if tier else list(TIERS)
+        now = datetime.now(UTC)
+        stale = [
+            t
+            for t in tiers
+            if force_refresh
+            or (region, t) not in self._cache
+            or now - self._cache[(region, t)][0] >= CACHE_TTL[t]
+        ]
+
+        if stale:
+            universe_snapshot = self.screener.get_universe_snapshot(region)
+            recomputed = build_premium_watchlist(universe_snapshot, self.market_data, region=region, tiers=stale)
+            recomputed_by_tier: dict[str, list[PremiumWatchlistItem]] = {t: [] for t in stale}
+            for item in recomputed:
+                recomputed_by_tier[item.tier].append(item)
+            for t in stale:
+                self._cache[(region, t)] = (now, recomputed_by_tier[t])
+
+        result: list[PremiumWatchlistItem] = []
+        for t in tiers:
+            result.extend(self._cache.get((region, t), (now, []))[1])
+        return result
