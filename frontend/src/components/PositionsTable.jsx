@@ -1,7 +1,7 @@
 import { formatCurrency, formatPercent, garchRegimeLabel } from '../format'
 
 const SIGNAL_LABELS = {
-  exit_warning: 'Salir / vigilar',
+  exit_warning: 'VENDER',
   add_candidate: 'Aumentar',
   watch: 'Vigilar',
   hold: 'Mantener',
@@ -24,13 +24,17 @@ function riskTooltip(risk) {
   return parts.join(' · ')
 }
 
-function PositionsTable({ positions, colorScale, totalMarketValue, riskByTicker, onNavigateToTicker }) {
+function PositionsTable({ positions, colorScale, totalMarketValue, riskByTicker, riskLoading, onNavigateToTicker }) {
   if (positions.length === 0) {
     return <p className="empty-state">Esta cartera todavía no tiene posiciones. Añade una transacción para empezar.</p>
   }
 
   const sorted = [...positions].sort((a, b) => (b.market_value_base ?? 0) - (a.market_value_base ?? 0))
-  const showRiskColumn = Boolean(riskByTicker)
+  // Shown as soon as we're trying to fetch a recommendation, not only once it
+  // arrives - the quant suite behind it can take a while on a cold cache, and
+  // hiding the whole column until then reads as "no recommendation exists"
+  // instead of "still calculating it".
+  const showRiskColumn = riskLoading || Boolean(riskByTicker)
 
   return (
     <div className="table-scroll">
@@ -118,6 +122,10 @@ function PositionsTable({ positions, colorScale, totalMarketValue, riskByTicker,
                       <span className={`signal-badge signal-badge--${risk.signal}`} title={riskTooltip(risk)}>
                         {SIGNAL_LABELS[risk.signal] ?? risk.signal}
                         <span className="signal-badge__score"> ({risk.score >= 0 ? '+' : ''}{risk.score})</span>
+                      </span>
+                    ) : riskLoading ? (
+                      <span className="signal-badge signal-badge--pending" title="Calculando la señal técnica completa (tendencia, GARCH, Markov, backtest)…">
+                        Calculando…
                       </span>
                     ) : (
                       '—'

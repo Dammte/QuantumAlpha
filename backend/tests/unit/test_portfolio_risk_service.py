@@ -112,3 +112,76 @@ def test_get_portfolio_positions_risk_empty_tickers_returns_empty():
             raise AssertionError("should not be called for an empty ticker list")
 
     assert prs.get_portfolio_positions_risk([], _StubMarketData()) == []
+
+
+class _CountingMarketData:
+    """Stub that counts get_bulk_ohlcv calls and how many tickers were asked
+    for across all calls, so tests can assert the cache actually avoids
+    recomputation instead of just checking the returned values look right."""
+
+    def __init__(self):
+        self.call_count = 0
+        self.requested_tickers: list[str] = []
+
+    def get_bulk_ohlcv(self, tickers, start, end):
+        self.call_count += 1
+        self.requested_tickers.extend(tickers)
+        close = 100 + np.arange(260) * 0.4
+        return {ticker: _ohlc(close) for ticker in tickers}
+
+
+def test_service_caches_results_across_calls():
+    market_data = _CountingMarketData()
+    service = prs.PortfolioRiskService()
+
+    first = service.get_positions_risk(["AAPL", "MSFT"], market_data)
+    second = service.get_positions_risk(["AAPL", "MSFT"], market_data)
+
+    assert [r.ticker for r in first] == ["AAPL", "MSFT"]
+    assert [r.ticker for r in second] == ["AAPL", "MSFT"]
+    assert market_data.call_count == 1  # second call served entirely from cache
+
+
+def test_service_only_recomputes_uncached_tickers():
+    market_data = _CountingMarketData()
+    service = prs.PortfolioRiskService()
+
+    service.get_positions_risk(["AAPL"], market_data)
+    market_data.requested_tickers.clear()  # only care what the *second* call asks for
+    service.get_positions_risk(["AAPL", "MSFT"], market_data)
+
+    assert market_data.call_count == 2
+    # MSFT (and its benchmark) get (re)fetched; AAPL stayed cached and is never
+    # asked for again - asserting non-membership rather than an exact list
+    # since the fetch also includes each ticker's benchmark (e.g. ^GSPC).
+    assert "MSFT" in market_data.requested_tickers
+    assert "AAPL" not in market_data.requested_tickers
+
+
+def test_service_force_refresh_recomputes_even_when_cached():
+    market_data = _CountingMarketData()
+    service = prs.PortfolioRiskService()
+
+    service.get_positions_risk(["AAPL"], market_data)
+    service.get_positions_risk(["AAPL"], market_data, force_refresh=True)
+
+    assert market_data.call_count == 2
+
+
+def test_service_preserves_input_ticker_order_regardless_of_thread_completion_order():
+    market_data = _CountingMarketData()
+    service = prs.PortfolioRiskService()
+
+    tickers = ["MSFT", "AAPL", "NVDA", "GOOG"]
+    results = service.get_positions_risk(tickers, market_data)
+
+    assert [r.ticker for r in results] == tickers
+
+
+def test_service_empty_tickers_returns_empty_without_calling_market_data():
+    class _StubMarketData:
+        def get_bulk_ohlcv(self, tickers, start, end):
+            raise AssertionError("should not be called for an empty ticker list")
+
+    service = prs.PortfolioRiskService()
+    assert service.get_positions_risk([], _StubMarketData()) == []

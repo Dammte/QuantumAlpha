@@ -15,6 +15,7 @@ from app.services.macro_data_service import MacroDataService
 from app.services.market_context_service import MarketContextService
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
+from app.services.portfolio_risk_service import PortfolioRiskService
 from app.services.portfolio_service import PortfolioService
 from app.services.premium_watchlist_service import PremiumWatchlistService
 from app.services.ticker_analysis_service import TickerAnalysisService
@@ -83,6 +84,14 @@ def get_premium_watchlist_service(
     in-process cache (see CACHE_TTL in premium_watchlist_service.py), which only
     helps if the same instance is reused across requests."""
     return PremiumWatchlistService(market_data, screener)
+
+
+@lru_cache
+def get_portfolio_risk_service() -> PortfolioRiskService:
+    """Cached as a singleton: PortfolioRiskService keeps its own per-ticker
+    in-process cache (see CACHE_TTL in portfolio_risk_service.py), which only
+    helps if the same instance is reused across requests."""
+    return PortfolioRiskService()
 
 
 def get_portfolio_repository(db: DbSession) -> PortfolioRepository:

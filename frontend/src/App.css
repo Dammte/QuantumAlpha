@@ -1567,6 +1567,18 @@
   color: var(--text);
 }
 
+.signal-badge--pending {
+  background: var(--code-bg);
+  color: var(--text);
+  cursor: default;
+  animation: signal-badge-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes signal-badge-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 .signal-badge__score {
   opacity: 0.75;
   font-weight: 500;

@@ -14,8 +14,9 @@ benchmark is still fetched in a single batched call (see `get_bulk_ohlcv`),
 so scoring N holdings is one network round-trip, not N.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 
@@ -26,6 +27,15 @@ from app.services.market_universe import benchmark_for_ticker, currency_of
 from app.services.ticker_analysis_service import HISTORY_YEARS, CoreTickerSignals, compute_core_signals
 
 PROXIMITY_THRESHOLD = 0.03  # within 3% of a level counts as "close to it"
+
+# Same idiom as MarketScreenerService/PremiumWatchlistService: the full quant
+# suite per holding (GARCH, Markov, Monte Carlo, walk-forward backtest) is
+# genuinely slow - ~5s per ticker measured in production - so a cold dashboard
+# load with several holdings can take 30-40s. Caching per ticker means that
+# cost is only paid once per CACHE_TTL, not on every dashboard reload, which is
+# the actual common case. See PortfolioRiskService below.
+CACHE_TTL = timedelta(minutes=20)
+MAX_WORKERS = 4
 
 EXIT_WARNING = "exit_warning"
 ADD_CANDIDATE = "add_candidate"
@@ -133,3 +143,61 @@ def get_portfolio_positions_risk(
         if risk is not None:
             results.append(risk)
     return results
+
+
+class PortfolioRiskService:
+    """Production-facing wrapper around `get_portfolio_positions_risk`: caches
+    each ticker's `PositionRisk` for `CACHE_TTL` and computes cache misses
+    concurrently (numpy/pandas/scipy release the GIL for most of the actual
+    work, so a thread pool - not multiprocessing - is enough for this "personal,
+    single-process tool" scale). Registered as a singleton in `deps.py` so the
+    cache is actually shared across requests, same as MarketScreenerService."""
+
+    def __init__(self) -> None:
+        self._cache: dict[str, tuple[datetime, PositionRisk]] = {}
+
+    def get_positions_risk(
+        self,
+        tickers: list[str],
+        market_data: MarketDataService,
+        universe_snapshot: list[TickerSnapshot] | None = None,
+        force_refresh: bool = False,
+    ) -> list[PositionRisk]:
+        if not tickers:
+            return []
+
+        now = datetime.now(UTC)
+        fresh_by_ticker: dict[str, PositionRisk] = {}
+        to_compute: list[str] = []
+        for ticker in tickers:
+            cached = None if force_refresh else self._cache.get(ticker)
+            if cached is not None and now - cached[0] < CACHE_TTL:
+                fresh_by_ticker[ticker] = cached[1]
+            else:
+                to_compute.append(ticker)
+
+        if to_compute:
+            rs_by_ticker = {s.ticker: s.rs_rating for s in universe_snapshot} if universe_snapshot else {}
+            end = date.today()
+            start = end - timedelta(days=365 * HISTORY_YEARS)
+            benchmark_by_ticker = {ticker: benchmark_for_ticker(ticker) for ticker in to_compute}
+            fetch_list = [*to_compute, *set(benchmark_by_ticker.values())]
+            ohlcv_by_ticker = market_data.get_bulk_ohlcv(fetch_list, start, end)
+
+            def _compute(ticker: str) -> PositionRisk | None:
+                df = ohlcv_by_ticker.get(ticker)
+                if df is None:
+                    return None
+                benchmark_df = ohlcv_by_ticker.get(benchmark_by_ticker[ticker])
+                benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
+                return assess_position_risk(ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker))
+
+            with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(to_compute))) as pool:
+                computed = list(pool.map(_compute, to_compute))
+
+            for ticker, risk in zip(to_compute, computed, strict=True):
+                if risk is not None:
+                    fresh_by_ticker[ticker] = risk
+                    self._cache[ticker] = (now, risk)
+
+        return [fresh_by_ticker[ticker] for ticker in tickers if ticker in fresh_by_ticker]

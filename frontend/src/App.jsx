@@ -27,6 +27,7 @@ function App() {
   const [summary, setSummary] = useState(null)
   const [transactions, setTransactions] = useState([])
   const [risk, setRisk] = useState(null)
+  const [riskLoading, setRiskLoading] = useState(false)
   const [metrics, setMetrics] = useState(null)
   const [history, setHistory] = useState({ points: [], benchmarkPoints: null })
   const [timeframe, setTimeframe] = useState('6M')
@@ -63,10 +64,18 @@ function App() {
     setError(null)
     setSummary(summaryData)
     setTransactions(txData)
+    // Runs the full quant suite per holding server-side, so it can take a while
+    // on a cold cache - never blocks the rest of the dashboard on it, but does
+    // clear any stale risk data from a previously selected portfolio and track
+    // its own loading state so the UI can show "calculando…" instead of just
+    // making the whole column disappear while this is in flight.
+    setRisk(null)
+    setRiskLoading(true)
     api
       .getPortfolioRisk(id)
       .then(setRisk)
       .catch(() => setRisk(null))
+      .finally(() => setRiskLoading(false))
   }, [])
 
   const loadAnalysis = useCallback(async (id, tf, benchmark) => {
@@ -313,6 +322,7 @@ function App() {
                 colorScale={colorScale}
                 totalMarketValue={summary.total_market_value}
                 riskByTicker={riskByTicker}
+                riskLoading={riskLoading}
                 onNavigateToTicker={navigateToAnalysis}
               />
             )}

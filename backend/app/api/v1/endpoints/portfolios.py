@@ -9,6 +9,7 @@ from app.api.deps import (
     get_market_data_service,
     get_market_screener_service,
     get_portfolio_repository,
+    get_portfolio_risk_service,
     get_portfolio_service,
 )
 from app.domain.models.asset import AssetClass
@@ -20,7 +21,7 @@ from app.schemas.quant_analysis import CoreSignalsResponse
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
-from app.services.portfolio_risk_service import get_portfolio_positions_risk
+from app.services.portfolio_risk_service import PortfolioRiskService
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
 from app.services.ticker_analysis_service import CoreTickerSignals
 
@@ -168,6 +169,8 @@ def get_portfolio_risk(
     repository: Annotated[PortfolioRepository, Depends(get_portfolio_repository)],
     market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
     screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
+    risk_service: Annotated[PortfolioRiskService, Depends(get_portfolio_risk_service)],
+    refresh: bool = False,
 ) -> PortfolioRiskResponse:
     """Full quant risk read on every held ticker - the same recommendation, GARCH,
     Markov, Monte Carlo, backtest and Kelly-sizing pipeline "Analizar activo" runs -
@@ -181,7 +184,7 @@ def get_portfolio_risk(
     # A personal portfolio isn't confined to one market - combine both curated
     # universes so a European holding's RS Rating is found too, not just US ones.
     universe_snapshot = screener.get_universe_snapshot("us") + screener.get_universe_snapshot("europe")
-    positions = get_portfolio_positions_risk(tickers, market_data, universe_snapshot)
+    positions = risk_service.get_positions_risk(tickers, market_data, universe_snapshot, force_refresh=refresh)
 
     return PortfolioRiskResponse(
         positions=[
