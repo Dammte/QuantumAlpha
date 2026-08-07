@@ -14,7 +14,6 @@ benchmark is still fetched in a single batched call (see `get_bulk_ohlcv`),
 so scoring N holdings is one network round-trip, not N.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
@@ -34,8 +33,16 @@ PROXIMITY_THRESHOLD = 0.03  # within 3% of a level counts as "close to it"
 # load with several holdings can take 30-40s. Caching per ticker means that
 # cost is only paid once per CACHE_TTL, not on every dashboard reload, which is
 # the actual common case. See PortfolioRiskService below.
+#
+# Cache misses are computed sequentially, not in a thread pool: an earlier
+# version parallelized this with ThreadPoolExecutor, but on Render's
+# CPU-constrained tier it made things *worse* - each Python thread spins up
+# its own BLAS/OpenMP threads inside numpy/scipy (GARCH, Monte Carlo), and a
+# handful of Python threads each oversubscribing a shared, throttled vCPU
+# turned a 39s sequential response into a request that never completed at
+# all. Caching already removes the cost on every reload but the very first
+# one, which is the case that actually matters for a personal dashboard.
 CACHE_TTL = timedelta(minutes=20)
-MAX_WORKERS = 4
 
 EXIT_WARNING = "exit_warning"
 ADD_CANDIDATE = "add_candidate"
@@ -147,11 +154,10 @@ def get_portfolio_positions_risk(
 
 class PortfolioRiskService:
     """Production-facing wrapper around `get_portfolio_positions_risk`: caches
-    each ticker's `PositionRisk` for `CACHE_TTL` and computes cache misses
-    concurrently (numpy/pandas/scipy release the GIL for most of the actual
-    work, so a thread pool - not multiprocessing - is enough for this "personal,
-    single-process tool" scale). Registered as a singleton in `deps.py` so the
-    cache is actually shared across requests, same as MarketScreenerService."""
+    each ticker's `PositionRisk` for `CACHE_TTL` so the full quant suite is
+    only recomputed once per ticker per TTL window, not on every dashboard
+    reload. Registered as a singleton in `deps.py` so the cache is actually
+    shared across requests, same as MarketScreenerService."""
 
     def __init__(self) -> None:
         self._cache: dict[str, tuple[datetime, PositionRisk]] = {}
@@ -184,18 +190,13 @@ class PortfolioRiskService:
             fetch_list = [*to_compute, *set(benchmark_by_ticker.values())]
             ohlcv_by_ticker = market_data.get_bulk_ohlcv(fetch_list, start, end)
 
-            def _compute(ticker: str) -> PositionRisk | None:
+            for ticker in to_compute:
                 df = ohlcv_by_ticker.get(ticker)
                 if df is None:
-                    return None
+                    continue
                 benchmark_df = ohlcv_by_ticker.get(benchmark_by_ticker[ticker])
                 benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
-                return assess_position_risk(ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker))
-
-            with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(to_compute))) as pool:
-                computed = list(pool.map(_compute, to_compute))
-
-            for ticker, risk in zip(to_compute, computed, strict=True):
+                risk = assess_position_risk(ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker))
                 if risk is not None:
                     fresh_by_ticker[ticker] = risk
                     self._cache[ticker] = (now, risk)
