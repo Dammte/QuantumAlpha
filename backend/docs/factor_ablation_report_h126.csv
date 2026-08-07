@@ -1,0 +1,13 @@
+factor,current_points,n_triggered,n_not_triggered,mean_return_triggered_pct,mean_return_not_triggered_pct,mean_difference_pct,t_stat,p_value,permutation_p_value,significant_at_1pct,directionally_consistent
+minervini_range_position,1,1973,1681,9.307,6.634,2.673,3.442,0.00058,0.0008,True,True
+adx_strong_trend,1,807,2847,9.293,7.732,1.561,1.581,0.11423,0.09498,False,True
+trend_down,-3,355,3299,6.738,8.221,-1.484,-0.968,0.33384,0.24975,False,True
+stage2,2,1870,1784,8.428,7.71,0.718,0.926,0.35464,0.35333,False,True
+rsi_oversold_bounce,1,71,3583,6.101,8.116,-2.015,-0.761,0.44939,0.46211,False,False
+trend_up,2,1014,2640,8.475,7.924,0.55,0.653,0.51379,0.53069,False,True
+death_cross,-2,42,3612,6.219,8.099,-1.879,-0.501,0.61866,0.58668,False,True
+atr_parabolic,-2,409,3245,8.346,8.043,0.303,0.221,0.82494,0.80184,False,False
+obv_bearish,-2,281,3373,7.861,8.095,-0.235,-0.137,0.89107,0.86383,False,True
+stage4,-3,669,2985,8.193,8.051,0.142,0.12,0.90439,0.88282,False,False
+obv_bullish,1,306,3348,7.975,8.086,-0.111,-0.079,0.93733,0.93621,False,False
+golden_cross,1,34,3620,8.205,8.076,0.129,0.032,0.97439,0.97281,False,True

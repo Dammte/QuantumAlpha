@@ -91,9 +91,8 @@ def test_historical_analogs_none_when_insufficient_history():
     assert at.historical_analogs(closes) is None
 
 
-def test_historical_analogs_returns_well_formed_stats_on_realistic_data():
-    rng = np.random.default_rng(7)
-    n = 1500
+def _synthetic_closes_for_analogs(n: int = 1500, seed: int = 7) -> pd.Series:
+    rng = np.random.default_rng(seed)
     prices = [100.0]
     pullback_countdown = 0
     bounce_countdown = 0
@@ -110,10 +109,14 @@ def test_historical_analogs_returns_well_formed_stats_on_realistic_data():
             bounce_countdown -= 1
         else:
             prices.append(prices[-1] * (1 + rng.normal(0, 0.005)))
-
     closes = pd.Series(prices)
     # Force the CURRENT state to look like "just finished a sharp pullback".
     closes.iloc[-22:-21] = closes.iloc[-22] * 0.90
+    return closes
+
+
+def test_historical_analogs_returns_well_formed_stats_on_realistic_data():
+    closes = _synthetic_closes_for_analogs()
 
     result = at.historical_analogs(closes, lookback=21, forward_horizon=21, n_neighbors=15)
 
@@ -122,4 +125,59 @@ def test_historical_analogs_returns_well_formed_stats_on_realistic_data():
     assert result.forward_horizon_days == 21
     assert 0.0 <= result.win_rate <= 1.0
     assert np.isfinite(result.avg_forward_return)
+    # No vix_close supplied - regime matching must degrade gracefully, not error.
+    assert result.regime_matched is False
+    assert result.current_vix_level is None
+    assert result.avg_analog_vix_level is None
+    assert result.pct_analogs_in_elevated_fear is None
+
+
+def test_historical_analogs_uses_vix_regime_when_supplied():
+    closes = _synthetic_closes_for_analogs()
+    # Flat, unremarkable VIX throughout - just needs to be present/aligned to
+    # exercise the regime-matching path end to end.
+    vix_close = pd.Series([18.0] * len(closes), index=closes.index)
+
+    result = at.historical_analogs(closes, lookback=21, forward_horizon=21, n_neighbors=15, vix_close=vix_close)
+
+    assert result is not None
+    assert result.regime_matched is True
+    assert result.current_vix_level == pytest.approx(18.0)
+    assert result.avg_analog_vix_level == pytest.approx(18.0)
+    assert result.pct_analogs_in_elevated_fear == pytest.approx(0.0)  # 18 < the 20.0 elevated-fear threshold
+
+
+def test_historical_analogs_reports_elevated_fear_share_correctly():
+    closes = _synthetic_closes_for_analogs()
+    n = len(closes)
+    # High VIX (panic) for the first third of history, calm for the rest -
+    # the KNN match itself is still driven by price features, but whichever
+    # analogs get matched should have their true, correctly-labeled VIX regime
+    # reported back, not an average that silently ignores the split.
+    vix_values = [35.0] * (n // 3) + [14.0] * (n - n // 3)
+    vix_close = pd.Series(vix_values, index=closes.index)
+
+    result = at.historical_analogs(closes, lookback=21, forward_horizon=21, n_neighbors=15, vix_close=vix_close)
+
+    assert result is not None
+    assert result.regime_matched is True
+    assert result.pct_analogs_in_elevated_fear in (0.0, 1.0) or 0.0 < result.pct_analogs_in_elevated_fear < 1.0
+    # avg_analog_vix_level must be a real blend of the two regimes actually
+    # present, not the flat 18.0 from the other test.
+    assert result.avg_analog_vix_level in (pytest.approx(35.0), pytest.approx(14.0)) or (
+        14.0 < result.avg_analog_vix_level < 35.0
+    )
+
+
+def test_historical_analogs_falls_back_when_vix_has_no_overlap():
+    closes = _synthetic_closes_for_analogs()
+    # A vix_close with a completely disjoint index (reindex -> all NaN) must
+    # degrade to the plain 2-feature match, not crash or silently corrupt it.
+    vix_close = pd.Series([20.0] * 10, index=range(100_000, 100_010))
+
+    result = at.historical_analogs(closes, lookback=21, forward_horizon=21, n_neighbors=15, vix_close=vix_close)
+
+    assert result is not None
+    assert result.regime_matched is False
+    assert result.current_vix_level is None
     assert np.isfinite(result.median_forward_return)

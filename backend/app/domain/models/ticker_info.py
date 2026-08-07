@@ -17,6 +17,9 @@ class TickerInfo:
     analyst_recommendation: str | None
     analyst_target_mean_price: float | None
     analyst_opinion_count: int | None
+    revenue_growth: float | None
+    profit_margins: float | None
+    debt_to_equity: float | None
 
 
 @dataclass(frozen=True, slots=True)

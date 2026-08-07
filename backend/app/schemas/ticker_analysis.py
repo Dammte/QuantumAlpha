@@ -69,6 +69,9 @@ class FundamentalsResponse(BaseModel):
     analyst_recommendation: str | None
     analyst_target_mean_price: float | None
     analyst_opinion_count: int | None
+    revenue_growth: float | None
+    profit_margins: float | None
+    debt_to_equity: float | None
 
 
 class MonthSeasonalityResponse(BaseModel):
@@ -84,6 +87,10 @@ class HistoricalAnalogsResponse(BaseModel):
     avg_forward_return: float
     median_forward_return: float
     win_rate: float
+    regime_matched: bool
+    current_vix_level: float | None
+    avg_analog_vix_level: float | None
+    pct_analogs_in_elevated_fear: float | None
 
 
 class TickerAnalysisResponse(BaseModel):
@@ -125,6 +132,7 @@ class TickerAnalysisResponse(BaseModel):
     minervini_score: int
     minervini_pass: bool
     support_resistance: list[PriceLevelResponse]
+    obv_divergence: str | None
     price_history: list[PricePointResponse]
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None

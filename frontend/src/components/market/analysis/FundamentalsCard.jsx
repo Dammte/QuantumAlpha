@@ -65,6 +65,42 @@ function FundamentalsCard({ fundamentals, price, currency }) {
           )}
         </p>
       </div>
+      <div>
+        <p className="fundamentals-grid__label" title="Alimenta el factor de crecimiento de la recomendación">
+          Crecimiento de ingresos (interanual)
+        </p>
+        <p className="fundamentals-grid__value">
+          {fundamentals.revenue_growth !== null ? (
+            <span className={fundamentals.revenue_growth >= 0 ? 'delta-up' : 'delta-down'}>
+              {formatPercent(fundamentals.revenue_growth, { signed: true })}
+            </span>
+          ) : (
+            '—'
+          )}
+        </p>
+      </div>
+      <div>
+        <p className="fundamentals-grid__label" title="Alimenta el factor de rentabilidad de la recomendación">
+          Margen neto
+        </p>
+        <p className="fundamentals-grid__value">
+          {fundamentals.profit_margins !== null ? (
+            <span className={fundamentals.profit_margins >= 0 ? 'delta-up' : 'delta-down'}>
+              {formatPercent(fundamentals.profit_margins, { signed: true })}
+            </span>
+          ) : (
+            '—'
+          )}
+        </p>
+      </div>
+      <div>
+        <p className="fundamentals-grid__label" title="Alimenta el factor de apalancamiento de la recomendación">
+          Deuda / Patrimonio
+        </p>
+        <p className="fundamentals-grid__value">
+          {fundamentals.debt_to_equity !== null ? `${fundamentals.debt_to_equity.toFixed(0)}%` : '—'}
+        </p>
+      </div>
     </div>
   )
 }

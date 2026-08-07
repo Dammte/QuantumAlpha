@@ -51,7 +51,7 @@ TICKER_CAP_TIER: dict[str, str] = {
     "CRM": "large", "ADBE": "large", "NOW": "large", "INTU": "large", "PANW": "large",
     "CRWD": "large", "FTNT": "large", "JPM": "large", "BAC": "large", "WFC": "large",
     "C": "large", "GS": "large", "MS": "large", "V": "large", "MA": "large",
-    "PYPL": "large", "FI": "large", "PGR": "large", "CB": "large", "TRV": "large",
+    "PYPL": "large", "FISV": "large", "PGR": "large", "CB": "large", "TRV": "large",
     "MRK": "large", "PFE": "large", "ABBV": "large", "BMY": "large", "VRTX": "large",
     "REGN": "large", "GILD": "large", "AMGN": "large", "ABT": "large", "TMO": "large",
     "DHR": "large", "ISRG": "large", "MDT": "large", "SYK": "large", "CVS": "large",
@@ -68,7 +68,7 @@ TICKER_CAP_TIER: dict[str, str] = {
     "SPG": "large", "O": "large", "PSA": "large", "TGT": "large", "ORLY": "large",
     "AZO": "large",
     # Mid caps
-    "WDAY": "mid", "ZS": "mid", "OKTA": "mid", "CYBR": "mid", "FITB": "mid",
+    "WDAY": "mid", "ZS": "mid", "OKTA": "mid", "FITB": "mid",
     "MTB": "mid", "RF": "mid", "CFG": "mid", "HBAN": "mid", "GPN": "mid",
     "FIS": "mid", "MET": "mid", "ALL": "mid", "BIIB": "mid", "MRNA": "mid",
     "HAL": "mid", "BKR": "mid", "ENPH": "mid", "FSLR": "mid", "HII": "mid",
@@ -97,11 +97,11 @@ INDUSTRIES: tuple[Industry, ...] = (
         "Semiconductores", "Tecnología", "SOXX", ("NVDA", "AVGO", "AMD", "QCOM", "TXN", "AMAT", "MU", "ASML")
     ),
     Industry("Software empresarial", "Tecnología", "IGV", ("MSFT", "ORCL", "CRM", "ADBE", "NOW", "INTU", "WDAY")),
-    Industry("Ciberseguridad", "Tecnología", "CIBR", ("PANW", "CRWD", "FTNT", "ZS", "OKTA", "CYBR")),
+    Industry("Ciberseguridad", "Tecnología", "CIBR", ("PANW", "CRWD", "FTNT", "ZS", "OKTA")),
     # --- Financiero ---
     Industry("Grandes bancos", "Financiero", "KBE", ("JPM", "BAC", "WFC", "C", "GS", "MS")),
     Industry("Bancos regionales", "Financiero", "KRE", ("FITB", "MTB", "RF", "CFG", "HBAN", "KEY")),
-    Industry("Pagos y fintech", "Financiero", None, ("V", "MA", "PYPL", "FI", "GPN", "FIS")),
+    Industry("Pagos y fintech", "Financiero", None, ("V", "MA", "PYPL", "FISV", "GPN", "FIS")),
     Industry("Seguros", "Financiero", "KIE", ("PGR", "CB", "TRV", "ALL", "MET")),
     # --- Salud ---
     Industry("Farmacéuticas", "Salud", "PPH", ("LLY", "JNJ", "MRK", "PFE", "ABBV", "BMY")),

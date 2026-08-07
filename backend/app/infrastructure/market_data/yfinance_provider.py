@@ -135,6 +135,15 @@ class YFinanceProvider(MarketDataProvider):
             analyst_recommendation=info.get("recommendationKey"),
             analyst_target_mean_price=info.get("targetMeanPrice"),
             analyst_opinion_count=info.get("numberOfAnalystOpinions"),
+            # `earningsGrowth` is the more commonly-cited CANSLIM-style metric but is
+            # null specifically whenever trailing EPS growth is undefined (negative
+            # or zero prior-period earnings) - confirmed empirically across several
+            # tickers, not random missingness. `revenueGrowth` doesn't have that
+            # failure mode and was populated for every ticker checked, so it's the
+            # one fed into the recommendation engine's fundamentals factor.
+            revenue_growth=info.get("revenueGrowth"),
+            profit_margins=info.get("profitMargins"),
+            debt_to_equity=info.get("debtToEquity"),
         )
 
     def get_ticker_news(self, ticker: str, limit: int = 8) -> list[NewsArticle]:

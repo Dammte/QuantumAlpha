@@ -74,6 +74,7 @@ class TickerAnalysis:
     minervini_score: int
     minervini_pass: bool
     support_resistance: list[PriceLevel]
+    obv_divergence: str | None
     price_history: list[PricePoint]
     news: list[NewsArticle]
     fundamentals: TickerInfo | None

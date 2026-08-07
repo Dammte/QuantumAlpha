@@ -87,6 +87,9 @@ class FakeMarketDataProvider(MarketDataProvider):
             analyst_recommendation="buy",
             analyst_target_mean_price=175.0,
             analyst_opinion_count=20,
+            revenue_growth=0.12,
+            profit_margins=0.18,
+            debt_to_equity=45.0,
         )
 
     def get_ticker_news(self, ticker: str, limit: int = 8) -> list[NewsArticle]:

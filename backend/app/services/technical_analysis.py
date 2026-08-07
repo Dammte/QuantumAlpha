@@ -82,6 +82,60 @@ def atr_multiple_from_sma(
     return float((close.iloc[-1] - moving_avg) / latest_atr)
 
 
+def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+    """On-Balance Volume: cumulative volume, added on up days and subtracted on
+    down days. Purely causal (each value only uses data up to that bar), so it
+    can be sliced `[:i+1]` for point-in-time backtest replay with no lookahead."""
+    direction = np.sign(close.diff()).fillna(0.0)
+    return (direction * volume).cumsum()
+
+
+def rolling_position_in_range(series: pd.Series, window: int) -> pd.Series:
+    """Where the latest value sits within its own trailing `window`-bar
+    min-max range, as a 0 (at the low) to 1 (at the high) fraction. Vectorized
+    (rolling min/max), not a per-bar Python callback, so it stays cheap even
+    over a decade of daily bars."""
+    roll_min = series.rolling(window, min_periods=window).min()
+    roll_max = series.rolling(window, min_periods=window).max()
+    span = roll_max - roll_min
+    return ((series - roll_min) / span.replace(0, np.nan)).clip(0, 1)
+
+
+OBV_DIVERGENCE_WINDOW = 20
+OBV_DIVERGENCE_GAP = 0.35
+
+
+def obv_divergence(close: pd.Series, volume: pd.Series, window: int = OBV_DIVERGENCE_WINDOW) -> str | None:
+    """Wyckoff's "effort vs result", made concrete: compares where price sits in
+    its own trailing range against where On-Balance Volume sits in *its* own
+    trailing range. Both normalized to 0-1 first so this compares relative
+    position, not raw units that aren't otherwise comparable (price vs a
+    cumulative volume count).
+
+    Price near the top of its range while OBV is NOT near the top of its own
+    range means the advance isn't backed by real net buying pressure - a
+    Wyckoff distribution/"upthrust" warning ("bearish"). The mirror case (price
+    near its range low, OBV holding up) reads as quiet accumulation
+    ("bullish") - selling pressure drying up despite the falling price. A
+    modest gap is normal noise; only a gap of `OBV_DIVERGENCE_GAP` or more
+    (calibrated against the factor-ablation study, see
+    `scripts/factor_ablation_study.py`) counts as a real divergence.
+    """
+    if len(close) < window:
+        return None
+    obv_series = obv(close, volume)
+    price_pos = rolling_position_in_range(close, window).iloc[-1]
+    obv_pos = rolling_position_in_range(obv_series, window).iloc[-1]
+    if pd.isna(price_pos) or pd.isna(obv_pos):
+        return None
+    gap = price_pos - obv_pos
+    if gap >= OBV_DIVERGENCE_GAP:
+        return "bearish"
+    if gap <= -OBV_DIVERGENCE_GAP:
+        return "bullish"
+    return None
+
+
 def relative_volume(volume: pd.Series, window: int = 20) -> float | None:
     """Today's volume vs the average of the prior `window` sessions (excluding today)."""
     if len(volume) < window + 1:

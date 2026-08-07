@@ -91,8 +91,9 @@ function RecommendationCard({ recommendation, currency }) {
       </ul>
       <p className="recommendation-card__disclaimer">
         Puntuación transparente basada en reglas técnicas propias (tendencia, fases de Weinstein, Minervini, RS
-        Rating, ADX, RSI, soportes/resistencias, cadena de Markov, volatilidad GARCH). No es asesoramiento
-        financiero.
+        Rating, ADX, RSI, soportes/resistencias, divergencia de volumen OBV, cadena de Markov, volatilidad GARCH,
+        crecimiento y rentabilidad fundamental). Los pesos se calibran contra un estudio de ablación estadístico
+        sobre el universo completo de tickers, no a ojo - ver metodología. No es asesoramiento financiero.
       </p>
     </div>
   )

@@ -276,3 +276,64 @@ def test_minervini_checklist_fails_rs_rating_criterion():
     )
     assert criteria["rs_rating_70_plus"] is False
     assert not all(criteria.values())
+
+
+def test_obv_rises_on_up_days_and_falls_on_down_days():
+    close = pd.Series([100.0, 101.0, 99.0, 102.0])
+    volume = pd.Series([1000.0, 500.0, 300.0, 700.0])
+    result = ta.obv(close, volume)
+    # day0: no prior diff -> 0 contribution; day1 up +500; day2 down -300; day3 up +700
+    assert result.tolist() == pytest.approx([0.0, 500.0, 200.0, 900.0])
+
+
+def test_rolling_position_in_range_at_extremes():
+    series = pd.Series([10.0, 20.0, 15.0, 20.0, 10.0])
+    result = ta.rolling_position_in_range(series, window=5)
+    # last value (10.0) is the min of the whole window -> position 0
+    assert result.iloc[-1] == pytest.approx(0.0)
+
+
+def test_rolling_position_in_range_flat_series_is_nan_span_safe():
+    series = pd.Series([50.0] * 10)
+    result = ta.rolling_position_in_range(series, window=5)
+    # zero span (no range at all) must not raise or produce inf - clipped/NaN-safe
+    assert not np.isinf(result.dropna()).any()
+
+
+def test_obv_divergence_bearish_when_price_leads_obv_at_the_top():
+    # Price grinds to a new range high on mostly-thin volume, with occasional
+    # heavier-volume down days - OBV lags well behind the price high, a
+    # textbook Wyckoff distribution warning.
+    n = 40
+    prices = [100.0]
+    vols = [1000.0]
+    for i in range(1, n):
+        if i % 4 == 0:
+            prices.append(prices[-1] - 0.3)
+            vols.append(3000.0)  # big volume on the down day
+        else:
+            prices.append(prices[-1] + 0.4)
+            vols.append(300.0)  # thin volume on up days
+    close = pd.Series(prices)
+    volume = pd.Series(vols)
+    result = ta.obv_divergence(close, volume, window=20)
+    assert result == "bearish"
+
+
+def test_obv_divergence_none_when_price_and_volume_move_together():
+    n = 40
+    prices = [100.0]
+    vols = [500.0]
+    for _ in range(1, n):
+        prices.append(prices[-1] + 0.5)
+        vols.append(500.0)  # steady volume, no divergence signal either way
+    close = pd.Series(prices)
+    volume = pd.Series(vols)
+    result = ta.obv_divergence(close, volume, window=20)
+    assert result is None
+
+
+def test_obv_divergence_none_when_too_little_history():
+    close = pd.Series([100.0, 101.0, 102.0])
+    volume = pd.Series([500.0, 600.0, 700.0])
+    assert ta.obv_divergence(close, volume, window=20) is None

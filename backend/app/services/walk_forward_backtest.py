@@ -41,7 +41,13 @@ import pandas as pd
 from scipy import stats
 
 from app.services.recommendation_engine import build_recommendation
-from app.services.technical_analysis import classify_stage, classify_trend, detect_recent_cross
+from app.services.technical_analysis import (
+    classify_stage,
+    classify_trend,
+    detect_recent_cross,
+    obv_divergence,
+    rolling_extreme_price,
+)
 
 MIN_OBSERVATIONS = 300
 WARMUP_BARS = 260
@@ -62,11 +68,12 @@ def _replay_verdict_at(
     plus_di: pd.Series,
     minus_di: pd.Series,
     atr14: pd.Series,
+    volume: pd.Series | None = None,
 ) -> str | None:
     """Rebuilds the recommendation verdict using only values knowable at bar
-    `i` - either a scalar reading at `i`, or (for the two functions that need a
-    lookback window, `classify_stage` and `detect_recent_cross`) a slice
-    `[:i+1]`, still using no information beyond bar `i`."""
+    `i` - either a scalar reading at `i`, or (for the functions that need a
+    lookback window - `classify_stage`, `detect_recent_cross`, `obv_divergence`)
+    a slice `[:i+1]`, still using no information beyond bar `i`."""
     price = close.iloc[i]
     s20, s50, s200 = sma20.iloc[i], sma50.iloc[i], sma200.iloc[i]
     if pd.isna(s20) or pd.isna(s50) or pd.isna(s200):
@@ -76,6 +83,23 @@ def _replay_verdict_at(
     s150 = sma150.iloc[i]
     stage = classify_stage(price, sma150.iloc[: i + 1]) if not pd.isna(s150) else None
     ma_cross = detect_recent_cross(sma50.iloc[: i + 1], sma200.iloc[: i + 1])
+    obv_div = obv_divergence(close.iloc[: i + 1], volume.iloc[: i + 1]) if volume is not None else None
+
+    # Unlike the other 7 Minervini criteria (excluded here - they need a
+    # point-in-time RS Rating this replay doesn't have), the 52-week-range
+    # criteria are pure price history and fully causal to compute at any bar.
+    # See recommendation_engine.py's comment on `minervini_range_confirmed`
+    # for why this one is scored independently of the 8/8 gate.
+    price_52w_low = rolling_extreme_price(close.iloc[: i + 1], 252, "low")
+    price_52w_high = rolling_extreme_price(close.iloc[: i + 1], 252, "high")
+    range_confirmed = (
+        price_52w_low is not None
+        and price_52w_low > 0
+        and price >= price_52w_low * 1.25
+        and price_52w_high is not None
+        and price_52w_high > 0
+        and price >= price_52w_high * 0.75
+    )
 
     atr_t = atr14.iloc[i]
     has_atr = not pd.isna(atr_t) and atr_t != 0
@@ -96,6 +120,8 @@ def _replay_verdict_at(
         minervini_pass=False,
         nearest_support=None,
         nearest_resistance=None,
+        minervini_range_confirmed=range_confirmed,
+        obv_divergence=obv_div,
     )
     return rec.verdict
 
@@ -237,6 +263,7 @@ def run_walk_forward_backtest(
     minus_di: pd.Series,
     atr14: pd.Series,
     horizon_days: int = 21,
+    volume: pd.Series | None = None,
 ) -> WalkForwardBacktestResult | None:
     n = len(close)
     if n < MIN_OBSERVATIONS:
@@ -250,7 +277,7 @@ def run_walk_forward_backtest(
     records = []
     for i in indices:
         verdict = _replay_verdict_at(
-            i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14
+            i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, volume
         )
         if verdict is None:
             continue

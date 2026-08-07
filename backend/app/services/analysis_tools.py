@@ -119,6 +119,18 @@ class HistoricalAnalogs:
     avg_forward_return: float
     median_forward_return: float
     win_rate: float
+    # Regime context (None when no VIX history was supplied - see
+    # `regime_matched` below): what the broader market's fear/uncertainty
+    # level actually was at each matched analog, not just this ticker's own
+    # price shape. The closest quantifiable proxy available for "was there a
+    # war/crisis/euphoria at the time" - see module docstring.
+    regime_matched: bool
+    current_vix_level: float | None
+    avg_analog_vix_level: float | None
+    pct_analogs_in_elevated_fear: float | None
+
+
+VIX_ELEVATED_FEAR_LEVEL = 20.0  # matches market_context_service.vix_regime's "miedo elevado" threshold
 
 
 def historical_analogs(
@@ -127,12 +139,27 @@ def historical_analogs(
     forward_horizon: int = 21,
     n_neighbors: int = 15,
     min_gap: int = 30,
+    vix_close: pd.Series | None = None,
 ) -> HistoricalAnalogs | None:
     """Finds the `n_neighbors` historical windows (in this ticker's own price
     history) whose momentum + volatility most resemble right now, and reports the
     distribution of what happened over the following `forward_horizon` days after
     those analogs. `min_gap` excludes the recent tail so "similar to last week"
     doesn't just match last week itself.
+
+    When `vix_close` is supplied (the VIX index's own close series, any date
+    range - it gets aligned to `closes`' index), the match also weighs a third
+    dimension: what the broader market's fear/volatility level actually was at
+    each candidate point, not just this ticker's own momentum/vol shape. Two
+    stocks can have identical price-action fingerprints while one happened
+    during a market-wide panic and the other during calm, untroubled markets -
+    genuinely different contexts that a price-only match can't distinguish.
+    True news-based context (wars, specific macro events) isn't available from
+    this data source, so VIX level is the closest quantifiable, always-on
+    proxy for "how fearful/uncertain was the market" at each historical point -
+    the same proxy `MarketContextService` already uses for the *current*
+    moment, applied retroactively here. Falls back to the plain 2-feature
+    (momentum, volatility) match when `vix_close` isn't supplied.
     """
     n = len(closes)
     if n < lookback + forward_horizon + 252:
@@ -147,21 +174,45 @@ def historical_analogs(
     if pd.isna(current_return) or pd.isna(current_vol):
         return None
 
+    # Gated on the *current* point having a real VIX reading, not just on
+    # vix_close being non-empty: a series that doesn't actually overlap
+    # `closes`' date range (reindex -> all-NaN) must fall back to the plain
+    # 2-feature match rather than filter every single candidate out for
+    # lacking a VIX value it was never going to have.
+    aligned_vix: pd.Series | None = None
+    current_vix_level: float | None = None
+    if vix_close is not None and not vix_close.empty:
+        candidate_vix = vix_close.reindex(closes.index).ffill()
+        if not pd.isna(candidate_vix.iloc[-1]):
+            aligned_vix = candidate_vix
+            current_vix_level = float(candidate_vix.iloc[-1])
+    regime_matched = aligned_vix is not None
+
     last_valid = n - forward_horizon - 1 - min_gap
     start_idx = max(lookback, 20)
-    candidates = [
-        (i, trailing_return.iloc[i], volatility.iloc[i])
-        for i in range(start_idx, last_valid)
-        if not pd.isna(trailing_return.iloc[i]) and not pd.isna(volatility.iloc[i])
-    ]
+    candidates = []
+    for i in range(start_idx, last_valid):
+        ret, vol = trailing_return.iloc[i], volatility.iloc[i]
+        if pd.isna(ret) or pd.isna(vol):
+            continue
+        vix_at_i = aligned_vix.iloc[i] if aligned_vix is not None else None
+        if aligned_vix is not None and pd.isna(vix_at_i):
+            continue
+        candidates.append((i, ret, vol, vix_at_i))
     if len(candidates) < n_neighbors:
         return None
 
-    features = np.array([[c[1], c[2]] for c in candidates])
+    if regime_matched:
+        features = np.array([[c[1], c[2], c[3]] for c in candidates])
+        current_point = np.array([current_return, current_vol, current_vix_level])
+    else:
+        features = np.array([[c[1], c[2]] for c in candidates])
+        current_point = np.array([current_return, current_vol])
+
     mean, std = features.mean(axis=0), features.std(axis=0)
     std[std == 0] = 1.0
     normalized = (features - mean) / std
-    current_normalized = (np.array([current_return, current_vol]) - mean) / std
+    current_normalized = (current_point - mean) / std
 
     distances = np.linalg.norm(normalized - current_normalized, axis=1)
     nearest = np.argsort(distances)[:n_neighbors]
@@ -170,10 +221,21 @@ def historical_analogs(
         [closes.iloc[candidates[j][0] + forward_horizon] / closes.iloc[candidates[j][0]] - 1 for j in nearest]
     )
 
+    avg_analog_vix_level = None
+    pct_analogs_in_elevated_fear = None
+    if regime_matched:
+        analog_vix_levels = np.array([candidates[j][3] for j in nearest])
+        avg_analog_vix_level = float(analog_vix_levels.mean())
+        pct_analogs_in_elevated_fear = float((analog_vix_levels >= VIX_ELEVATED_FEAR_LEVEL).mean())
+
     return HistoricalAnalogs(
         n_analogs=len(forward_returns),
         forward_horizon_days=forward_horizon,
         avg_forward_return=float(forward_returns.mean()),
         median_forward_return=float(np.median(forward_returns)),
         win_rate=float((forward_returns > 0).mean()),
+        regime_matched=regime_matched,
+        current_vix_level=current_vix_level,
+        avg_analog_vix_level=avg_analog_vix_level,
+        pct_analogs_in_elevated_fear=pct_analogs_in_elevated_fear,
     )

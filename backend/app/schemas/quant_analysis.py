@@ -151,6 +151,7 @@ class CoreSignalsResponse(BaseModel):
     support_resistance: list[PriceLevelResponse]
     nearest_support: PriceLevelResponse | None
     nearest_resistance: PriceLevelResponse | None
+    obv_divergence: str | None
     recommendation: RecommendationResponse
     markov: MarkovChainResponse | None
     garch: GarchResponse | None

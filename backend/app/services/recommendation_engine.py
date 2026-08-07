@@ -9,6 +9,43 @@ offered when the verdict is "comprar", and it's built from two ideas at once:
 place it just below the nearest support (a real, technical level), but never
 let the risk exceed a multiple of ATR (a volatility-aware ceiling) even if the
 nearest support is unusually far away.
+
+**Ensemble design - what each factor actually contributes, so they reinforce
+rather than duplicate each other** (audited 2026-08, see
+`docs/quant_methodology.md` for the full writeup):
+
+- Trend/stage/RS/Minervini all touch the same underlying "is this in a
+  confirmed uptrend" fact from different angles. Trend (MA ordering), Stage
+  (Weinstein's slower-moving stage-of-the-cycle read) and RS Rating
+  (cross-sectional strength vs the universe) are kept as independently scored
+  factors because each is genuinely a different *lens* on trend quality.
+  Minervini's 8-point Trend Template is mostly a re-statement of those three
+  (6 of its 8 criteria) - only its 52-week-range-position criteria add new
+  information (a confirmed move, not a dead-cat bounce off the low or one
+  already fully extended off the low). Its point value is deliberately kept
+  small (a confirmation bonus, not another full vote) precisely to avoid one
+  underlying "clean uptrend" fact getting counted four times.
+- ADX/DMI, RSI extremes and the ATR-extension gauge each measure a genuinely
+  different axis (trend *strength/conviction*, momentum *exhaustion*, and
+  *overextension* vs the moving average) that plain trend/stage classification
+  can miss entirely (e.g. a technically-uptrending but choppy, low-ADX stock).
+- OBV divergence is the only volume-based factor - a second, independent data
+  source (participation, not just price) that price-only indicators cannot
+  see by construction (Wyckoff's "effort vs result").
+- Markov/GARCH are statistically gated (a chain forecast is only credited when
+  a runs test says the ticker's own history isn't indistinguishable from
+  noise) - independent of, and structurally different from, the rule-based
+  checklist above.
+- Fundamentals (revenue growth, profit margin, leverage) are the only factors
+  that don't come from price/volume at all - a CANSLIM/quality-factor-style
+  check that a technical setup is backed by a business that's actually
+  growing and solvent, not just a chart pattern.
+
+BUY_THRESHOLD/AVOID_THRESHOLD are first-pass values inherited from before this
+audit; `scripts/factor_ablation_study.py` measures each factor's actual
+marginal forward-return contribution across the full ~217-ticker universe and
+should be re-run (and these thresholds revisited) whenever a factor is added,
+removed, or reweighted - see that script's own docstring for methodology.
 """
 
 from dataclasses import dataclass
@@ -25,6 +62,9 @@ MAX_RESISTANCE_TARGET_DISTANCE = 0.30
 SUPPORT_PROXIMITY = 0.03
 MARKOV_BULLISH_THRESHOLD = 0.55
 MARKOV_BEARISH_THRESHOLD = 0.45
+REVENUE_GROWTH_STRONG = 0.15
+PROFIT_MARGIN_HEALTHY = 0.15
+DEBT_TO_EQUITY_HIGH = 200.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,8 +100,13 @@ def build_recommendation(
     minervini_pass: bool,
     nearest_support: PriceLevel | None,
     nearest_resistance: PriceLevel | None,
+    minervini_range_confirmed: bool = False,
     markov: MarkovChainResult | None = None,
     garch: GarchResult | None = None,
+    obv_divergence: str | None = None,
+    revenue_growth: float | None = None,
+    profit_margins: float | None = None,
+    debt_to_equity: float | None = None,
 ) -> Recommendation:
     factors: list[RecommendationFactor] = []
 
@@ -77,7 +122,31 @@ def build_recommendation(
     add("Tendencia bajista - evitar entradas largas", -3, trend == TrendState.DOWNTREND)
     add("Fase 2 de Weinstein (avance)", 2, stage == Stage.STAGE_2)
     add("Fase 4 de Weinstein (declive)", -3, stage == Stage.STAGE_4)
-    add("Cumple el Trend Template de Minervini (8/8)", 2, minervini_pass)
+    # Kept at +1, not +2: 6 of its 8 criteria already re-state trend/stage/RS,
+    # already scored above - this is a small confirmation bonus for passing
+    # ALL 8 gates simultaneously (multi-confirmation has some ensemble value
+    # even when individual pieces overlap), not a second full vote for the
+    # same underlying "clean uptrend" fact. See module docstring.
+    add("Cumple el Trend Template de Minervini (8/8)", 1, minervini_pass)
+    # Scored *independently* of the 8/8 AND-gate above, and weighted higher:
+    # scripts/factor_ablation_study.py, run cross-sectionally over ~217
+    # tickers x 10 years (2026-08), found this specific criterion - price 25%+
+    # above its 52-week low AND within 25% of its 52-week high, i.e. a
+    # confirmed move, neither a dead-cat bounce off the low nor one already
+    # fully extended off it - to be the single most robustly validated factor
+    # in the entire checklist: significant (p<0.01, permutation test) and
+    # correctly-signed at BOTH a 3-month (+1.04pp) and 6-month (+2.67pp)
+    # forward-return horizon, the only factor to clear that bar at either
+    # horizon. Gating it behind Minervini's other 7 criteria (as the 8/8
+    # bonus above does) would silently zero out this validated edge for any
+    # stock that fails just one unrelated criterion (e.g. RS Rating 65 vs the
+    # required 70) - seeing this file? recompute this study before trusting
+    # this weight blindly on a materially different universe/period.
+    add(
+        "Movimiento confirmado: precio 25%+ sobre su mínimo anual y dentro del 25% de su máximo anual",
+        2,
+        minervini_range_confirmed,
+    )
     add("Golden cross reciente (MA50/MA200)", 1, ma_cross == "golden")
     add("Death cross reciente (MA50/MA200)", -2, ma_cross == "death")
     add("RS Rating alto (≥ 80): líder de mercado", 2, rs_rating is not None and rs_rating >= 80)
@@ -102,6 +171,50 @@ def build_recommendation(
 
     high_vol_regime = garch is not None and garch.regime == "alta"
     add("Volatilidad condicional elevada (GARCH, percentil ≥75 de su propio historial)", -1, high_vol_regime)
+
+    # Wyckoff "effort vs result": price near a range high/low without real
+    # volume behind it - the only participation-based (not price-derived)
+    # factor in the checklist. See `technical_analysis.obv_divergence`.
+    add(
+        "Divergencia bajista de volumen (OBV): el avance no está respaldado por compras reales",
+        -2,
+        obv_divergence == "bearish",
+    )
+    add(
+        "Divergencia alcista de volumen (OBV): la presión vendedora se agota pese a la caída de precio",
+        1,
+        obv_divergence == "bullish",
+    )
+
+    # Fundamentals: the only non-price/volume factors. Kept optional (None by
+    # default) and deliberately NOT wired into the portfolio-risk/premium-
+    # watchlist hot paths (see ticker_analysis_service.py) - an extra
+    # per-ticker network call there re-introduces exactly the N-ticker
+    # latency problem already found and fixed once in production (see
+    # PortfolioRiskService's docstring). Only the single-ticker "Analizar
+    # activo" deep dive, which already pays for a fundamentals fetch, feeds
+    # these in.
+    add(
+        "Crecimiento de ingresos sólido (≥15% interanual)",
+        1,
+        revenue_growth is not None and revenue_growth >= REVENUE_GROWTH_STRONG,
+    )
+    add(
+        "Ingresos en contracción (crecimiento interanual negativo)",
+        -1,
+        revenue_growth is not None and revenue_growth < 0,
+    )
+    add(
+        "Margen neto saludable (≥15%)",
+        1,
+        profit_margins is not None and profit_margins >= PROFIT_MARGIN_HEALTHY,
+    )
+    add("Empresa no rentable (margen neto negativo)", -1, profit_margins is not None and profit_margins < 0)
+    add(
+        "Apalancamiento elevado (deuda/patrimonio > 200%)",
+        -1,
+        debt_to_equity is not None and debt_to_equity > DEBT_TO_EQUITY_HIGH,
+    )
 
     score = sum(f.points for f in factors)
 

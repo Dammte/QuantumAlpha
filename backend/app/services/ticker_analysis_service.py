@@ -15,6 +15,18 @@ analysis "Analizar activo" would - not a cheaper approximation of it - which is
 the whole point of both features: a ticker is never called "premium" or a
 holding never flagged "sell" on a different, laxer basis than what you'd see by
 searching it directly.
+
+One deliberate, documented exception: the recommendation engine's fundamentals
+factor (revenue growth, profit margin, leverage - see `recommendation_engine.py`)
+needs a `TickerInfo.info()` call per ticker, which is exactly the N-extra-calls
+cost that made the portfolio-risk endpoint hang in production once already (see
+`PortfolioRiskService`'s docstring). `compute_core_signals()` accepts
+`revenue_growth`/`profit_margins`/`debt_to_equity` as optional pre-fetched
+inputs (default None, contributing nothing) rather than fetching them itself -
+only `TickerAnalysisService.analyze()`, which already pays for a fundamentals
+fetch for the info card, passes them in. Volume/OBV divergence has no such
+cost (it's derived from the same OHLCV frame every caller already has) and is
+always computed for everyone.
 """
 
 from dataclasses import dataclass
@@ -28,7 +40,7 @@ from app.services import technical_analysis as ta
 from app.services.kelly_criterion import KellyResult, recommend_position_size, win_probability_from_barriers
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
-from app.services.market_universe import benchmark_for_ticker
+from app.services.market_universe import VIX_TICKER, benchmark_for_ticker
 from app.services.markov_chain_model import MarkovChainResult, analyze_markov_chain
 from app.services.monte_carlo_simulation import MonteCarloResult, simulate_and_analyze
 from app.services.recommendation_engine import Recommendation, build_recommendation
@@ -92,6 +104,7 @@ class CoreTickerSignals:
     support_resistance: list[ta.PriceLevel]
     nearest_support: ta.PriceLevel | None
     nearest_resistance: ta.PriceLevel | None
+    obv_divergence: str | None
     recommendation: Recommendation
     markov: MarkovChainResult | None
     garch: GarchResult | None
@@ -127,6 +140,9 @@ def compute_core_signals(
     benchmark_close: pd.Series | None,
     rs_rating: int | None,
     horizon: str = DEFAULT_HORIZON,
+    revenue_growth: float | None = None,
+    profit_margins: float | None = None,
+    debt_to_equity: float | None = None,
 ) -> CoreTickerSignals | None:
     if len(close) < MIN_BARS_REQUIRED:
         return None
@@ -149,8 +165,29 @@ def compute_core_signals(
     returns = close.pct_change()
     garch = fit_garch(returns)
     markov = analyze_markov_chain(returns)
+    # horizon_days matches the same 1m/3m/6m horizon already selected for the
+    # Monte Carlo simulation (mc_days), not the module's own 21-day default.
+    # scripts/factor_ablation_study.py (2026-08, ~217 tickers x 10y) found
+    # trend/stage/momentum factors show short-term *mean reversion* at 21
+    # trading days - the reversal zone documented since Jegadeesh (1990) - and
+    # only become directionally consistent with their intended
+    # trend-following read at 63/126 days, matching the classic
+    # Jegadeesh-Titman (1993) 3-12 month momentum window. Backtesting this
+    # system's trend-following verdicts at a horizon shorter than its own
+    # design intent would understate (or invert) its real edge.
     backtest = run_walk_forward_backtest(
-        close, sma20_s, sma50_s, sma150_s, sma200_s, rsi_s, adx_s, plus_di_s, minus_di_s, atr_s
+        close,
+        sma20_s,
+        sma50_s,
+        sma150_s,
+        sma200_s,
+        rsi_s,
+        adx_s,
+        plus_di_s,
+        minus_di_s,
+        atr_s,
+        horizon_days=mc_days,
+        volume=volume,
     )
 
     sma20, sma50, sma150, sma200 = _last(sma20_s), _last(sma50_s), _last(sma150_s), _last(sma200_s)
@@ -174,10 +211,20 @@ def compute_core_signals(
     )
     minervini_score = sum(criteria.values())
     minervini_pass = all(criteria.values())
+    # Scored independently in the recommendation engine - see its comment on
+    # `minervini_range_confirmed` for why this specific pair of criteria is
+    # pulled out of the 8/8 AND-gate rather than only counted as part of it.
+    minervini_range_confirmed = (
+        criteria["price_25pct_above_52w_low"] and criteria["price_within_25pct_of_52w_high"]
+    )
 
     levels = ta.support_resistance_levels(high, low, close)
     nearest_support = _nearest_level(levels, "support")
     nearest_resistance = _nearest_level(levels, "resistance")
+
+    # Free (same OHLCV frame every caller already has) - computed for everyone,
+    # unlike fundamentals below. See module docstring.
+    obv_div = ta.obv_divergence(close, volume)
 
     recommendation = build_recommendation(
         price=price,
@@ -194,8 +241,13 @@ def compute_core_signals(
         minervini_pass=minervini_pass,
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
+        minervini_range_confirmed=minervini_range_confirmed,
         markov=markov,
         garch=garch,
+        obv_divergence=obv_div,
+        revenue_growth=revenue_growth,
+        profit_margins=profit_margins,
+        debt_to_equity=debt_to_equity,
     )
 
     monte_carlo = simulate_and_analyze(
@@ -258,6 +310,7 @@ def compute_core_signals(
         support_resistance=levels,
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
+        obv_divergence=obv_div,
         recommendation=recommendation,
         markov=markov,
         garch=garch,
@@ -291,18 +344,40 @@ class TickerAnalysisService:
         # Benchmarked against the S&P 500 or STOXX Europe 600 depending on which
         # market the ticker actually trades in - comparing a European stock's
         # relative strength to the wrong benchmark would misread it entirely.
+        # VIX rides along in the same batched call (free - yfinance downloads
+        # all three in one request) so historical_analogs() can match on the
+        # market's fear/volatility regime at each candidate point, not just
+        # this ticker's own price shape.
         benchmark_ticker = benchmark_for_ticker(ticker)
-        ohlcv = self.market_data.get_bulk_ohlcv([ticker, benchmark_ticker], start, end)
+        ohlcv = self.market_data.get_bulk_ohlcv([ticker, benchmark_ticker, VIX_TICKER], start, end)
         df = ohlcv.get(ticker)
         if df is None or len(df) < MIN_BARS_REQUIRED:
             raise ValueError(f"No hay suficientes datos de precio para {ticker}")
 
         benchmark_df = ohlcv.get(benchmark_ticker)
         benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
+        vix_df = ohlcv.get(VIX_TICKER)
+        vix_close = vix_df["close"] if vix_df is not None else None
 
         close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
         rs_rating = self._rs_rating_for(ticker)
-        core = compute_core_signals(close, high, low, volume, benchmark_close, rs_rating, horizon)
+        # Fetched here (not after, as it used to be) so the fundamentals factor
+        # can actually feed into the recommendation - this is the one path that
+        # supplies it, see compute_core_signals()'s docstring for why the other
+        # two callers (portfolio risk, premium watchlist) deliberately don't.
+        info = self.market_data.get_ticker_info(ticker)
+        core = compute_core_signals(
+            close,
+            high,
+            low,
+            volume,
+            benchmark_close,
+            rs_rating,
+            horizon,
+            revenue_growth=info.revenue_growth if info else None,
+            profit_margins=info.profit_margins if info else None,
+            debt_to_equity=info.debt_to_equity if info else None,
+        )
         if core is None:
             raise ValueError(f"No hay suficientes datos de precio para {ticker}")
 
@@ -348,11 +423,10 @@ class TickerAnalysisService:
             for ts, row in chart_slice.iterrows()
         ]
 
-        info = self.market_data.get_ticker_info(ticker)
         news = self.market_data.get_ticker_news(ticker)
         holders = self.market_data.get_holders(ticker)
         seasonality = at.seasonality_by_month(close)
-        historical_analogs = at.historical_analogs(close)
+        historical_analogs = at.historical_analogs(close, vix_close=vix_close)
 
         return TickerAnalysis(
             ticker=ticker,
@@ -393,6 +467,7 @@ class TickerAnalysisService:
             minervini_score=core.minervini_score,
             minervini_pass=core.minervini_pass,
             support_resistance=core.support_resistance,
+            obv_divergence=core.obv_divergence,
             price_history=price_history,
             news=news,
             fundamentals=info,

@@ -45,6 +45,42 @@ def test_replay_verdict_none_before_smas_are_valid():
     assert verdict is None
 
 
+def test_replay_verdict_works_without_volume_backward_compatible():
+    # volume is optional (defaults to None) precisely so existing callers/tests
+    # that don't pass it keep working unchanged.
+    close = _synthetic_regime_series(n=400)
+    bundle = _indicator_bundle(close)
+    verdict = wf._replay_verdict_at(300, **bundle)
+    assert verdict in ("comprar", "esperar", "evitar")
+
+
+def test_replay_verdict_incorporates_minervini_range_confirmation():
+    # A steady climb from a clear base gives a bar deep in "confirmed range"
+    # territory (>=25% above its 52w low, within 25% of its 52w high) well
+    # before the series ends - this must not crash and must still return a
+    # valid verdict once the range-confirmation replay logic is wired in.
+    close = _synthetic_regime_series(n=800, block=800)  # one long uptrend block
+    bundle = _indicator_bundle(close)
+    verdict = wf._replay_verdict_at(700, **bundle)
+    assert verdict in ("comprar", "esperar", "evitar")
+
+
+def test_replay_verdict_incorporates_obv_divergence_when_volume_given():
+    close = _synthetic_regime_series(n=400)
+    bundle = _indicator_bundle(close)
+    flat_volume = pd.Series([1000.0] * len(close))
+    # Same price path, only volume differs - a real point-in-time OBV
+    # divergence read requires actual volume data, not a placeholder.
+    with_volume = wf._replay_verdict_at(300, **bundle, volume=flat_volume)
+    without_volume = wf._replay_verdict_at(300, **bundle)
+    # A perfectly flat volume series produces no divergence signal either way
+    # (OBV moves in lockstep with price direction, same relative position) -
+    # this asserts the plumbing runs without error and returns a valid verdict,
+    # not a specific different outcome.
+    assert with_volume in ("comprar", "esperar", "evitar")
+    assert without_volume in ("comprar", "esperar", "evitar")
+
+
 def test_run_walk_forward_backtest_none_for_insufficient_history():
     close = pd.Series(np.linspace(100, 110, 100))
     bundle = _indicator_bundle(close)
