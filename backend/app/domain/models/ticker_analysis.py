@@ -7,6 +7,7 @@ from app.services.kelly_criterion import KellyResult
 from app.services.markov_chain_model import MarkovChainResult
 from app.services.monte_carlo_simulation import MonteCarloResult
 from app.services.recommendation_engine import Recommendation
+from app.services.statistical_structure import StatisticalStructure
 from app.services.technical_analysis import PriceLevel, Stage, TrendState
 from app.services.volatility_model import GarchResult
 from app.services.walk_forward_backtest import WalkForwardBacktestResult
@@ -75,6 +76,10 @@ class TickerAnalysis:
     minervini_pass: bool
     support_resistance: list[PriceLevel]
     obv_divergence: str | None
+    statistical_structure: StatisticalStructure | None
+    market_trend: TrendState | None  # informational only - see recommendation_engine.py docstring
+    vix_regime: str | None  # informational only - see recommendation_engine.py docstring
+    is_intraday_snapshot: bool
     price_history: list[PricePoint]
     news: list[NewsArticle]
     fundamentals: TickerInfo | None

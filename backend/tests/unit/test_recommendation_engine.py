@@ -384,3 +384,86 @@ def test_all_new_factors_combine_additively_without_interfering():
         debt_to_equity=80.0,
     )
     assert rec.score == 3  # +1 obv, +1 growth, +1 margin, +0 leverage (below threshold)
+
+
+def test_build_recommendation_has_no_market_regime_params():
+    # Regression guard for a deliberate reversal, not an oversight: an earlier
+    # version of this audit scored a benchmark-below-SMA200 / VIX-panic
+    # penalty here. scripts/factor_ablation_study.py tested it and found the
+    # *opposite* sign, significant after Benjamini-Hochberg correction at
+    # both 21d and 126d horizons - so it was removed from scoring rather than
+    # kept on the strength of the citation alone. See the module docstring
+    # and docs/quant_methodology.md. market_regime_inputs()/vix_regime() in
+    # technical_analysis.py still exist for MarketContextService and the
+    # ablation study; this just asserts they're not silently reintroduced
+    # here without a fresh evidence-based decision.
+    import inspect
+
+    params = inspect.signature(re.build_recommendation).parameters
+    assert "market_trend" not in params
+    assert "vix_regime" not in params
+
+
+def test_overbought_not_penalized_inside_a_strong_confirmed_uptrend():
+    # An external audit correctly flagged this exact conflict: penalizing RSI
+    # overbought unconditionally fights the trend factors in a genuinely
+    # strong, ADX-confirmed uptrend, where staying "overbought" for weeks is
+    # normal and healthy, not a warning sign.
+    rec = re.build_recommendation(
+        price=100.0,
+        trend=TrendState.UPTREND,
+        stage=None,
+        ma_cross=None,
+        rsi14=85.0,
+        adx14=30.0,
+        plus_di=25.0,
+        minus_di=10.0,
+        atr14=2.0,
+        atr_multiple=0.5,
+        rs_rating=None,
+        minervini_pass=False,
+        nearest_support=None,
+        nearest_resistance=None,
+    )
+    assert not any("Sobrecompra" in f.label for f in rec.factors if f.triggered)
+
+
+def test_overbought_still_penalized_outside_a_strong_trend():
+    rec = re.build_recommendation(**{**_neutral_kwargs(), "rsi14": 85.0})
+    labels = {f.label for f in rec.factors if f.triggered}
+    assert any("Sobrecompra" in label for label in labels)
+    assert rec.score == -1
+
+
+def test_mean_reverting_structure_subtracts_a_point():
+    rec = re.build_recommendation(**_neutral_kwargs(), mean_reverting_structure=True)
+    assert rec.score == -1
+    labels = {f.label for f in rec.factors if f.triggered}
+    assert any("reversión a la media" in label for label in labels)
+
+
+def test_mean_reverting_structure_false_by_default():
+    rec = re.build_recommendation(**_neutral_kwargs())
+    assert rec.score == 0
+
+
+def test_overbought_still_penalized_in_a_weak_uptrend_without_strong_adx():
+    # Uptrend by MA alignment, but ADX doesn't confirm strength - RSI 85 here
+    # is still flagged, unlike the strong-trend case above.
+    rec = re.build_recommendation(
+        price=100.0,
+        trend=TrendState.UPTREND,
+        stage=None,
+        ma_cross=None,
+        rsi14=85.0,
+        adx14=15.0,
+        plus_di=18.0,
+        minus_di=17.0,
+        atr14=2.0,
+        atr_multiple=0.5,
+        rs_rating=None,
+        minervini_pass=False,
+        nearest_support=None,
+        nearest_resistance=None,
+    )
+    assert any("Sobrecompra" in f.label for f in rec.factors if f.triggered)

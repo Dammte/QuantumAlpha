@@ -32,6 +32,7 @@ def _core_signals_to_response(signals: CoreTickerSignals) -> CoreSignalsResponse
     data = asdict(signals)
     data["trend"] = signals.trend.value
     data["stage"] = signals.stage.value if signals.stage else None
+    data["market_trend"] = signals.market_trend.value if signals.market_trend else None
     return CoreSignalsResponse(**data)
 
 

@@ -36,6 +36,7 @@ import pandas as pd
 
 from app.domain.models.ticker_analysis import PricePoint, TickerAnalysis
 from app.services import analysis_tools as at
+from app.services import statistical_structure as stats_structure
 from app.services import technical_analysis as ta
 from app.services.kelly_criterion import KellyResult, recommend_position_size, win_probability_from_barriers
 from app.services.market_data_service import MarketDataService
@@ -44,6 +45,7 @@ from app.services.market_universe import VIX_TICKER, benchmark_for_ticker
 from app.services.markov_chain_model import MarkovChainResult, analyze_markov_chain
 from app.services.monte_carlo_simulation import MonteCarloResult, simulate_and_analyze
 from app.services.recommendation_engine import Recommendation, build_recommendation
+from app.services.statistical_structure import StatisticalStructure, compute_statistical_structure
 from app.services.volatility_model import GarchResult, fit_garch
 from app.services.walk_forward_backtest import WalkForwardBacktestResult, run_walk_forward_backtest
 
@@ -105,6 +107,10 @@ class CoreTickerSignals:
     nearest_support: ta.PriceLevel | None
     nearest_resistance: ta.PriceLevel | None
     obv_divergence: str | None
+    statistical_structure: StatisticalStructure | None
+    market_trend: ta.TrendState | None  # informational only - see recommendation_engine.py docstring
+    vix_regime: str | None  # informational only - see recommendation_engine.py docstring
+    is_intraday_snapshot: bool
     recommendation: Recommendation
     markov: MarkovChainResult | None
     garch: GarchResult | None
@@ -143,6 +149,7 @@ def compute_core_signals(
     revenue_growth: float | None = None,
     profit_margins: float | None = None,
     debt_to_equity: float | None = None,
+    vix_close: pd.Series | None = None,
 ) -> CoreTickerSignals | None:
     if len(close) < MIN_BARS_REQUIRED:
         return None
@@ -151,6 +158,18 @@ def compute_core_signals(
         horizon, MONTE_CARLO_HORIZON_PRESETS[DEFAULT_HORIZON]
     )
     price = float(close.iloc[-1])
+    # yfinance includes today's bar as soon as the session opens, with a
+    # "close" that's really just the latest traded price, not a confirmed
+    # settlement - every indicator/verdict reading here is real-time, not
+    # repainting after the fact, but this flag lets the caller disclose that
+    # today's numbers can still move before the actual close (an external
+    # audit's "no evalúes sobre velas no cerradas" concern, addressed as
+    # transparency rather than by discarding same-day data - a swing trader
+    # checking mid-session wants the live read, not yesterday's stale one).
+    last_bar_date = close.index[-1]
+    is_intraday_snapshot = bool(
+        hasattr(last_bar_date, "date") and last_bar_date.date() == date.today()
+    )
 
     sma20_s = ta.sma(close, 20)
     sma50_s = ta.sma(close, 50)
@@ -225,6 +244,12 @@ def compute_core_signals(
     # Free (same OHLCV frame every caller already has) - computed for everyone,
     # unlike fundamentals below. See module docstring.
     obv_div = ta.obv_divergence(close, volume)
+    # Informational only (see recommendation_engine.py's docstring for why
+    # this isn't scored): the benchmark/VIX regime at the moment of analysis,
+    # surfaced for context but not fed into the verdict.
+    market_trend, vix_regime_label = ta.market_regime_inputs(benchmark_close, vix_close)
+    structure = compute_statistical_structure(close)
+    mean_reverting_structure = structure.regime == stats_structure.REGIME_MEAN_REVERTING
 
     recommendation = build_recommendation(
         price=price,
@@ -248,6 +273,7 @@ def compute_core_signals(
         revenue_growth=revenue_growth,
         profit_margins=profit_margins,
         debt_to_equity=debt_to_equity,
+        mean_reverting_structure=mean_reverting_structure,
     )
 
     monte_carlo = simulate_and_analyze(
@@ -311,6 +337,10 @@ def compute_core_signals(
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
         obv_divergence=obv_div,
+        statistical_structure=structure,
+        market_trend=market_trend,
+        vix_regime=vix_regime_label,
+        is_intraday_snapshot=is_intraday_snapshot,
         recommendation=recommendation,
         markov=markov,
         garch=garch,
@@ -377,6 +407,7 @@ class TickerAnalysisService:
             revenue_growth=info.revenue_growth if info else None,
             profit_margins=info.profit_margins if info else None,
             debt_to_equity=info.debt_to_equity if info else None,
+            vix_close=vix_close,
         )
         if core is None:
             raise ValueError(f"No hay suficientes datos de precio para {ticker}")
@@ -468,6 +499,10 @@ class TickerAnalysisService:
             minervini_pass=core.minervini_pass,
             support_resistance=core.support_resistance,
             obv_divergence=core.obv_divergence,
+            statistical_structure=core.statistical_structure,
+            market_trend=core.market_trend,
+            vix_regime=core.vix_regime,
+            is_intraday_snapshot=core.is_intraday_snapshot,
             price_history=price_history,
             news=news,
             fundamentals=info,

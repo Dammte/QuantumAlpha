@@ -93,3 +93,52 @@ def test_ticker_analysis_buy_verdict_includes_stop_loss(client: TestClient) -> N
         if body["recommendation"]["verdict"] == "comprar":
             assert body["recommendation"]["stop_loss"] is not None
             assert body["recommendation"]["stop_loss"] < body["price"]
+
+
+def test_ticker_analysis_includes_statistical_structure_and_regime_context(client: TestClient) -> None:
+    body = client.get("/api/v1/market/tickers/AAPL/analysis").json()
+    # These may legitimately be null (e.g. insufficient history for Hurst/ADF,
+    # or no benchmark data) - the point is the keys exist and are well-formed
+    # when present, not that they're always non-null against fake data.
+    assert "statistical_structure" in body
+    assert "market_trend" in body
+    assert "vix_regime" in body
+    assert "is_intraday_snapshot" in body
+    assert isinstance(body["is_intraday_snapshot"], bool)
+    structure = body["statistical_structure"]
+    if structure is not None:
+        assert structure["regime"] in {"tendencial", "reversion", "aleatorio", "desconocido"}
+
+
+def test_ticker_analysis_persists_a_recommendation_snapshot(client: TestClient) -> None:
+    client.get("/api/v1/market/tickers/AAPL/analysis")
+    response = client.get("/api/v1/market/tickers/AAPL/history")
+    assert response.status_code == 200
+    history = response.json()
+    assert len(history) >= 1
+    latest = history[0]
+    assert latest["ticker"] == "AAPL"
+    assert latest["verdict"] in {"comprar", "esperar", "evitar"}
+    assert latest["horizon"] == "3m"
+    assert latest["engine_version"]
+    assert len(latest["factors"]) > 0
+    assert {"label", "points", "triggered"} <= latest["factors"][0].keys()
+
+
+def test_ticker_analysis_history_is_most_recent_first_and_ticker_scoped(client: TestClient) -> None:
+    client.get("/api/v1/market/tickers/MSFT/analysis?horizon=1m")
+    client.get("/api/v1/market/tickers/MSFT/analysis?horizon=6m")
+
+    history = client.get("/api/v1/market/tickers/MSFT/history").json()
+    assert len(history) >= 2
+    assert all(h["ticker"] == "MSFT" for h in history)
+    # Most recent call (horizon=6m) must come first.
+    assert history[0]["horizon"] == "6m"
+    timestamps = [h["created_at"] for h in history]
+    assert timestamps == sorted(timestamps, reverse=True)
+
+
+def test_ticker_analysis_history_empty_for_a_ticker_never_analyzed(client: TestClient) -> None:
+    response = client.get("/api/v1/market/tickers/NEVERSEEN/history")
+    assert response.status_code == 200
+    assert response.json() == []

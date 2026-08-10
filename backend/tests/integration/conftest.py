@@ -8,7 +8,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.deps import get_asset_repository, get_market_data_provider, get_portfolio_repository
+from app.api.deps import (
+    get_asset_repository,
+    get_market_data_provider,
+    get_portfolio_repository,
+    get_recommendation_snapshot_repository,
+)
 from app.domain.interfaces.market_data_provider import MarketDataProvider
 from app.domain.models.price_bar import PriceBar
 from app.domain.models.price_quote import PriceQuote
@@ -16,6 +21,7 @@ from app.domain.models.ticker_info import HoldersSummary, InstitutionalHolder, N
 from app.infrastructure.db import models  # noqa: F401 - registers ORM tables on Base.metadata
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
+from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
 from app.infrastructure.db.session import Base
 from app.main import app
 
@@ -145,6 +151,9 @@ def db_session(engine) -> Generator[Session, None, None]:
 def client(db_session: Session) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_portfolio_repository] = lambda: PortfolioRepository(db_session)
     app.dependency_overrides[get_asset_repository] = lambda: AssetRepository(db_session)
+    app.dependency_overrides[get_recommendation_snapshot_repository] = lambda: RecommendationSnapshotRepository(
+        db_session
+    )
     app.dependency_overrides[get_market_data_provider] = lambda: FakeMarketDataProvider()
     with TestClient(app) as test_client:
         yield test_client

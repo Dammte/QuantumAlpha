@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -9,6 +9,7 @@ from app.schemas.quant_analysis import (
     MarkovChainResponse,
     MonteCarloResponse,
     RecommendationResponse,
+    StatisticalStructureResponse,
     WalkForwardBacktestResponse,
 )
 
@@ -93,6 +94,25 @@ class HistoricalAnalogsResponse(BaseModel):
     pct_analogs_in_elevated_fear: float | None
 
 
+class RecommendationSnapshotFactorResponse(BaseModel):
+    label: str
+    points: int
+    triggered: bool
+
+
+class RecommendationSnapshotResponse(BaseModel):
+    id: int
+    ticker: str
+    created_at: datetime
+    verdict: str
+    score: int
+    price: float
+    currency: str
+    horizon: str
+    engine_version: str
+    factors: list[RecommendationSnapshotFactorResponse]
+
+
 class TickerAnalysisResponse(BaseModel):
     ticker: str
     name: str | None
@@ -133,6 +153,10 @@ class TickerAnalysisResponse(BaseModel):
     minervini_pass: bool
     support_resistance: list[PriceLevelResponse]
     obv_divergence: str | None
+    statistical_structure: StatisticalStructureResponse | None
+    market_trend: str | None
+    vix_regime: str | None
+    is_intraday_snapshot: bool
     price_history: list[PricePointResponse]
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None

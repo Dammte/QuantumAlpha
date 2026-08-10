@@ -40,6 +40,35 @@ rather than duplicate each other** (audited 2026-08, see
   that don't come from price/volume at all - a CANSLIM/quality-factor-style
   check that a technical setup is backed by a business that's actually
   growing and solvent, not just a chart pattern.
+- Market regime (benchmark below its own 200-day SMA, VIX in panic/crisis) was
+  tried and deliberately walked back, not shipped: an external audit correctly
+  pointed out this was computed for the "Contexto" dashboard but never reached
+  individual-ticker verdicts, and Meb Faber's tactical SMA-200 filter plus a
+  VIX stress gate looked like an obvious, well-cited fix. `scripts/
+  factor_ablation_study.py` tested it anyway rather than trusting the
+  citation - and at 21/126-day horizons, on this ~217-ticker universe, buying
+  *into* a benchmark-below-SMA200 or VIX-panic reading was followed by
+  **better** forward returns, not worse (p<0.01 after Benjamini-Hochberg
+  correction, both horizons) - a "buy the fear" pattern in an already-curated
+  quality universe, not the multi-year bear-market avoidance Faber's own
+  research measures (a structurally different, longer-horizon claim his
+  filter was never tested against here). Confident enough that the assumed
+  direction was wrong, not confident enough in the opposite direction to
+  score it either (one 10-year sample dominated by a couple of sharp V-shaped
+  recoveries is thin evidence for a contrarian bet) - so it isn't scored at
+  all. `technical_analysis.market_regime_inputs()` and `vix_regime()` still
+  exist and are still used by `MarketContextService` and the ablation study;
+  they're just not wired into this function anymore. See
+  `docs/quant_methodology.md` for the full writeup.
+- Mean-reverting price structure (Hurst exponent < 0.45, see
+  `statistical_structure.py`) is a one-directional caution flag, not a
+  bullish/bearish vote: this checklist is fundamentally trend-following
+  (trend, stage, RS, Minervini all reward persistence), and a ticker whose
+  own decade-long history shows genuine anti-persistence (an up move
+  statistically tends to reverse, not continue) means those specific factors
+  carry less real edge on this name specifically - worth a small penalty to
+  reflect lower confidence, not worth inventing a symmetric "trending bonus"
+  that would just double-count trend/stage from yet another angle.
 
 BUY_THRESHOLD/AVOID_THRESHOLD are first-pass values inherited from before this
 audit; `scripts/factor_ablation_study.py` measures each factor's actual
@@ -53,6 +82,12 @@ from dataclasses import dataclass
 from app.services.markov_chain_model import MarkovChainResult
 from app.services.technical_analysis import PriceLevel, Stage, TrendState
 from app.services.volatility_model import GarchResult
+
+# Bumped whenever the factor list or a weight changes materially - stamped
+# onto every persisted RecommendationSnapshotORM row (see models.py) so a
+# past verdict can always be traced back to the exact scoring logic that
+# produced it, not just "some earlier version of the app".
+ENGINE_VERSION = "2026-08-audit-v2"
 
 BUY_THRESHOLD = 5
 AVOID_THRESHOLD = -3
@@ -107,6 +142,7 @@ def build_recommendation(
     revenue_growth: float | None = None,
     profit_margins: float | None = None,
     debt_to_equity: float | None = None,
+    mean_reverting_structure: bool = False,
 ) -> Recommendation:
     factors: list[RecommendationFactor] = []
 
@@ -153,7 +189,21 @@ def build_recommendation(
     add("RS Rating bajo (< 30): rezagado", -1, rs_rating is not None and rs_rating < 30)
     add("Tendencia fuerte y confirmada (ADX ≥ 25, +DI > -DI)", 1, strong_trend)
     add("Rebotando en un soporte cercano", 1, near_support and trend == TrendState.UPTREND)
-    add("Sobrecompra extrema (RSI ≥ 80)", -1, rsi14 is not None and rsi14 >= 80)
+    # Only a caution flag outside a strong, ADX-confirmed uptrend: in a
+    # genuinely strong trend RSI can (and often should) stay pinned above 80
+    # for weeks while the trend keeps running - penalizing that unconditionally
+    # fights the trend factors above rather than complementing them. An
+    # external audit correctly flagged this exact conflict (trend-followers vs
+    # oscillators disagreeing by construction) as the kind of thing a naive
+    # multi-indicator checklist gets wrong.
+    overbought_outside_strong_trend = (
+        rsi14 is not None and rsi14 >= 80 and not (trend == TrendState.UPTREND and strong_trend)
+    )
+    add(
+        "Sobrecompra extrema (RSI ≥ 80) fuera de una tendencia fuerte confirmada",
+        -1,
+        overbought_outside_strong_trend,
+    )
     oversold_bounce = rsi14 is not None and rsi14 <= 30 and trend != TrendState.DOWNTREND
     add("Sobreventa (RSI ≤ 30): posible rebote técnico", 1, oversold_bounce)
     parabolic = atr_multiple is not None and atr_multiple > 4
@@ -214,6 +264,17 @@ def build_recommendation(
         "Apalancamiento elevado (deuda/patrimonio > 200%)",
         -1,
         debt_to_equity is not None and debt_to_equity > DEBT_TO_EQUITY_HIGH,
+    )
+
+    # One-directional: only softens confidence in the trend-following factors
+    # above when this ticker's own history genuinely doesn't behave that way
+    # (Hurst < 0.45) - no symmetric bonus for a trending reading, since that
+    # would just re-reward trend/stage from another angle. See module docstring.
+    add(
+        "Estructura de precio con reversión a la media (Hurst < 0.45): las señales de tendencia son "
+        "menos fiables en este activo específico",
+        -1,
+        mean_reverting_structure,
     )
 
     score = sum(f.points for f in factors)

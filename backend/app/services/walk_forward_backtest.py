@@ -277,7 +277,18 @@ def run_walk_forward_backtest(
     records = []
     for i in indices:
         verdict = _replay_verdict_at(
-            i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, volume
+            i,
+            close,
+            sma20,
+            sma50,
+            sma150,
+            sma200,
+            rsi14,
+            adx14,
+            plus_di,
+            minus_di,
+            atr14,
+            volume,
         )
         if verdict is None:
             continue

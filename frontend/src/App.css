@@ -1647,6 +1647,22 @@
   font-variant-numeric: tabular-nums;
 }
 
+.ticker-analysis__intraday-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(237, 161, 0, 0.16);
+  color: #ad7a00;
+  cursor: help;
+}
+
+@media (prefers-color-scheme: dark) {
+  .ticker-analysis__intraday-badge {
+    color: #eda100;
+  }
+}
+
 .subchart-title {
   font-size: 12px;
   color: var(--text);

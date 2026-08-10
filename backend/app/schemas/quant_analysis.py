@@ -111,6 +111,14 @@ class KellyPositionSizeResponse(BaseModel):
     rationale: str
 
 
+class StatisticalStructureResponse(BaseModel):
+    hurst_exponent: float | None
+    regime: str
+    adf_statistic: float | None
+    adf_p_value: float | None
+    is_stationary: bool | None
+
+
 class CoreSignalsResponse(BaseModel):
     """Everything the recommendation engine and its supporting quant models
     produce for one ticker at one point in time - the same bundle `TickerAnalysisService.analyze()`
@@ -152,6 +160,10 @@ class CoreSignalsResponse(BaseModel):
     nearest_support: PriceLevelResponse | None
     nearest_resistance: PriceLevelResponse | None
     obv_divergence: str | None
+    statistical_structure: StatisticalStructureResponse | None
+    market_trend: str | None
+    vix_regime: str | None
+    is_intraday_snapshot: bool
     recommendation: RecommendationResponse
     markov: MarkovChainResponse | None
     garch: GarchResponse | None

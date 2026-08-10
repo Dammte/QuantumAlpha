@@ -11,7 +11,6 @@ from app.services.market_context_service import (
     _normalize,
     assess_market_regime,
     fear_greed_label,
-    vix_regime,
 )
 
 
@@ -31,21 +30,6 @@ def test_normalize_invert_flips_the_scale():
 
 def test_normalize_none_defaults_to_neutral():
     assert _normalize(None, -0.08, 0.08) == pytest.approx(50.0)
-
-
-@pytest.mark.parametrize(
-    "level,expected",
-    [
-        (None, "desconocido"),
-        (8, "complacencia"),
-        (15, "normal"),
-        (25, "miedo elevado"),
-        (35, "pánico"),
-        (50, "crisis"),
-    ],
-)
-def test_vix_regime_bands(level, expected):
-    assert vix_regime(level) == expected
 
 
 @pytest.mark.parametrize(

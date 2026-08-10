@@ -27,7 +27,7 @@ from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.services import watchlist_service as wl
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
-from app.services.market_universe import DEFAULT_REGION, benchmark_for_region, currency_of
+from app.services.market_universe import DEFAULT_REGION, VIX_TICKER, benchmark_for_region, currency_of
 from app.services.ticker_analysis_service import CoreTickerSignals, compute_core_signals
 
 DAILY = "daily"
@@ -126,9 +126,13 @@ def build_premium_watchlist(
     benchmark_ticker = benchmark_for_region(region)
     end = date.today()
     start = end - timedelta(days=365 * HISTORY_YEARS)
-    ohlcv = market_data.get_bulk_ohlcv([*all_candidate_tickers, benchmark_ticker], start, end)
+    # VIX rides along in the same batched call - one shared market-regime
+    # input for every candidate, not fetched per ticker.
+    ohlcv = market_data.get_bulk_ohlcv([*all_candidate_tickers, benchmark_ticker, VIX_TICKER], start, end)
     benchmark_df = ohlcv.get(benchmark_ticker)
     benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
+    vix_df = ohlcv.get(VIX_TICKER)
+    vix_close = vix_df["close"] if vix_df is not None else None
 
     results: list[PremiumWatchlistItem] = []
     for t in tiers:
@@ -145,6 +149,7 @@ def build_premium_watchlist(
                 benchmark_close,
                 candidate.snapshot.rs_rating,
                 horizon=_MONTE_CARLO_HORIZON[t],
+                vix_close=vix_close,
             )
             if signals is None:
                 continue

@@ -22,7 +22,7 @@ import pandas as pd
 from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
-from app.services.market_universe import benchmark_for_ticker, currency_of
+from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, currency_of
 from app.services.ticker_analysis_service import HISTORY_YEARS, CoreTickerSignals, compute_core_signals
 
 PROXIMITY_THRESHOLD = 0.03  # within 3% of a level counts as "close to it"
@@ -68,9 +68,15 @@ class PositionRisk:
 
 
 def assess_position_risk(
-    ticker: str, df: pd.DataFrame, benchmark_close: pd.Series | None = None, rs_rating: int | None = None
+    ticker: str,
+    df: pd.DataFrame,
+    benchmark_close: pd.Series | None = None,
+    rs_rating: int | None = None,
+    vix_close: pd.Series | None = None,
 ) -> PositionRisk | None:
-    signals = compute_core_signals(df["close"], df["high"], df["low"], df["volume"], benchmark_close, rs_rating)
+    signals = compute_core_signals(
+        df["close"], df["high"], df["low"], df["volume"], benchmark_close, rs_rating, vix_close=vix_close
+    )
     if signals is None:
         return None
 
@@ -136,8 +142,12 @@ def get_portfolio_positions_risk(
     end = date.today()
     start = end - timedelta(days=365 * HISTORY_YEARS)
     benchmark_by_ticker = {ticker: benchmark_for_ticker(ticker) for ticker in tickers}
-    fetch_list = [*tickers, *set(benchmark_by_ticker.values())]
+    # VIX rides along in the same batched call regardless of how many tickers
+    # are held - one shared market-regime input, not fetched per position.
+    fetch_list = [*tickers, *set(benchmark_by_ticker.values()), VIX_TICKER]
     ohlcv_by_ticker = market_data.get_bulk_ohlcv(fetch_list, start, end)
+    vix_df = ohlcv_by_ticker.get(VIX_TICKER)
+    vix_close = vix_df["close"] if vix_df is not None else None
 
     results = []
     for ticker in tickers:
@@ -146,7 +156,9 @@ def get_portfolio_positions_risk(
             continue
         benchmark_df = ohlcv_by_ticker.get(benchmark_by_ticker[ticker])
         benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
-        risk = assess_position_risk(ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker))
+        risk = assess_position_risk(
+            ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker), vix_close=vix_close
+        )
         if risk is not None:
             results.append(risk)
     return results
@@ -187,8 +199,10 @@ class PortfolioRiskService:
             end = date.today()
             start = end - timedelta(days=365 * HISTORY_YEARS)
             benchmark_by_ticker = {ticker: benchmark_for_ticker(ticker) for ticker in to_compute}
-            fetch_list = [*to_compute, *set(benchmark_by_ticker.values())]
+            fetch_list = [*to_compute, *set(benchmark_by_ticker.values()), VIX_TICKER]
             ohlcv_by_ticker = market_data.get_bulk_ohlcv(fetch_list, start, end)
+            vix_df = ohlcv_by_ticker.get(VIX_TICKER)
+            vix_close = vix_df["close"] if vix_df is not None else None
 
             for ticker in to_compute:
                 df = ohlcv_by_ticker.get(ticker)
@@ -196,7 +210,9 @@ class PortfolioRiskService:
                     continue
                 benchmark_df = ohlcv_by_ticker.get(benchmark_by_ticker[ticker])
                 benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
-                risk = assess_position_risk(ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker))
+                risk = assess_position_risk(
+                    ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker), vix_close=vix_close
+                )
                 if risk is not None:
                     fresh_by_ticker[ticker] = risk
                     self._cache[ticker] = (now, risk)

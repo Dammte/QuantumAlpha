@@ -19,6 +19,12 @@ import BacktestCard from './BacktestCard'
 import PositionSizingCard from './PositionSizingCard'
 
 const STAGE_LABELS = { stage1: 'Fase 1 (base)', stage2: 'Fase 2 (avance)', stage3: 'Fase 3 (techo)', stage4: 'Fase 4 (declive)' }
+const REGIME_LABELS = {
+  tendencial: 'Tendencial',
+  reversion: 'Reversión a la media',
+  aleatorio: 'Sin estructura clara',
+  desconocido: '—',
+}
 const HORIZON_OPTIONS = [
   { value: '1m', label: '1 mes' },
   { value: '3m', label: '3 meses' },
@@ -147,6 +153,14 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
               <span className={analysis.change_1d >= 0 ? 'delta-up' : 'delta-down'}>
                 {formatPercent(analysis.change_1d, { signed: true })} hoy
               </span>
+              {analysis.is_intraday_snapshot && (
+                <span
+                  className="ticker-analysis__intraday-badge"
+                  title="La sesión de hoy sigue en curso: precio e indicadores son en vivo, no un cierre confirmado - pueden variar antes del cierre."
+                >
+                  ● Sesión en curso
+                </span>
+              )}
             </div>
           </div>
 
@@ -159,6 +173,15 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
             <StatTile label="ADX (14)" value={analysis.adx14 !== null ? analysis.adx14.toFixed(1) : '—'} />
             <StatTile label="Volumen relativo" value={analysis.relative_volume !== null ? `${analysis.relative_volume.toFixed(2)}x` : '—'} />
             <StatTile label="Minervini" value={`${analysis.minervini_score}/8`} tone={analysis.minervini_pass ? 'up' : 'neutral'} />
+            <StatTile
+              label="Estructura de precio (Hurst)"
+              value={analysis.statistical_structure ? REGIME_LABELS[analysis.statistical_structure.regime] : '—'}
+              hint={
+                analysis.statistical_structure?.hurst_exponent != null
+                  ? `H = ${analysis.statistical_structure.hurst_exponent.toFixed(2)} · >0.55 tendencial, <0.45 reversión`
+                  : 'historial insuficiente'
+              }
+            />
           </div>
 
           <div className="sub-toggle" role="tablist" aria-label="Sección del análisis">

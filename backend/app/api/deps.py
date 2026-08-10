@@ -8,6 +8,7 @@ from app.core.config import Settings, get_settings
 from app.domain.interfaces.market_data_provider import MarketDataProvider
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
+from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
 from app.infrastructure.db.session import get_db
 from app.infrastructure.macro_data.fred_client import FredClient
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider
@@ -96,6 +97,10 @@ def get_portfolio_risk_service() -> PortfolioRiskService:
 
 def get_portfolio_repository(db: DbSession) -> PortfolioRepository:
     return PortfolioRepository(db)
+
+
+def get_recommendation_snapshot_repository(db: DbSession) -> RecommendationSnapshotRepository:
+    return RecommendationSnapshotRepository(db)
 
 
 def get_asset_repository(db: DbSession) -> AssetRepository:

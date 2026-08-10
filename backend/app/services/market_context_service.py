@@ -96,20 +96,6 @@ def _normalize(value: float | None, lo: float, hi: float, invert: bool = False) 
     return 100 - score if invert else score
 
 
-def vix_regime(level: float | None) -> str:
-    if level is None:
-        return "desconocido"
-    if level < 12:
-        return "complacencia"
-    if level < 20:
-        return "normal"
-    if level < 30:
-        return "miedo elevado"
-    if level < 40:
-        return "pánico"
-    return "crisis"
-
-
 def fear_greed_label(score: float) -> str:
     if score < 25:
         return "Miedo extremo"
@@ -240,7 +226,7 @@ class MarketContextService:
         ohlcv = self.market_data.get_bulk_ohlcv([VIX_TICKER, VIX_3M_TICKER], start, end)
         vix_df = ohlcv.get(VIX_TICKER)
         if vix_df is None or vix_df.empty:
-            return VixSnapshot(None, None, vix_regime(None), None)
+            return VixSnapshot(None, None, ta.vix_regime(None), None)
 
         vix_close = vix_df["close"]
         level = float(vix_close.iloc[-1])
@@ -253,7 +239,9 @@ class MarketContextService:
             vix3m_level = float(vix3m_df["close"].iloc[-1])
             term_structure = "backwardation (estrés)" if level > vix3m_level else "contango (normal)"
 
-        return VixSnapshot(level=level, sma50=sma50_val, regime=vix_regime(level), term_structure=term_structure)
+        return VixSnapshot(
+            level=level, sma50=sma50_val, regime=ta.vix_regime(level), term_structure=term_structure
+        )
 
     def get_fear_greed(self, universe_snapshot: list[TickerSnapshot]) -> FearGreed:
         start, end = self._date_range()

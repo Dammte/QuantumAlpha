@@ -337,3 +337,50 @@ def test_obv_divergence_none_when_too_little_history():
     close = pd.Series([100.0, 101.0, 102.0])
     volume = pd.Series([500.0, 600.0, 700.0])
     assert ta.obv_divergence(close, volume, window=20) is None
+
+
+@pytest.mark.parametrize(
+    "level,expected",
+    [
+        (None, "desconocido"),
+        (8, "complacencia"),
+        (15, "normal"),
+        (25, "miedo elevado"),
+        (35, "pánico"),
+        (50, "crisis"),
+    ],
+)
+def test_vix_regime_bands(level, expected):
+    # Moved here from market_context_service.py (2026-08) so both the live
+    # "Contexto" dashboard and the recommendation engine's market-regime gate
+    # can share one definition without a circular import.
+    assert ta.vix_regime(level) == expected
+
+
+def test_market_regime_inputs_detects_benchmark_below_its_200sma():
+    n = 300
+    # A benchmark that spent its first 250 bars climbing (building a real
+    # SMA200), then rolled over hard for the last 50 - clearly below its own
+    # 200-day average by the end.
+    rise = 100 + np.arange(250) * 0.3
+    decline = rise[-1] - np.arange(1, 51) * 1.0
+    benchmark_close = pd.Series(np.concatenate([rise, decline]))
+    vix_close = pd.Series([32.0] * n)  # "pánico" band
+
+    market_trend, vix_label = ta.market_regime_inputs(benchmark_close, vix_close)
+
+    assert market_trend == ta.TrendState.DOWNTREND
+    assert vix_label == "pánico"
+
+
+def test_market_regime_inputs_none_when_no_data_supplied():
+    market_trend, vix_label = ta.market_regime_inputs(None, None)
+    assert market_trend is None
+    assert vix_label is None
+
+
+def test_market_regime_inputs_none_when_insufficient_benchmark_history():
+    short_benchmark = pd.Series(100 + np.arange(50) * 0.5)
+    market_trend, vix_label = ta.market_regime_inputs(short_benchmark, None)
+    assert market_trend is None
+    assert vix_label is None

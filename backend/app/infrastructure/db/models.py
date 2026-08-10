@@ -1,7 +1,7 @@
 from datetime import UTC, date, datetime
 
+from sqlalchemy import JSON, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.models.asset import AssetClass
@@ -58,3 +58,32 @@ class PriceBarORM(Base):
     low: Mapped[float] = mapped_column(Numeric(20, 8))
     close: Mapped[float] = mapped_column(Numeric(20, 8))
     volume: Mapped[float] = mapped_column(Numeric(20, 4))
+
+
+class RecommendationSnapshotORM(Base):
+    """Immutable audit trail: one row per real "Analizar activo" call, capturing
+    exactly what the system said at that moment - not a synthetic replay, the
+    actual live verdict a user actually saw. This is the concrete answer to
+    an external audit's "cómo demuestras que una alerta estuvo fundamentada":
+    without a persisted record, there's no way to later check whether a past
+    verdict panned out, or to tell a genuine improvement in the recommendation
+    engine from selective memory of the hits. Deliberately has no foreign key
+    to a portfolio/transaction - this logs *analysis*, not trades; a ticker
+    can (and will) be looked up many times with no position ever taken.
+    """
+
+    __tablename__ = "recommendation_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC), index=True)
+    verdict: Mapped[str] = mapped_column(String(20))
+    score: Mapped[int]
+    price: Mapped[float] = mapped_column(Numeric(20, 8))
+    currency: Mapped[str] = mapped_column(String(3))
+    horizon: Mapped[str] = mapped_column(String(10))
+    engine_version: Mapped[str] = mapped_column(String(40))
+    # List of {"label": str, "points": int, "triggered": bool} - the exact
+    # factor breakdown behind the score, not just the final number, so a
+    # later reviewer can see *why*, not only *what*.
+    factors: Mapped[list] = mapped_column(JSON)

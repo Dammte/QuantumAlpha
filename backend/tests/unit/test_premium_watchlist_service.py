@@ -131,7 +131,9 @@ def test_build_premium_watchlist_caps_candidates_and_approved_per_tier(monkeypat
     monkeypatch.setattr(
         pws,
         "compute_core_signals",
-        lambda close, high, low, volume, benchmark_close, rs_rating, horizon: _signals(score=rs_rating or 0),
+        lambda close, high, low, volume, benchmark_close, rs_rating, horizon, vix_close=None: _signals(
+            score=rs_rating or 0
+        ),
     )
 
     # Every candidate approved (score always positive, verdict always "comprar")
@@ -150,7 +152,7 @@ def test_build_premium_watchlist_skips_tickers_missing_from_ohlcv(monkeypatch):
     monkeypatch.setattr(
         pws,
         "compute_core_signals",
-        lambda close, high, low, volume, benchmark_close, rs_rating, horizon: _signals(score=10),
+        lambda close, high, low, volume, benchmark_close, rs_rating, horizon, vix_close=None: _signals(score=10),
     )
 
     results = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])

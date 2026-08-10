@@ -320,6 +320,59 @@ class TrendState(str, Enum):
     SIDEWAYS = "sideways"
 
 
+def vix_regime(level: float | None) -> str:
+    """VIX level -> a named fear regime. Lives here (not in
+    MarketContextService, which originally owned it) so both the live "Contexto"
+    dashboard and anything computing a per-ticker/backtest market-regime read
+    (recommendation_engine.py, walk_forward_backtest.py) can share one
+    definition without a circular import - this module is the app's
+    pure-function, no-I/O layer everything else is allowed to depend on."""
+    if level is None:
+        return "desconocido"
+    if level < 12:
+        return "complacencia"
+    if level < 20:
+        return "normal"
+    if level < 30:
+        return "miedo elevado"
+    if level < 40:
+        return "pánico"
+    return "crisis"
+
+
+def market_regime_inputs(
+    benchmark_close: pd.Series | None, vix_close: pd.Series | None
+) -> tuple["TrendState | None", str | None]:
+    """Meb Faber's tactical SMA-200 filter on a benchmark index, plus the VIX
+    fear regime - the two market-wide inputs `build_recommendation` uses to
+    gate an individual ticker's verdict. A pure function of two price series
+    so it can be reused identically by the live recommendation path and the
+    point-in-time backtest replay (fed a `.iloc[:i+1]` slice of each series -
+    still fully causal, no lookahead)."""
+    market_trend = None
+    if benchmark_close is not None and len(benchmark_close) >= 200:
+        b_close = benchmark_close.dropna()
+        if len(b_close) >= 200:
+            b_sma20 = sma(b_close, 20).iloc[-1] if len(b_close) >= 20 else None
+            b_sma50 = sma(b_close, 50).iloc[-1] if len(b_close) >= 50 else None
+            b_sma200 = sma(b_close, 200).iloc[-1]
+            if not pd.isna(b_sma200):
+                market_trend = classify_trend(
+                    float(b_close.iloc[-1]),
+                    None if b_sma20 is None or pd.isna(b_sma20) else float(b_sma20),
+                    None if b_sma50 is None or pd.isna(b_sma50) else float(b_sma50),
+                    float(b_sma200),
+                )
+
+    vix_regime_label = None
+    if vix_close is not None and not vix_close.empty:
+        clean_vix = vix_close.dropna()
+        if len(clean_vix):
+            vix_regime_label = vix_regime(float(clean_vix.iloc[-1]))
+
+    return market_trend, vix_regime_label
+
+
 def classify_trend(price: float, sma20: float | None, sma50: float | None, sma200: float | None) -> TrendState:
     """Ordered moving averages (price > MA20 > MA50 > MA200, or the mirror) read as a
     clean trend; anything tangled in between reads as sideways/transition."""
