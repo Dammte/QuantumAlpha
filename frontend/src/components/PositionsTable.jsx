@@ -18,6 +18,7 @@ function backtestSummary(backtest) {
 
 function riskTooltip(risk) {
   const parts = [`Puntuación: ${risk.score}`, risk.reasons.join(' · ')]
+  if (risk.signals?.entry_timing) parts.push(risk.signals.entry_timing.label)
   if (risk.signals?.garch) parts.push(garchRegimeLabel(risk.signals.garch.regime))
   const backtest = backtestSummary(risk.signals?.backtest)
   if (backtest) parts.push(backtest)

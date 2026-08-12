@@ -95,6 +95,17 @@ def test_ticker_analysis_buy_verdict_includes_stop_loss(client: TestClient) -> N
             assert body["recommendation"]["stop_loss"] < body["price"]
 
 
+def test_ticker_analysis_includes_entry_timing(client: TestClient) -> None:
+    body = client.get("/api/v1/market/tickers/AAPL/analysis").json()
+    assert "entry_timing" in body
+    timing = body["entry_timing"]
+    # Only None when atr_multiple itself couldn't be computed - 10 years of fake
+    # daily bars is comfortably enough, so this should be populated.
+    assert timing is not None
+    assert timing["status"] in {"optimal", "valid", "late", "extended"}
+    assert timing["atr_multiple"] >= 0
+
+
 def test_ticker_analysis_includes_statistical_structure_and_regime_context(client: TestClient) -> None:
     body = client.get("/api/v1/market/tickers/AAPL/analysis").json()
     # These may legitimately be null (e.g. insufficient history for Hurst/ADF,

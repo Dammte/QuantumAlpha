@@ -1,10 +1,13 @@
 import { useState } from 'react'
 
 const EMPTY_FORM = { ticker: '', transaction_type: 'buy', quantity: '', price: '', executed_at: '' }
+const CASH_TYPES = new Set(['deposit', 'withdrawal'])
 
-function TransactionForm({ onSubmit, submitting }) {
+function TransactionForm({ onSubmit, submitting, baseCurrency = 'USD' }) {
   const [form, setForm] = useState(EMPTY_FORM)
   const [error, setError] = useState(null)
+
+  const isCashMovement = CASH_TYPES.has(form.transaction_type)
 
   const update = (field) => (event) => setForm({ ...form, [field]: event.target.value })
 
@@ -13,10 +16,10 @@ function TransactionForm({ onSubmit, submitting }) {
     setError(null)
     try {
       await onSubmit({
-        ticker: form.ticker.trim().toUpperCase(),
+        ticker: isCashMovement ? null : form.ticker.trim().toUpperCase(),
         transaction_type: form.transaction_type,
         quantity: Number(form.quantity),
-        price: Number(form.price),
+        price: isCashMovement ? null : Number(form.price),
         executed_at: form.executed_at ? new Date(form.executed_at).toISOString() : undefined,
       })
       setForm(EMPTY_FORM)
@@ -28,24 +31,35 @@ function TransactionForm({ onSubmit, submitting }) {
   return (
     <form className="transaction-form" onSubmit={handleSubmit}>
       <label className="filter">
-        <span>Ticker</span>
-        <input required value={form.ticker} onChange={update('ticker')} placeholder="AAPL, SAP.DE, AZN.L…" />
-      </label>
-      <label className="filter">
         <span>Tipo</span>
         <select value={form.transaction_type} onChange={update('transaction_type')}>
           <option value="buy">Compra</option>
           <option value="sell">Venta</option>
+          <option value="deposit">Depósito de liquidez</option>
+          <option value="withdrawal">Retiro de liquidez</option>
         </select>
       </label>
+      {!isCashMovement && (
+        <label className="filter">
+          <span>Ticker</span>
+          <input
+            required={!isCashMovement}
+            value={form.ticker}
+            onChange={update('ticker')}
+            placeholder="AAPL, SAP.DE, AZN.L…"
+          />
+        </label>
+      )}
       <label className="filter">
-        <span>Cantidad</span>
+        <span>{isCashMovement ? 'Importe' : 'Cantidad'}</span>
         <input required type="number" step="any" min="0" value={form.quantity} onChange={update('quantity')} />
       </label>
-      <label className="filter">
-        <span>Precio (en la divisa del ticker)</span>
-        <input required type="number" step="any" min="0" value={form.price} onChange={update('price')} />
-      </label>
+      {!isCashMovement && (
+        <label className="filter">
+          <span>Precio (en la divisa del ticker)</span>
+          <input required type="number" step="any" min="0" value={form.price} onChange={update('price')} />
+        </label>
+      )}
       <label className="filter">
         <span>Fecha</span>
         <input type="date" value={form.executed_at} onChange={update('executed_at')} />
@@ -54,12 +68,21 @@ function TransactionForm({ onSubmit, submitting }) {
         {submitting ? 'Guardando…' : 'Añadir transacción'}
       </button>
       {error && <p className="form-error">{error}</p>}
-      <p className="transaction-form__hint">
-        También puedes añadir activos europeos u otros mercados - usa el sufijo de la bolsa correspondiente
-        (p. ej. <code>.DE</code> Xetra, <code>.PA</code> París, <code>.L</code> Londres, <code>.MC</code> Madrid,
-        <code>.MI</code> Milán, <code>.AS</code> Ámsterdam, <code>.SW</code> Suiza) e introduce el precio en la
-        divisa en la que cotiza ese ticker - el total de la cartera lo convertimos automáticamente.
-      </p>
+      {isCashMovement ? (
+        <p className="transaction-form__hint">
+          Un depósito o retiro de liquidez no lleva ticker - se registra siempre en la divisa base de la
+          cartera ({baseCurrency}). Úsalo para reflejar dinero que entra o sale de la cuenta sin pasar por
+          una compra o venta (por ejemplo, una transferencia bancaria) - así el valor total de la cartera
+          incluye ese efectivo en vez de perderlo de vista.
+        </p>
+      ) : (
+        <p className="transaction-form__hint">
+          También puedes añadir activos europeos u otros mercados - usa el sufijo de la bolsa correspondiente
+          (p. ej. <code>.DE</code> Xetra, <code>.PA</code> París, <code>.L</code> Londres, <code>.MC</code> Madrid,
+          <code>.MI</code> Milán, <code>.AS</code> Ámsterdam, <code>.SW</code> Suiza) e introduce el precio en la
+          divisa en la que cotiza ese ticker - el total de la cartera lo convertimos automáticamente.
+        </p>
+      )}
     </form>
   )
 }

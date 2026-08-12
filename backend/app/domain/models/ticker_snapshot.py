@@ -53,6 +53,21 @@ class SectorPerformance:
 
 
 @dataclass(frozen=True, slots=True)
+class SectorForecast:
+    """A *forward-looking* read on a sector, distinct from `SectorPerformance`
+    (which only describes how it already did) - see `sector_forecast.py`."""
+
+    sector: str
+    etf: str
+    current_state_label: str  # human label for the sector's current volatility-normalized state
+    forecast_5d_return: float
+    forecast_21d_return: float
+    prob_bullish_21d: float
+    has_statistical_structure: bool  # False -> this sector's own history looks like noise, treat with skepticism
+    top_stocks: list[str]  # this region's universe's highest-RS-Rating names currently in this sector
+
+
+@dataclass(frozen=True, slots=True)
 class IndustryPerformance:
     industry: str
     sector: str

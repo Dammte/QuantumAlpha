@@ -119,6 +119,16 @@ class StatisticalStructureResponse(BaseModel):
     is_stationary: bool | None
 
 
+class EntryTimingResponse(BaseModel):
+    """See `entry_timing.py` - a read on how much of this setup's move looks
+    still-ahead vs already-behind, not a second buy/avoid verdict."""
+
+    status: str  # "optimal" | "valid" | "late" | "extended"
+    label: str
+    description: str
+    atr_multiple: float
+
+
 class CoreSignalsResponse(BaseModel):
     """Everything the recommendation engine and its supporting quant models
     produce for one ticker at one point in time - the same bundle `TickerAnalysisService.analyze()`
@@ -165,6 +175,7 @@ class CoreSignalsResponse(BaseModel):
     vix_regime: str | None
     is_intraday_snapshot: bool
     recommendation: RecommendationResponse
+    entry_timing: EntryTimingResponse | None
     markov: MarkovChainResponse | None
     garch: GarchResponse | None
     monte_carlo: MonteCarloResponse | None

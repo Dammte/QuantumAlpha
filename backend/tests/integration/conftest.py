@@ -22,7 +22,7 @@ from app.infrastructure.db import models  # noqa: F401 - registers ORM tables on
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
-from app.infrastructure.db.session import Base
+from app.infrastructure.db.session import Base, get_db
 from app.main import app
 
 
@@ -155,6 +155,12 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
         db_session
     )
     app.dependency_overrides[get_market_data_provider] = lambda: FakeMarketDataProvider()
+    # Every endpoint that takes a `DbSession` directly (not just through one of the
+    # repository overrides above - see the durable-cache reads/writes added in
+    # `durable_cache.py`) must also be pinned to this same isolated SQLite session,
+    # or it silently falls through to `get_db`'s real `settings.database_url` and
+    # tests end up making live calls against whatever database that happens to be.
+    app.dependency_overrides[get_db] = lambda: db_session
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()

@@ -80,6 +80,9 @@ export const api = {
   getSectorPerformance: ({ region, refresh } = {}) =>
     request(`/api/v1/market/sectors${toQueryString({ region, refresh })}`),
 
+  getSectorForecast: ({ region, refresh } = {}) =>
+    request(`/api/v1/market/sectors/forecast${toQueryString({ region, refresh })}`),
+
   getSectorRotation: ({ region, refresh } = {}) =>
     request(`/api/v1/market/sectors/rotation${toQueryString({ region, refresh })}`),
 
@@ -106,7 +109,8 @@ export const api = {
 
   getMarketContext: () => request('/api/v1/market/context'),
 
-  getPortfolioRisk: (portfolioId) => request(`/api/v1/portfolios/${portfolioId}/risk`),
+  getPortfolioRisk: (portfolioId, { refresh } = {}) =>
+    request(`/api/v1/portfolios/${portfolioId}/risk${toQueryString({ refresh })}`),
 
   getTickerAnalysis: (ticker, { horizon } = {}) =>
     request(`/api/v1/market/tickers/${ticker}/analysis${toQueryString({ horizon })}`),

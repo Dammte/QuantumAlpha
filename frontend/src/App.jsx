@@ -15,6 +15,7 @@ import TransactionForm from './components/TransactionForm'
 import TransactionsList from './components/TransactionsList'
 import MarketView from './components/market/MarketView'
 import Sidebar from './components/Sidebar'
+import RefreshBar from './components/RefreshBar'
 import { DEFAULT_REGION } from './regions'
 
 function App() {
@@ -28,6 +29,7 @@ function App() {
   const [transactions, setTransactions] = useState([])
   const [risk, setRisk] = useState(null)
   const [riskLoading, setRiskLoading] = useState(false)
+  const [riskRefreshing, setRiskRefreshing] = useState(false)
   const [metrics, setMetrics] = useState(null)
   const [history, setHistory] = useState({ points: [], benchmarkPoints: null })
   const [timeframe, setTimeframe] = useState('6M')
@@ -130,6 +132,19 @@ function App() {
     await loadAnalysis(selectedId, timeframe, benchmarkTicker)
   }
 
+  const handleRefreshRisk = async () => {
+    if (!selectedId) return
+    setRiskRefreshing(true)
+    try {
+      setRisk(await api.getPortfolioRisk(selectedId, { refresh: true }))
+    } catch {
+      // Keep showing whatever was already on screen rather than blanking it out
+      // over a failed manual refresh.
+    } finally {
+      setRiskRefreshing(false)
+    }
+  }
+
   const handleAddTransaction = async (transaction) => {
     setSubmittingTx(true)
     try {
@@ -225,9 +240,21 @@ function App() {
           <main className="dashboard">
           {summary && (
             <section className="hero-row">
+              <div className="hero-card hero-card--primary">
+                <p className="hero-card__label">Valor total de la cartera</p>
+                <p className="hero-card__value">
+                  {formatCurrency(summary.total_portfolio_value, summary.base_currency)}
+                </p>
+                <p className="hero-card__hint">
+                  Invertido: {formatCurrency(summary.total_market_value, summary.base_currency)} · Liquidez:{' '}
+                  {formatCurrency(summary.cash_balance, summary.base_currency)}
+                </p>
+              </div>
+
               <div className="hero-card">
-                <p className="hero-card__label">Valor total de mercado</p>
-                <p className="hero-card__value">{formatCurrency(summary.total_market_value, summary.base_currency)}</p>
+                <p className="hero-card__label">Liquidez disponible</p>
+                <p className="hero-card__value">{formatCurrency(summary.cash_balance, summary.base_currency)}</p>
+                <p className="hero-card__hint">De ventas, depósitos y retiros - no cuenta como posición abierta</p>
               </div>
 
               <div className="hero-card">
@@ -316,6 +343,9 @@ function App() {
 
           <section className="panel">
             <h2>Posiciones</h2>
+            {risk && (
+              <RefreshBar computedAt={risk.computed_at} onRefresh={handleRefreshRisk} refreshing={riskRefreshing} />
+            )}
             {summary && (
               <PositionsTable
                 positions={summary.positions}
@@ -335,7 +365,11 @@ function App() {
 
           <section className="panel">
             <h2>Transacciones</h2>
-            <TransactionForm onSubmit={handleAddTransaction} submitting={submittingTx} />
+            <TransactionForm
+              onSubmit={handleAddTransaction}
+              submitting={submittingTx}
+              baseCurrency={summary?.base_currency ?? 'USD'}
+            />
             <div className="transactions-list">
               <TransactionsList
                 transactions={transactions}

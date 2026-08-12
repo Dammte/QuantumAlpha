@@ -2,12 +2,14 @@ import { useState } from 'react'
 import SectorStrength from './SectorStrength'
 import IndustryCards from './IndustryCards'
 import SectorRotationCard from './SectorRotationCard'
+import SectorForecastCard from './SectorForecastCard'
 
-function SectorsView({ region }) {
+function SectorsView({ region, onNavigateToTicker }) {
   const [view, setView] = useState('industries')
 
   return (
     <div>
+      <SectorForecastCard region={region} onNavigateToTicker={onNavigateToTicker} />
       <SectorRotationCard region={region} />
       <div className="sub-toggle">
         <button

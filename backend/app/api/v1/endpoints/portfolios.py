@@ -1,4 +1,5 @@
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -19,11 +20,18 @@ from app.schemas.market import PortfolioRiskResponse, PositionRiskResponse, Pric
 from app.schemas.portfolio import PortfolioCreate, PortfolioRead, PortfolioSummary, PositionRead
 from app.schemas.quant_analysis import CoreSignalsResponse
 from app.schemas.transaction import TransactionCreate, TransactionRead
+from app.services import durable_cache
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.portfolio_risk_service import PortfolioRiskService
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
 from app.services.ticker_analysis_service import CoreTickerSignals
+
+# Several hours, not minutes - see durable_cache.py's docstring. Portfolio risk
+# runs on daily bars, so a handful of refreshes a day is already as fresh as
+# the underlying signals actually get; "actualizar" (the `refresh=true` query
+# param) always forces a live recompute regardless of this window.
+PORTFOLIO_RISK_DURABLE_TTL = timedelta(hours=6)
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
@@ -112,6 +120,8 @@ def get_portfolio_summary(
         total_pnl=portfolio.total_pnl,
         total_day_change=portfolio.total_day_change,
         total_day_change_pct=portfolio.total_day_change_pct,
+        cash_balance=portfolio.cash_balance,
+        total_portfolio_value=portfolio.total_portfolio_value,
     )
 
 
@@ -128,7 +138,8 @@ def add_transaction(
     if repository.get(portfolio_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portfolio not found")
 
-    asset_repository.get_or_create(payload.ticker, asset_class=AssetClass.EQUITY)
+    if payload.ticker is not None:
+        asset_repository.get_or_create(payload.ticker, asset_class=AssetClass.EQUITY)
 
     try:
         transaction = repository.add_transaction(
@@ -171,23 +182,40 @@ def get_portfolio_risk(
     market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
     screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
     risk_service: Annotated[PortfolioRiskService, Depends(get_portfolio_risk_service)],
+    db: DbSession,
     refresh: bool = False,
 ) -> PortfolioRiskResponse:
     """Full quant risk read on every held ticker - the same recommendation, GARCH,
     Markov, Monte Carlo, backtest and Kelly-sizing pipeline "Analizar activo" runs -
     boiled down to exit_warning / add_candidate / watch / hold so you can act on
     holdings that break down and size up ones whose setup is confirmed, without
-    assuming anything a full analysis wouldn't back. See `portfolio_risk_service.py`."""
+    assuming anything a full analysis wouldn't back. See `portfolio_risk_service.py`.
+
+    Backed by the durable cache (`durable_cache.py`): a normal visit within
+    `PORTFOLIO_RISK_DURABLE_TTL` gets back the last computed read instantly,
+    however old (down to however stale a restart made it) - never a live,
+    tens-of-seconds recompute just because someone looked at this portfolio
+    twice in a row. Pass `refresh=true` (the frontend's "Actualizar ahora"
+    button) to force a real recompute regardless of freshness."""
     if repository.get(portfolio_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portfolio not found")
 
-    tickers = sorted({tx.ticker for tx in repository.get_transactions(portfolio_id)})
+    cache_key = f"portfolio_risk:{portfolio_id}"
+    if not refresh:
+        cached = durable_cache.load_fresh(db, cache_key, PORTFOLIO_RISK_DURABLE_TTL)
+        if cached is not None:
+            return PortfolioRiskResponse.model_validate(cached)
+
+    tickers = sorted({tx.ticker for tx in repository.get_transactions(portfolio_id) if tx.ticker is not None})
     # A personal portfolio isn't confined to one market - combine both curated
     # universes so a European holding's RS Rating is found too, not just US ones.
-    universe_snapshot = screener.get_universe_snapshot("us") + screener.get_universe_snapshot("europe")
+    universe_snapshot = screener.get_universe_snapshot("us", db=db) + screener.get_universe_snapshot(
+        "europe", db=db
+    )
     positions = risk_service.get_positions_risk(tickers, market_data, universe_snapshot, force_refresh=refresh)
 
-    return PortfolioRiskResponse(
+    computed_at = datetime.now(UTC)
+    response = PortfolioRiskResponse(
         positions=[
             PositionRiskResponse(
                 ticker=p.ticker,
@@ -207,5 +235,8 @@ def get_portfolio_risk(
                 signals=_core_signals_to_response(p.signals),
             )
             for p in positions
-        ]
+        ],
+        computed_at=computed_at,
     )
+    durable_cache.save(db, cache_key, response.model_dump(mode="json"), computed_at=computed_at)
+    return response

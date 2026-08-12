@@ -11,10 +11,21 @@ class Portfolio:
     positions: list[Position] = field(default_factory=list)
     total_realized_pnl: float = 0.0  # banked from every sell ever made, including fully-closed positions,
     # already converted to base_currency at build time (see PortfolioRepository.build_portfolio)
+    cash_balance: float = 0.0  # deposits + sale proceeds - withdrawals - purchase cost, in base_currency -
+    # see PortfolioRepository.build_portfolio's docstring for why this exists
 
     @property
     def total_market_value(self) -> float:
         return sum(p.market_value_base for p in self.positions if p.market_value_base is not None)
+
+    @property
+    def total_portfolio_value(self) -> float:
+        """The actual answer to "what is my portfolio worth right now": open
+        positions *plus* uninvested cash (sale proceeds not yet redeployed,
+        deposits not yet invested). `total_market_value` alone silently drops
+        that cash, which is exactly the bug this field exists to fix - see
+        PortfolioRepository.build_portfolio."""
+        return self.total_market_value + self.cash_balance
 
     @property
     def total_cost_basis(self) -> float:

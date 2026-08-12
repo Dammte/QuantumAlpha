@@ -310,6 +310,11 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
 }
 
+.hero-card--primary {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
 .hero-card__label {
   display: flex;
   align-items: center;
@@ -434,6 +439,41 @@
   border-radius: 999px;
   font-size: 13px;
   padding: 6px 14px;
+}
+
+.refresh-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.refresh-bar__label {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.refresh-bar__button {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-h);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.refresh-bar__button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.refresh-bar__button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .icon-button {
@@ -1457,6 +1497,22 @@
   flex-direction: column;
 }
 
+/* Score >= 10 (see EXCEPTIONAL_SCORE_THRESHOLD in format.js / BUY_THRESHOLD in
+   recommendation_engine.py) - roughly double the buy bar, reached by very few
+   candidates since it needs most independent factors confirming at once. */
+.premium-watchlist-card--exceptional {
+  border: 2px solid var(--cat-4);
+}
+
+.premium-watchlist-card__exceptional-tag {
+  align-self: flex-start;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--cat-4);
+}
+
 .premium-watchlist-card__backtest {
   margin: 0 0 8px;
   font-size: 12px;
@@ -1527,6 +1583,20 @@
 }
 .sector-tier-badge--neutral {
   background: var(--code-bg);
+  color: var(--text);
+}
+.sector-tier-badge--warn {
+  background: rgba(237, 161, 0, 0.16);
+  color: #ad7a00;
+}
+@media (prefers-color-scheme: dark) {
+  .sector-tier-badge--warn {
+    color: #eda100;
+  }
+}
+
+.entry-timing__description {
+  font-size: 12px;
   color: var(--text);
 }
 

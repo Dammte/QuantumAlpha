@@ -4,18 +4,35 @@ checks every morning - gainers/losers, breakouts, sector/industry rotation,
 breadth, relative strength leadership, and a Minervini-style trend checklist.
 
 Recomputing technical indicators over ~170 tickers on every request would be
-slow and hammer yfinance, so results are cached in-process for `CACHE_TTL`.
-This is a personal, single-process tool - an in-memory cache is enough; a
-multi-instance deployment would need a shared cache (e.g. Redis) instead.
+slow and hammer yfinance, so results are cached in-process for `CACHE_TTL` -
+several hours, not minutes: this whole screener runs on daily bars, so nothing
+here actually changes meaningfully more than a few times a day, and the
+in-process cache is shared across every request in this single-process app (see
+`get_market_screener_service` in `deps.py`). `get_universe_snapshot` - the one
+call nearly every other method and market endpoint ultimately funnels through -
+additionally backs itself with the durable, restart-proof cache in
+`durable_cache.py` when a `db` session is supplied: without it, a Render
+redeploy (which happens often on a project under active development) would
+otherwise force the next visitor to eat the full ~170-ticker recompute cost
+synchronously just because the in-process cache was empty again, not because
+the data was actually stale.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import numpy as np
 import pandas as pd
+from sqlalchemy.orm import Session
 
-from app.domain.models.ticker_snapshot import IndustryPerformance, SectorPerformance, TickerSnapshot
+from app.domain.models.ticker_snapshot import (
+    IndustryPerformance,
+    SectorForecast,
+    SectorPerformance,
+    TickerSnapshot,
+)
+from app.services import durable_cache
 from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import (
@@ -27,11 +44,27 @@ from app.services.market_universe import (
     currency_of,
     region_config,
 )
+from app.services.markov_chain_model import analyze_markov_chain
 
-CACHE_TTL = timedelta(minutes=20)
+CACHE_TTL = timedelta(hours=3)
 HISTORY_DAYS = 400  # enough calendar days to cover a 252-trading-day lookback + SMA200
 MIN_BARS_REQUIRED = 60
 RS_LEADERS_PER_INDUSTRY = 3
+FORECAST_HISTORY_YEARS = 5  # Markov chain needs 300+ clean daily returns (see markov_chain_model.py) - a
+# much longer lookback than the technicals above need, so sector forecasting fetches its own history.
+TOP_STOCKS_PER_SECTOR = 3
+
+
+def _snapshot_to_dict(snapshot: TickerSnapshot) -> dict[str, Any]:
+    data = asdict(snapshot)
+    data["trend"] = snapshot.trend.value
+    data["stage"] = snapshot.stage.value if snapshot.stage else None
+    return data
+
+
+def _snapshot_from_dict(data: dict[str, Any]) -> TickerSnapshot:
+    stage = ta.Stage(data["stage"]) if data["stage"] else None
+    return TickerSnapshot(**{**data, "trend": ta.TrendState(data["trend"]), "stage": stage})
 
 
 @dataclass
@@ -235,19 +268,41 @@ class MarketScreenerService:
         self._sector_cache: dict[str, tuple[datetime, list[SectorPerformance]]] = {}
         self._industry_cache: dict[str, tuple[datetime, list[IndustryPerformance]]] = {}
         self._ohlcv_cache: dict[str, tuple[datetime, dict[str, pd.DataFrame]]] = {}
+        self._forecast_cache: dict[str, tuple[datetime, list[SectorForecast]]] = {}
 
     def _date_range(self) -> tuple[date, date]:
         end = date.today()
         start = end - timedelta(days=HISTORY_DAYS)
         return start, end
 
+    def get_snapshot_computed_at(self, region: str = DEFAULT_REGION) -> datetime | None:
+        """When the in-process universe snapshot for `region` was last actually
+        computed - None if `get_universe_snapshot` hasn't been called yet this
+        process. Lets a caller (e.g. the watchlist endpoint, which is just a
+        cheap filter over this snapshot) report "actualizado hace X" without
+        needing its own separate durable-cache entry."""
+        cached = self._snapshot_cache.get(region)
+        return cached[0] if cached is not None else None
+
     def get_universe_snapshot(
-        self, region: str = DEFAULT_REGION, force_refresh: bool = False
+        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
     ) -> list[TickerSnapshot]:
         cached = self._snapshot_cache.get(region)
         if not force_refresh and cached is not None:
             cached_at, snapshots = cached
             if datetime.now(UTC) - cached_at < CACHE_TTL:
+                return snapshots
+
+        # In-process cache missed (cold start, just after a deploy, or genuinely
+        # expired) - before paying for a live ~170-ticker recompute, check the
+        # durable cache: it survives restarts, the in-process one doesn't. Also
+        # populates the in-process cache so the *next* call this process makes
+        # doesn't even need this DB round trip.
+        if db is not None and not force_refresh:
+            durable = durable_cache.load_fresh(db, f"universe_snapshot:{region}", CACHE_TTL)
+            if durable is not None:
+                snapshots = [_snapshot_from_dict(d) for d in durable]
+                self._snapshot_cache[region] = (datetime.now(UTC), snapshots)
                 return snapshots
 
         ticker_sectors = all_sector_tickers(region)
@@ -277,15 +332,30 @@ class MarketScreenerService:
 
         self._snapshot_cache[region] = (datetime.now(UTC), snapshots)
         self._ohlcv_cache[region] = (datetime.now(UTC), ohlcv_by_ticker)
+        if db is not None:
+            durable_cache.save(db, f"universe_snapshot:{region}", [_snapshot_to_dict(s) for s in snapshots])
         return snapshots
 
     def get_proximity_matches(
-        self, region: str = DEFAULT_REGION, threshold: float = 0.03, force_refresh: bool = False
+        self,
+        region: str = DEFAULT_REGION,
+        threshold: float = 0.03,
+        force_refresh: bool = False,
+        db: Session | None = None,
     ) -> list[dict]:
         """Universe-wide "which stocks are sitting right on a support or resistance
         level right now" screener - reuses the OHLCV already fetched for the
-        universe snapshot rather than re-downloading it."""
-        self.get_universe_snapshot(region=region, force_refresh=force_refresh)  # ensures _ohlcv_cache is warm
+        universe snapshot rather than re-downloading it.
+
+        Only warm right after a real (non-durable-cache) `get_universe_snapshot`
+        computation in *this* process, since raw OHLCV frames aren't themselves
+        part of the durable cache (only the derived `TickerSnapshot`s are, see
+        `durable_cache.py`) - so right after a restart, this returns empty until
+        the in-process cache has been filled at least once by a live recompute.
+        A quiet, temporary gap rather than a crash, consistent with every other
+        graceful-degradation point in this module."""
+        # ensures _ohlcv_cache is warm
+        self.get_universe_snapshot(region=region, force_refresh=force_refresh, db=db)
         cached = self._ohlcv_cache.get(region)
         if cached is None:
             return []
@@ -360,8 +430,88 @@ class MarketScreenerService:
         self._sector_cache[region] = (datetime.now(UTC), performance)
         return performance
 
+    def get_sector_forecast(
+        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
+    ) -> list[SectorForecast]:
+        """Forward-looking counterpart to `get_sector_performance`: instead of
+        "how has each sector already done", a Markov chain fit on each sector
+        ETF's own daily returns (the exact same machinery `analyze_markov_chain`
+        already applies per-ticker, just aimed at a sector index instead of a
+        single stock - see its module docstring for the randomness-gating and
+        order justification tests that keep this honest) projects where it's
+        statistically likely to head over the next 5/21 trading days. Ranked
+        with sectors whose own history genuinely doesn't look like noise
+        (`has_statistical_structure`) first - this never fabricates a directional
+        call for a sector where the chain has no real edge, same objectivity
+        principle as everywhere else the Markov model is used.
+
+        A much longer lookback than `get_sector_performance`'s own technicals
+        need (`FORECAST_HISTORY_YEARS`, not `HISTORY_DAYS`) - `analyze_markov_chain`
+        needs 300+ clean daily returns to fit at all - so this fetches its own
+        OHLCV rather than reusing `_ohlcv_cache`."""
+        cached = self._forecast_cache.get(region)
+        if not force_refresh and cached is not None:
+            cached_at, forecast = cached
+            if datetime.now(UTC) - cached_at < CACHE_TTL:
+                return forecast
+
+        cache_key = f"sector_forecast:{region}"
+        if db is not None and not force_refresh:
+            durable = durable_cache.load_fresh(db, cache_key, CACHE_TTL)
+            if durable is not None:
+                forecast = [SectorForecast(**d) for d in durable]
+                self._forecast_cache[region] = (datetime.now(UTC), forecast)
+                return forecast
+
+        sector_etfs = region_config(region).sector_etfs
+        end = date.today()
+        start = end - timedelta(days=365 * FORECAST_HISTORY_YEARS)
+        ohlcv_by_ticker = self.market_data.get_bulk_ohlcv(list(sector_etfs.values()), start, end)
+
+        snapshots = self.get_universe_snapshot(region=region, db=db)  # for each sector's current RS leaders
+        snapshots_by_sector: dict[str, list[TickerSnapshot]] = {}
+        for s in snapshots:
+            snapshots_by_sector.setdefault(s.sector, []).append(s)
+
+        forecast: list[SectorForecast] = []
+        for sector, etf in sector_etfs.items():
+            df = ohlcv_by_ticker.get(etf)
+            if df is None or df.empty:
+                continue
+            markov = analyze_markov_chain(df["close"].pct_change())
+            if markov is None:
+                continue
+            leaders = sorted(
+                (s for s in snapshots_by_sector.get(sector, []) if s.rs_rating is not None),
+                key=lambda s: s.rs_rating,
+                reverse=True,
+            )[:TOP_STOCKS_PER_SECTOR]
+            forecast.append(
+                SectorForecast(
+                    sector=sector,
+                    etf=etf,
+                    current_state_label=markov.current_state_label,
+                    forecast_5d_return=markov.forecast_5d_return,
+                    forecast_21d_return=markov.forecast_21d_return,
+                    prob_bullish_21d=markov.prob_bullish_21d,
+                    has_statistical_structure=not markov.sequence_looks_random,
+                    top_stocks=[s.ticker for s in leaders],
+                )
+            )
+
+        # Sectors with genuine statistical structure first (the only ones this can
+        # honestly claim edge on), ranked by expected 21-day return within that
+        # group; the rest follow, clearly flagged rather than hidden - "no hay
+        # señal estadística clara aquí" is itself useful information.
+        forecast.sort(key=lambda f: (f.has_statistical_structure, f.forecast_21d_return), reverse=True)
+
+        self._forecast_cache[region] = (datetime.now(UTC), forecast)
+        if db is not None:
+            durable_cache.save(db, cache_key, [asdict(f) for f in forecast])
+        return forecast
+
     def get_industry_performance(
-        self, region: str = DEFAULT_REGION, force_refresh: bool = False
+        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
     ) -> list[IndustryPerformance]:
         cached = self._industry_cache.get(region)
         if not force_refresh and cached is not None:
@@ -369,7 +519,7 @@ class MarketScreenerService:
             if datetime.now(UTC) - cached_at < CACHE_TTL:
                 return performance
 
-        snapshots = self.get_universe_snapshot(region=region, force_refresh=force_refresh)
+        snapshots = self.get_universe_snapshot(region=region, force_refresh=force_refresh, db=db)
         snapshot_by_ticker = {s.ticker: s for s in snapshots}
 
         industries = region_config(region).industries

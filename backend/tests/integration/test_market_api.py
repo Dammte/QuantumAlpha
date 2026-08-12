@@ -146,6 +146,21 @@ def test_sector_performance_rs_rank_is_a_percentile_across_all_sectors(client: T
     assert len(set(ranks)) == len(ranks)  # each sector gets a distinct rank, no ties collapsed
 
 
+def test_sector_forecast_covers_every_sector_with_a_markov_projection(client: TestClient) -> None:
+    response = client.get("/api/v1/market/sectors/forecast")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == len(SECTOR_ETFS)
+    assert {row["sector"] for row in body} == set(SECTOR_ETFS.keys())
+    for row in body:
+        assert isinstance(row["has_statistical_structure"], bool)
+        assert 0.0 <= row["prob_bullish_21d"] <= 1.0
+        assert isinstance(row["top_stocks"], list)
+    # Sectors with genuine statistical structure are surfaced before those without.
+    structured_flags = [row["has_statistical_structure"] for row in body]
+    assert structured_flags == sorted(structured_flags, reverse=True)
+
+
 def test_sector_rotation_returns_a_cycle_read(client: TestClient) -> None:
     response = client.get("/api/v1/market/sectors/rotation")
     assert response.status_code == 200
@@ -197,7 +212,8 @@ def test_watchlist_returns_items_with_reasons(client: TestClient) -> None:
     response = client.get("/api/v1/market/watchlist")
     assert response.status_code == 200
     body = response.json()
-    for item in body:
+    assert "computed_at" in body
+    for item in body["items"]:
         assert item["horizon"] in {"short", "medium", "long"}
         assert len(item["reasons"]) > 0
         assert item["snapshot"]["ticker"] == item["ticker"]
@@ -207,7 +223,7 @@ def test_watchlist_returns_items_with_reasons(client: TestClient) -> None:
 def test_watchlist_filters_by_horizon(client: TestClient) -> None:
     response = client.get("/api/v1/market/watchlist", params={"horizon": "short"})
     assert response.status_code == 200
-    assert all(item["horizon"] == "short" for item in response.json())
+    assert all(item["horizon"] == "short" for item in response.json()["items"])
 
 
 def test_watchlist_rejects_invalid_horizon(client: TestClient) -> None:
@@ -219,9 +235,11 @@ def test_premium_watchlist_returns_only_approved_tiered_candidates(client: TestC
     response = client.get("/api/v1/market/watchlist/premium")
     assert response.status_code == 200
     body = response.json()
-    assert isinstance(body, list)
-    assert len(body) <= 30  # 3 tiers x 10 max approved per tier
-    for item in body:
+    assert "computed_at" in body
+    items = body["items"]
+    assert isinstance(items, list)
+    assert len(items) <= 30  # 3 tiers x 10 max approved per tier
+    for item in items:
         assert item["tier"] in {"daily", "weekly", "monthly"}
         assert len(item["reasons"]) > 0
         # Only genuinely endorsed candidates make the list - see premium_watchlist_service.py
@@ -232,7 +250,7 @@ def test_premium_watchlist_returns_only_approved_tiered_candidates(client: TestC
 def test_premium_watchlist_filters_by_tier(client: TestClient) -> None:
     response = client.get("/api/v1/market/watchlist/premium", params={"tier": "daily"})
     assert response.status_code == 200
-    assert all(item["tier"] == "daily" for item in response.json())
+    assert all(item["tier"] == "daily" for item in response.json()["items"])
 
 
 def test_premium_watchlist_rejects_invalid_tier(client: TestClient) -> None:
@@ -243,7 +261,7 @@ def test_premium_watchlist_rejects_invalid_tier(client: TestClient) -> None:
 def test_premium_watchlist_europe_region_tags_items_with_that_region(client: TestClient) -> None:
     response = client.get("/api/v1/market/watchlist/premium", params={"region": "europe"})
     assert response.status_code == 200
-    assert all(item["region"] == "europe" for item in response.json())
+    assert all(item["region"] == "europe" for item in response.json()["items"])
 
 
 def test_levels_proximity_matches_are_within_threshold(client: TestClient) -> None:

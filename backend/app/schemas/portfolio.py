@@ -46,3 +46,5 @@ class PortfolioSummary(BaseModel):
     total_pnl: float
     total_day_change: float
     total_day_change_pct: float | None
+    cash_balance: float  # deposits + sale proceeds - withdrawals - purchase cost, in base_currency
+    total_portfolio_value: float  # total_market_value + cash_balance - the true "what is this worth" figure

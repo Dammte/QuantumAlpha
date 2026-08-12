@@ -265,6 +265,100 @@ def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
         assert p["signals"]["recommendation"]["verdict"] in {"comprar", "esperar", "evitar"}
 
 
+def test_portfolio_risk_response_carries_computed_at(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+
+    first = client.get(f"/api/v1/portfolios/{portfolio_id}/risk").json()
+    assert "computed_at" in first
+
+    # A second request without `refresh=true` must serve the same durably-cached
+    # read (same computed_at), not silently recompute - see durable_cache.py.
+    second = client.get(f"/api/v1/portfolios/{portfolio_id}/risk").json()
+    assert second["computed_at"] == first["computed_at"]
+
+    refreshed = client.get(f"/api/v1/portfolios/{portfolio_id}/risk", params={"refresh": True}).json()
+    assert refreshed["computed_at"] >= first["computed_at"]
+
+
+def test_selling_moves_proceeds_into_cash_balance(client: TestClient) -> None:
+    """The literal bug this feature fixes: selling a position must not make its
+    proceeds disappear from the portfolio's total - they become liquidity."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["cash_balance"] == pytest.approx(-1000.0)  # 1000 spent buying, no cash yet
+    assert body["total_portfolio_value"] == pytest.approx(body["total_market_value"] + body["cash_balance"])
+
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "sell", "quantity": 10, "price": 150},
+    )
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["positions"] == []
+    assert body["total_market_value"] == 0.0  # nothing held any more...
+    assert body["cash_balance"] == pytest.approx(500.0)  # ...but the $1500 sale proceeds became cash
+    # ...so the total portfolio value still reflects the $500 gain, not zero.
+    assert body["total_portfolio_value"] == pytest.approx(500.0)
+
+
+def test_deposit_and_withdrawal_move_cash_balance(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+
+    response = client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"transaction_type": "deposit", "quantity": 1000},
+    )
+    assert response.status_code == 201
+    tx = response.json()
+    assert tx["ticker"] is None
+    assert tx["price"] == 1.0
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["cash_balance"] == pytest.approx(1000.0)
+    assert body["total_portfolio_value"] == pytest.approx(1000.0)
+
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"transaction_type": "withdrawal", "quantity": 400},
+    )
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["cash_balance"] == pytest.approx(600.0)
+
+    # Buying still spends from that cash balance, exactly like real capital.
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 5, "price": 100},
+    )
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["cash_balance"] == pytest.approx(100.0)  # 600 - 500 spent
+    assert body["total_portfolio_value"] == pytest.approx(body["total_market_value"] + 100.0)
+
+
+def test_deposit_with_ticker_is_rejected(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    response = client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "deposit", "quantity": 1000},
+    )
+    assert response.status_code == 422
+
+
+def test_buy_without_price_is_rejected(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    response = client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10},
+    )
+    assert response.status_code == 422
+
+
 def test_health_check(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200

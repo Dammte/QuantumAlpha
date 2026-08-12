@@ -30,7 +30,7 @@ class PortfolioService:
         base_currency = orm.base_currency
 
         transactions = self.repository.get_transactions(portfolio_id)
-        tickers = sorted({tx.ticker for tx in transactions})
+        tickers = sorted({tx.ticker for tx in transactions if tx.ticker is not None})
         price_quotes = self.market_data.get_latest_quotes(tickers) if tickers else {}
 
         # One FX lookup per distinct *currency* actually held (not per ticker),
@@ -89,7 +89,7 @@ class PortfolioService:
 
     def get_portfolio_value_history(self, portfolio_id: int, start: date, end: date) -> pd.Series:
         transactions = self.repository.get_transactions(portfolio_id)
-        tickers = sorted({tx.ticker for tx in transactions})
+        tickers = sorted({tx.ticker for tx in transactions if tx.ticker is not None})
         if not tickers:
             return pd.Series(dtype=float)
 

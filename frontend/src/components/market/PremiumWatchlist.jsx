@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
-import { formatCurrency, formatPercent, garchRegimeLabel } from '../../format'
+import { formatCurrency, formatPercent, garchRegimeLabel, isExceptionalScore } from '../../format'
+import EntryTimingBadge from './EntryTimingBadge'
+import RefreshBar from '../RefreshBar'
 
 const TIERS = [
   { key: '', label: 'Todas' },
@@ -28,9 +30,11 @@ function backtestBadge(backtest) {
 function PremiumWatchlistCard({ item, onNavigateToTicker }) {
   const { signals } = item
   const badge = backtestBadge(signals.backtest)
+  const exceptional = isExceptionalScore(signals.recommendation.score)
 
   return (
-    <div className="watchlist-card premium-watchlist-card">
+    <div className={`watchlist-card premium-watchlist-card ${exceptional ? 'premium-watchlist-card--exceptional' : ''}`}>
+      {exceptional && <span className="premium-watchlist-card__exceptional-tag">★ Señal excepcional</span>}
       <div className="watchlist-card__header">
         <div>
           <span className="positions-table__ticker">{item.ticker}</span>
@@ -47,6 +51,8 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
         {signals.rs_rating !== null && <span>RS {signals.rs_rating}</span>}
         {signals.garch && <span>{garchRegimeLabel(signals.garch.regime)}</span>}
       </div>
+
+      <EntryTimingBadge entryTiming={signals.entry_timing} />
 
       <p className="premium-watchlist-card__backtest">
         <span className={`sector-tier-badge sector-tier-badge--${badge.tone}`}>{badge.label}</span>
@@ -77,14 +83,19 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
 function PremiumWatchlist({ onNavigateToTicker, region }) {
   const [tier, setTier] = useState('')
   const [items, setItems] = useState([])
+  const [computedAt, setComputedAt] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
     async function load() {
       setLoading(true)
       try {
-        setItems(await api.getPremiumWatchlist({ region, tier: tier || undefined }))
+        const body = await api.getPremiumWatchlist({ region, tier: tier || undefined })
+        setItems(body.items)
+        setComputedAt(body.computed_at)
+        setError(null)
       } catch (err) {
         setError(err.message)
       } finally {
@@ -93,6 +104,20 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
     }
     load()
   }, [region, tier])
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    try {
+      const body = await api.getPremiumWatchlist({ region, tier: tier || undefined, refresh: true })
+      setItems(body.items)
+      setComputedAt(body.computed_at)
+      setError(null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const sections = TIER_ORDER.filter((t) => !tier || tier === t)
     .map((t) => ({ tier: t, items: items.filter((i) => i.tier === t) }))
@@ -104,7 +129,8 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
         Una selección reducida (hasta 10 por horizonte) de activos que no solo cumplen una regla técnica, sino que
         pasaron el mismo análisis completo de "Analizar activo" - GARCH, cadena de Markov, Monte Carlo, backtest
         walk-forward y tamaño de posición Kelly - y salieron respaldados. No es lo mismo revisar 150 activos que
-        revisar 10 excelentes.
+        revisar 10 excelentes. Las marcadas con <strong>★ Señal excepcional</strong> tienen una puntuación de 10 o
+        más - muy pocas llegan ahí, y son las que más factores independientes confirman a la vez.
       </p>
 
       <div className="filters-row">
@@ -119,6 +145,10 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
           </button>
         ))}
       </div>
+
+      {!loading && (
+        <RefreshBar computedAt={computedAt} onRefresh={handleRefresh} refreshing={refreshing} />
+      )}
 
       {loading ? (
         <p className="empty-state">Analizando candidatos con el motor cuantitativo completo…</p>

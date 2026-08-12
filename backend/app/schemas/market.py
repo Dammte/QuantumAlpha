@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 from app.schemas.common import PriceLevelResponse
@@ -56,6 +58,20 @@ class SectorPerformanceResponse(BaseModel):
     change_6m: float | None
     change_1y: float | None
     rs_rank: int | None
+
+
+class SectorForecastResponse(BaseModel):
+    """Forward-looking counterpart to `SectorPerformanceResponse` - see
+    `MarketScreenerService.get_sector_forecast`."""
+
+    sector: str
+    etf: str
+    current_state_label: str
+    forecast_5d_return: float
+    forecast_21d_return: float
+    prob_bullish_21d: float
+    has_statistical_structure: bool
+    top_stocks: list[str]
 
 
 class SectorRotationResponse(BaseModel):
@@ -255,3 +271,14 @@ class PositionRiskResponse(BaseModel):
 
 class PortfolioRiskResponse(BaseModel):
     positions: list[PositionRiskResponse]
+    computed_at: datetime  # when this was last actually computed - may be hours old, see durable_cache.py
+
+
+class PremiumWatchlistResponse(BaseModel):
+    items: list[PremiumWatchlistItemResponse]
+    computed_at: datetime  # oldest of the tier(s) shown - see durable_cache.py
+
+
+class WatchlistResponse(BaseModel):
+    items: list[WatchlistItemResponse]
+    computed_at: datetime

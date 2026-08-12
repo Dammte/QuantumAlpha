@@ -38,6 +38,7 @@ from app.domain.models.ticker_analysis import PricePoint, TickerAnalysis
 from app.services import analysis_tools as at
 from app.services import statistical_structure as stats_structure
 from app.services import technical_analysis as ta
+from app.services.entry_timing import EntryTiming, assess_entry_timing
 from app.services.kelly_criterion import KellyResult, recommend_position_size, win_probability_from_barriers
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
@@ -112,6 +113,7 @@ class CoreTickerSignals:
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
     is_intraday_snapshot: bool
     recommendation: Recommendation
+    entry_timing: EntryTiming | None  # see entry_timing.py - a timing read, not a second verdict
     markov: MarkovChainResult | None
     garch: GarchResult | None
     monte_carlo: MonteCarloResult | None
@@ -276,6 +278,8 @@ def compute_core_signals(
         mean_reverting_structure=mean_reverting_structure,
     )
 
+    entry_timing = assess_entry_timing(atr_multiple, nearest_support, trend)
+
     monte_carlo = simulate_and_analyze(
         returns,
         price,
@@ -342,6 +346,7 @@ def compute_core_signals(
         vix_regime=vix_regime_label,
         is_intraday_snapshot=is_intraday_snapshot,
         recommendation=recommendation,
+        entry_timing=entry_timing,
         markov=markov,
         garch=garch,
         monte_carlo=monte_carlo,
@@ -510,6 +515,7 @@ class TickerAnalysisService:
             seasonality=seasonality,
             historical_analogs=historical_analogs,
             recommendation=core.recommendation,
+            entry_timing=core.entry_timing,
             markov=core.markov,
             garch=core.garch,
             monte_carlo=core.monte_carlo,

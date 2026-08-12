@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from app.schemas.common import PriceLevelResponse
 from app.schemas.quant_analysis import (
+    EntryTimingResponse,
     GarchResponse,
     KellyPositionSizeResponse,
     MarkovChainResponse,
@@ -164,6 +165,7 @@ class TickerAnalysisResponse(BaseModel):
     seasonality: list[MonthSeasonalityResponse]
     historical_analogs: HistoricalAnalogsResponse | None
     recommendation: RecommendationResponse
+    entry_timing: EntryTimingResponse | None
     markov: MarkovChainResponse | None
     garch: GarchResponse | None
     monte_carlo: MonteCarloResponse | None

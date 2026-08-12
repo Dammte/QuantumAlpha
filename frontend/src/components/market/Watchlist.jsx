@@ -3,6 +3,7 @@ import { api } from '../../api'
 import { formatCurrency, formatPercent } from '../../format'
 import TrendBadge from './TrendBadge'
 import PremiumWatchlist from './PremiumWatchlist'
+import RefreshBar from '../RefreshBar'
 
 const HORIZONS = [
   { key: '', label: 'Todos' },
@@ -71,14 +72,19 @@ function WatchlistCard({ item }) {
 function GeneralWatchlist({ region }) {
   const [horizon, setHorizon] = useState('')
   const [items, setItems] = useState([])
+  const [computedAt, setComputedAt] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
     async function load() {
       setLoading(true)
       try {
-        setItems(await api.getWatchlist({ region, horizon: horizon || undefined }))
+        const body = await api.getWatchlist({ region, horizon: horizon || undefined })
+        setItems(body.items)
+        setComputedAt(body.computed_at)
+        setError(null)
       } catch (err) {
         setError(err.message)
       } finally {
@@ -87,6 +93,20 @@ function GeneralWatchlist({ region }) {
     }
     load()
   }, [region, horizon])
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    try {
+      const body = await api.getWatchlist({ region, horizon: horizon || undefined, refresh: true })
+      setItems(body.items)
+      setComputedAt(body.computed_at)
+      setError(null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const aligned = items.filter((i) => sectorTier(i.sector_rs_rank) === 'strong')
   const rest = items.filter((i) => sectorTier(i.sector_rs_rank) !== 'strong')
@@ -105,6 +125,10 @@ function GeneralWatchlist({ region }) {
           </button>
         ))}
       </div>
+
+      {!loading && (
+        <RefreshBar computedAt={computedAt} onRefresh={handleRefresh} refreshing={refreshing} />
+      )}
 
       {loading ? (
         <p className="empty-state">Buscando candidatos…</p>

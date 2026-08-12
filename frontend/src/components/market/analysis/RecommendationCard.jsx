@@ -1,4 +1,5 @@
 import { formatCurrency, formatRatio } from '../../../format'
+import EntryTimingBadge from '../EntryTimingBadge'
 
 const VERDICT_META = {
   comprar: { label: 'COMPRAR', tone: 'up' },
@@ -49,7 +50,7 @@ function ScoreGauge({ score }) {
   )
 }
 
-function RecommendationCard({ recommendation, currency }) {
+function RecommendationCard({ recommendation, entryTiming, currency }) {
   const meta = VERDICT_META[recommendation.verdict] ?? { label: recommendation.verdict, tone: 'neutral' }
   const triggered = recommendation.factors.filter((f) => f.triggered)
 
@@ -61,6 +62,10 @@ function RecommendationCard({ recommendation, currency }) {
       </div>
 
       <ScoreGauge score={recommendation.score} />
+
+      {recommendation.verdict === 'comprar' && (
+        <EntryTimingBadge entryTiming={entryTiming} showDescription />
+      )}
 
       {recommendation.verdict === 'comprar' && (
         <div className="recommendation-card__levels">

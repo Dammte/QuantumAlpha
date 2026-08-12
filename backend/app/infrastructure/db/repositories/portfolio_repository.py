@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.domain.models.portfolio import Portfolio
 from app.domain.models.position import Position
 from app.domain.models.price_quote import PriceQuote
-from app.domain.models.transaction import Transaction, TransactionType
+from app.domain.models.transaction import CASH_MOVEMENT_TYPES, Transaction, TransactionType
 from app.infrastructure.db.models import PortfolioORM, TransactionORM
 
 
@@ -58,25 +58,35 @@ class PortfolioRepository:
     def add_transaction(
         self,
         portfolio_id: int,
-        ticker: str,
         transaction_type: TransactionType,
         quantity: float,
-        price: float,
+        ticker: str | None = None,
+        price: float | None = None,
         fees: float = 0.0,
         executed_at: datetime | None = None,
     ) -> Transaction:
-        # Guards against the realized-P&L math going nonsensical (selling from a
-        # position that doesn't exist would price the "cost" of those shares at
-        # 0, booking the entire sale as pure profit). Compares against shares
-        # held right now rather than truly reconstructing history in
-        # `executed_at` order, so a backdated sell inserted out of order can
-        # still slip through - a reasonable simplification for a personal tool.
-        if transaction_type == TransactionType.SELL:
-            held = self._currently_held_quantity(portfolio_id, ticker)
-            if quantity > held + 1e-9:
-                raise ValueError(
-                    f"No se pueden vender {quantity:g} unidades de {ticker}: solo hay {held:g} en cartera."
-                )
+        # DEPOSIT/WITHDRAWAL are pure cash movements: no ticker, and `price` is
+        # always pinned to 1.0 so `quantity` reads directly as a cash amount in
+        # the portfolio's own base currency (see Transaction's docstring) -
+        # whatever the caller passed for ticker/price is ignored, not merely
+        # optional, so a client can never smuggle a priced "cash trade" in.
+        if transaction_type in CASH_MOVEMENT_TYPES:
+            ticker, price = None, 1.0
+        elif ticker is None or price is None:
+            raise ValueError("ticker y price son obligatorios para compras y ventas")
+        else:
+            # Guards against the realized-P&L math going nonsensical (selling from a
+            # position that doesn't exist would price the "cost" of those shares at
+            # 0, booking the entire sale as pure profit). Compares against shares
+            # held right now rather than truly reconstructing history in
+            # `executed_at` order, so a backdated sell inserted out of order can
+            # still slip through - a reasonable simplification for a personal tool.
+            if transaction_type == TransactionType.SELL:
+                held = self._currently_held_quantity(portfolio_id, ticker)
+                if quantity > held + 1e-9:
+                    raise ValueError(
+                        f"No se pueden vender {quantity:g} unidades de {ticker}: solo hay {held:g} en cartera."
+                    )
 
         orm = TransactionORM(
             portfolio_id=portfolio_id,
@@ -114,12 +124,26 @@ class PortfolioRepository:
         price_quotes: dict[str, PriceQuote],
         fx_rates: dict[str, float] | None = None,
     ) -> Portfolio | None:
-        """Derives current positions (weighted-average cost) and realized P&L from
-        the full transaction history. Every sell's proceeds are compared against
-        the *average cost at that moment* (not today's) to bank its realized gain
-        - `total_realized_pnl` sums this across every sell ever made, including
-        ones that fully closed out a position (which then holds 0 shares and
-        wouldn't otherwise show up anywhere).
+        """Derives current positions (weighted-average cost), realized P&L and cash
+        balance from the full transaction history. Every sell's proceeds are
+        compared against the *average cost at that moment* (not today's) to bank
+        its realized gain - `total_realized_pnl` sums this across every sell ever
+        made, including ones that fully closed out a position (which then holds 0
+        shares and wouldn't otherwise show up anywhere).
+
+        `cash_balance` is what actually answers "where did the money from that
+        sale go": a sell's proceeds, a deposit, or a withdrawal all move this
+        figure (a buy consumes it) instead of just disappearing once the shares
+        they came from are no longer held - the whole portfolio total
+        (`Portfolio.total_portfolio_value`) is positions *plus* this, not
+        positions alone. Tracked in a single running total in the portfolio's own
+        base currency (DEPOSIT/WITHDRAWAL are always entered in base currency
+        already; a BUY/SELL in another currency is converted with *today's* FX
+        rate, same simplification `total_realized_pnl` already makes - see
+        `fx_rate_for` below) rather than as separate per-currency pots: this app
+        already presents one converted, base-currency portfolio total everywhere
+        else, and a broker that lets you buy foreign-listed stock from one
+        account is doing exactly this conversion for you under the hood anyway.
 
         `fx_rates` (currency -> multiplier into the portfolio's base currency,
         see `PortfolioService.get_portfolio_summary`) lets a position priced in
@@ -127,7 +151,10 @@ class PortfolioRepository:
         correctly to portfolio-wide totals instead of being added as if 1 EUR
         were 1 USD. A currency missing from `fx_rates` (rate unavailable right
         now) makes that position's contribution to the totals unavailable too,
-        same graceful-degradation treatment as a missing price quote."""
+        same graceful-degradation treatment as a missing price quote - and the
+        same applies to `cash_balance`: a buy/sell whose currency's rate isn't
+        available right now simply doesn't move it, understating rather than
+        guessing at the true balance."""
         orm = self.get(portfolio_id)
         if orm is None:
             return None
@@ -137,11 +164,25 @@ class PortfolioRepository:
         holdings: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])  # ticker -> [quantity, cost_basis]
         realized_pnl_by_ticker: dict[str, float] = defaultdict(float)
 
+        def fx_rate_for(ticker: str) -> float | None:
+            quote = price_quotes.get(ticker)
+            return fx_rates.get(quote.currency) if quote is not None else None
+
+        cash_balance = 0.0
         for tx in transactions:
+            if tx.transaction_type == TransactionType.DEPOSIT:
+                cash_balance += tx.quantity
+                continue
+            if tx.transaction_type == TransactionType.WITHDRAWAL:
+                cash_balance -= tx.quantity
+                continue
+
             state = holdings[tx.ticker]
             if tx.transaction_type == TransactionType.BUY:
                 state[0] += tx.quantity
                 state[1] += tx.quantity * tx.price + tx.fees
+                if (rate := fx_rate_for(tx.ticker)) is not None:
+                    cash_balance -= (tx.quantity * tx.price + tx.fees) * rate
             else:
                 avg_cost = state[1] / state[0] if state[0] else 0.0
                 cost_of_shares_sold = tx.quantity * avg_cost
@@ -149,10 +190,8 @@ class PortfolioRepository:
                 realized_pnl_by_ticker[tx.ticker] += proceeds - cost_of_shares_sold
                 state[0] -= tx.quantity
                 state[1] -= cost_of_shares_sold
-
-        def fx_rate_for(ticker: str) -> float | None:
-            quote = price_quotes.get(ticker)
-            return fx_rates.get(quote.currency) if quote is not None else None
+                if (rate := fx_rate_for(tx.ticker)) is not None:
+                    cash_balance += proceeds * rate
 
         positions = [
             Position(
@@ -181,4 +220,5 @@ class PortfolioRepository:
             base_currency=orm.base_currency,
             positions=positions,
             total_realized_pnl=total_realized_pnl,
+            cash_balance=cash_balance,
         )

@@ -1,6 +1,20 @@
 import { useState } from 'react'
 import { formatCurrency } from '../format'
 
+const TYPE_LABELS = {
+  buy: 'Compra',
+  sell: 'Venta',
+  deposit: 'Depósito',
+  withdrawal: 'Retiro',
+}
+
+const TYPE_BADGE_CLASS = {
+  buy: 'badge--buy',
+  sell: 'badge--sell',
+  deposit: 'badge--buy',
+  withdrawal: 'badge--sell',
+}
+
 function TransactionsList({ transactions, currency, currencyByTicker, onDelete }) {
   const [deletingId, setDeletingId] = useState(null)
 
@@ -35,22 +49,25 @@ function TransactionsList({ transactions, currency, currencyByTicker, onDelete }
         </thead>
         <tbody>
           {sorted.map((tx) => {
+            const isCashMovement = tx.transaction_type === 'deposit' || tx.transaction_type === 'withdrawal'
             // Transactions don't store their own currency (a raw price the user
             // entered) - approximated from the position's live-quoted currency
             // when the ticker is still held, falling back to the portfolio's
-            // base currency for fully closed-out tickers.
-            const txCurrency = currencyByTicker?.get(tx.ticker) ?? currency
+            // base currency for fully closed-out tickers and for cash movements
+            // (always entered in the portfolio's own base currency, see
+            // TransactionForm's docstring).
+            const txCurrency = isCashMovement ? currency : (currencyByTicker?.get(tx.ticker) ?? currency)
             return (
               <tr key={tx.id}>
                 <td>{new Date(tx.executed_at).toLocaleDateString('es-ES')}</td>
-                <td>{tx.ticker}</td>
+                <td>{isCashMovement ? <em>Liquidez</em> : tx.ticker}</td>
                 <td>
-                  <span className={`badge ${tx.transaction_type === 'buy' ? 'badge--buy' : 'badge--sell'}`}>
-                    {tx.transaction_type === 'buy' ? 'Compra' : 'Venta'}
+                  <span className={`badge ${TYPE_BADGE_CLASS[tx.transaction_type]}`}>
+                    {TYPE_LABELS[tx.transaction_type] ?? tx.transaction_type}
                   </span>
                 </td>
-                <td className="num">{tx.quantity}</td>
-                <td className="num">{formatCurrency(tx.price, txCurrency)}</td>
+                <td className="num">{isCashMovement ? '—' : tx.quantity}</td>
+                <td className="num">{isCashMovement ? '—' : formatCurrency(tx.price, txCurrency)}</td>
                 <td className="num">{formatCurrency(tx.quantity * tx.price + tx.fees, txCurrency)}</td>
                 <td className="num">
                   <button

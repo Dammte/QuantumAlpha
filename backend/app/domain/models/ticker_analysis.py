@@ -3,6 +3,7 @@ from datetime import date
 
 from app.domain.models.ticker_info import HoldersSummary, NewsArticle, TickerInfo
 from app.services.analysis_tools import HistoricalAnalogs, MonthSeasonality
+from app.services.entry_timing import EntryTiming
 from app.services.kelly_criterion import KellyResult
 from app.services.markov_chain_model import MarkovChainResult
 from app.services.monte_carlo_simulation import MonteCarloResult
@@ -87,6 +88,7 @@ class TickerAnalysis:
     seasonality: list[MonthSeasonality]
     historical_analogs: HistoricalAnalogs | None
     recommendation: Recommendation
+    entry_timing: EntryTiming | None
     markov: MarkovChainResult | None
     garch: GarchResult | None
     monte_carlo: MonteCarloResult | None

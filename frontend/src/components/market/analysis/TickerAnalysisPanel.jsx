@@ -203,7 +203,11 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
             <>
               <section className="panel panel--nested">
                 <h3>Recomendación</h3>
-                <RecommendationCard recommendation={analysis.recommendation} currency={analysis.currency ?? 'USD'} />
+                <RecommendationCard
+                  recommendation={analysis.recommendation}
+                  entryTiming={analysis.entry_timing}
+                  currency={analysis.currency ?? 'USD'}
+                />
                 <PositionSizingCard
                   sizing={analysis.position_sizing}
                   currency={analysis.currency ?? 'USD'}

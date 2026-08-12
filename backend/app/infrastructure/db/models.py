@@ -36,7 +36,7 @@ class TransactionORM(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
-    ticker: Mapped[str] = mapped_column(ForeignKey("assets.ticker"))
+    ticker: Mapped[str | None] = mapped_column(ForeignKey("assets.ticker"), nullable=True)
     transaction_type: Mapped[TransactionType] = mapped_column(SAEnum(TransactionType))
     quantity: Mapped[float] = mapped_column(Numeric(20, 8))
     price: Mapped[float] = mapped_column(Numeric(20, 8))
@@ -87,3 +87,27 @@ class RecommendationSnapshotORM(Base):
     # factor breakdown behind the score, not just the final number, so a
     # later reviewer can see *why*, not only *what*.
     factors: Mapped[list] = mapped_column(JSON)
+
+
+class ComputationCacheORM(Base):
+    """Durable, restart-proof companion to each service's own in-process cache
+    (see `market_screener_service.py`, `portfolio_risk_service.py`,
+    `premium_watchlist_service.py`) - keyed by an arbitrary string the caller
+    controls (e.g. "portfolio_risk:3", "universe_snapshot:us"), holding
+    whatever JSON-safe payload that cache slot last computed plus when.
+
+    Exists because this is a `plan: starter` Render web service: it doesn't
+    spin down between requests, but it does restart on every deploy, and a
+    personal project under active development deploys often - without this,
+    every single deploy would force the next visit to eat the full quant-suite
+    compute cost synchronously (tens of seconds, blocking the whole
+    single-process server for anyone else using it at that moment) purely
+    because the in-memory cache was empty again, not because the data was
+    actually stale. See `app/services/durable_cache.py`.
+    """
+
+    __tablename__ = "computation_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    computed_at: Mapped[datetime] = mapped_column(index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
