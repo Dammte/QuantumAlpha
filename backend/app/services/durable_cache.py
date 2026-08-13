@@ -47,11 +47,28 @@ but the *next* query in the same request (fetching the portfolio's own
 transactions) blew up unhandled - a caught exception two calls upstream
 disguised as an unrelated one downstream. Covered by
 `test_portfolios_api.py::test_portfolio_risk_survives_a_missing_computation_cache_table`.
+
+**A cached payload can also simply be the wrong shape now.** This table has no
+schema version of its own - it stores whatever JSON a response model dumped
+at write time, and that model's shape changes as the app evolves (a field
+gets added, as happened the very first time this bit: `imminent_cross` was
+added to `CoreSignalsResponse` after some premium-watchlist rows were already
+written, and every read of those rows 500ed on `Model.model_validate` until
+they naturally expired). `load_fresh_as` exists for exactly this: it treats a
+validation failure as a cache miss (log a quiet warning, return None, let the
+caller recompute and overwrite the stale row) instead of letting a
+`pydantic.ValidationError` propagate into a 500 - the ordinary, expected
+consequence of shipping a schema change, not a bug to alarm on. Callers
+reconstructing a plain dataclass instead of a Pydantic model (e.g.
+`market_screener_service.py`'s `_snapshot_from_dict`) need the same treatment
+applied by hand at the call site, since there's no single `model_validate`
+to hook.
 """
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, TypeVar
 
 from sqlalchemy.orm import Session
 
@@ -59,12 +76,39 @@ from app.infrastructure.db.repositories.computation_cache_repository import Comp
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
+# Substrings both backends use for "this table doesn't exist" - Postgres/psycopg
+# says `relation "computation_cache" does not exist`, SQLite says `no such
+# table: computation_cache`. This is expected (not a bug) whenever the
+# migration that creates the table hasn't been run against that database yet
+# (a real, real-world window: it has to be applied by hand against Supabase),
+# so it's logged once per process at a quiet level instead of as a recurring
+# full-traceback error on every single cache lookup until someone runs it.
+_MISSING_TABLE_MARKERS = ("does not exist", "no such table")
+_warned_missing_table = False
+
+
+def _log_read_failure(exc: Exception, cache_key: str) -> None:
+    global _warned_missing_table
+    if any(marker in str(exc) for marker in _MISSING_TABLE_MARKERS):
+        if not _warned_missing_table:
+            logger.warning(
+                "Durable cache table not found (looked up %s) - migration not run yet? "
+                "Falling back to live compute / in-process cache only until it exists. "
+                "This warning only logs once per process.",
+                cache_key,
+            )
+            _warned_missing_table = True
+        return
+    logger.exception("Durable cache read failed for %s", cache_key)
+
 
 def _safe_get(db: Session, cache_key: str) -> tuple[Any, datetime] | None:
     try:
         return ComputationCacheRepository(db).get(cache_key)
-    except Exception:
-        logger.exception("Durable cache read failed for %s", cache_key)
+    except Exception as exc:
+        _log_read_failure(exc, cache_key)
         db.rollback()  # leaves `db` usable for whatever the caller does next - see module docstring
         return None
 
@@ -83,6 +127,25 @@ def load_fresh(db: Session, cache_key: str, max_age: timedelta) -> Any | None:
     if datetime.now(UTC) - computed_at >= max_age:
         return None
     return payload
+
+
+def load_fresh_as(db: Session, cache_key: str, max_age: timedelta, reconstruct: Callable[[Any], T]) -> T | None:
+    """`load_fresh`, plus turning the raw payload into whatever shape the
+    caller actually needs (typically `SomeResponse.model_validate`) - and,
+    critically, treating a failure to do that (the cached JSON no longer
+    matches what `reconstruct` expects, e.g. after a schema change) exactly
+    like a cache miss rather than letting it propagate. See the module
+    docstring for the production incident this exists to prevent."""
+    payload = load_fresh(db, cache_key, max_age)
+    if payload is None:
+        return None
+    try:
+        return reconstruct(payload)
+    except Exception:
+        logger.warning(
+            "Durable cache payload for %s no longer matches the expected shape - treating as a miss", cache_key
+        )
+        return None
 
 
 def load_any(db: Session, cache_key: str) -> tuple[Any, datetime] | None:
@@ -110,7 +173,10 @@ def save(db: Session, cache_key: str, payload: Any, computed_at: datetime | None
     computed_at = computed_at or datetime.now(UTC)
     try:
         ComputationCacheRepository(db).set(cache_key, payload, computed_at)
-    except Exception:
-        logger.exception("Durable cache write failed for %s", cache_key)
+    except Exception as exc:
+        if any(marker in str(exc) for marker in _MISSING_TABLE_MARKERS):
+            pass  # already warned once by a read - see _log_read_failure
+        else:
+            logger.exception("Durable cache write failed for %s", cache_key)
         db.rollback()  # see module docstring - must leave `db` usable for the rest of the request
     return computed_at

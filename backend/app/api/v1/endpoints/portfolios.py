@@ -214,9 +214,11 @@ def get_portfolio_risk(
 
     cache_key = f"portfolio_risk:{portfolio_id}"
     if not refresh:
-        cached = durable_cache.load_fresh(db, cache_key, PORTFOLIO_RISK_DURABLE_TTL)
+        cached = durable_cache.load_fresh_as(
+            db, cache_key, PORTFOLIO_RISK_DURABLE_TTL, PortfolioRiskResponse.model_validate
+        )
         if cached is not None:
-            return PortfolioRiskResponse.model_validate(cached)
+            return cached
 
     tickers = sorted({tx.ticker for tx in repository.get_transactions(portfolio_id) if tx.ticker is not None})
     # A personal portfolio isn't confined to one market - combine both curated

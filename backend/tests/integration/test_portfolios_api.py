@@ -1,6 +1,9 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import ComputationCacheORM
 
@@ -433,6 +436,38 @@ def test_portfolio_risk_survives_a_missing_computation_cache_table(client: TestC
         assert summary.status_code == 200
     finally:
         ComputationCacheORM.__table__.create(bind=engine)
+
+
+def test_portfolio_risk_recomputes_when_cached_payload_shape_is_stale(
+    client: TestClient, db_session: Session
+) -> None:
+    """The real incident this locks in: `imminent_cross` was added to
+    CoreSignalsResponse after some portfolio-risk rows were already cached,
+    and every read of those rows 500ed on Pydantic validation until they
+    naturally expired (up to PORTFOLIO_RISK_DURABLE_TTL later). A cached
+    payload that's fresh by age but the wrong shape must be treated as a
+    miss and recomputed, not crash the endpoint."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+
+    # Seeded directly, as if written by an older version of the app whose
+    # PortfolioRiskResponse didn't have `swap_suggestions`/`computed_at` yet.
+    db_session.add(
+        ComputationCacheORM(
+            cache_key=f"portfolio_risk:{portfolio_id}",
+            computed_at=datetime.now(UTC),  # fresh by age - this must fail on *shape*, not staleness
+            payload={"positions": []},
+        )
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/risk")
+    assert response.status_code == 200
+    body = response.json()
+    assert {p["ticker"] for p in body["positions"]} == {"AAPL"}  # recomputed for real, not the stale empty list
 
 
 def test_health_check(client: TestClient) -> None:

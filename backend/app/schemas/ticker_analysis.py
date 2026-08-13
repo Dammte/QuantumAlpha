@@ -6,6 +6,7 @@ from app.schemas.common import PriceLevelResponse
 from app.schemas.quant_analysis import (
     EntryTimingResponse,
     GarchResponse,
+    ImminentCrossResponse,
     KellyPositionSizeResponse,
     MarkovChainResponse,
     MonteCarloResponse,
@@ -148,6 +149,7 @@ class TickerAnalysisResponse(BaseModel):
     trend: str
     stage: str | None
     ma_cross: str | None
+    imminent_cross: ImminentCrossResponse | None
     mansfield_rs: float | None
     rs_rating: int | None
     minervini_score: int

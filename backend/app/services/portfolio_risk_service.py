@@ -14,6 +14,7 @@ benchmark is still fetched in a single batched call (see `get_bulk_ohlcv`),
 so scoring N holdings is one network round-trip, not N.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
@@ -24,6 +25,8 @@ from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, currency_of
 from app.services.ticker_analysis_service import HISTORY_YEARS, CoreTickerSignals, compute_core_signals
+
+logger = logging.getLogger(__name__)
 
 PROXIMITY_THRESHOLD = 0.03  # within 3% of a level counts as "close to it"
 
@@ -87,22 +90,42 @@ def assess_position_risk(
         signals.nearest_resistance is not None
         and abs(signals.nearest_resistance.distance_pct) <= PROXIMITY_THRESHOLD
     )
+    # A *confirmed* death cross already factors into the recommendation engine's
+    # score (and from there, often the "evitar" verdict above). This is the
+    # earlier, still-projected case: nothing else has flagged this position yet,
+    # but SMA50/SMA200 are converging - worth active attention before it's a
+    # lagging confirmation, not after. See technical_analysis.detect_imminent_cross.
+    imminent_death_cross = signals.imminent_cross is not None and signals.imminent_cross.direction == "death"
 
     if signals.recommendation.verdict == "evitar":
         signal = EXIT_WARNING
     elif signals.recommendation.verdict == "comprar":
         signal = ADD_CANDIDATE
-    elif near_support or near_resistance:
+    elif near_support or near_resistance or imminent_death_cross:
         signal = WATCH
     else:
         signal = HOLD
 
     reasons = [f"{f.label} ({f.points:+d})" for f in signals.recommendation.factors if f.triggered]
     if signal == WATCH:
-        nearest = signals.nearest_support if near_support else signals.nearest_resistance
-        kind_label = "soporte" if nearest.kind == "support" else "resistencia"
-        pct = abs(nearest.distance_pct) * 100
-        reasons.append(f"Precio a {pct:.1f}% de un nivel de {kind_label} en {nearest.price:.2f}")
+        if near_support or near_resistance:
+            nearest = signals.nearest_support if near_support else signals.nearest_resistance
+            kind_label = "soporte" if nearest.kind == "support" else "resistencia"
+            pct = abs(nearest.distance_pct) * 100
+            reasons.append(f"Precio a {pct:.1f}% de un nivel de {kind_label} en {nearest.price:.2f}")
+        if imminent_death_cross:
+            reasons.append(
+                f"Posible cruce de medias bajista (SMA50/SMA200) en ~{signals.imminent_cross.bars_until} "
+                "sesiones si continúa la tendencia actual - vigilar de cerca"
+            )
+    elif signal == HOLD and signals.imminent_cross is not None and signals.imminent_cross.direction == "golden":
+        # Informational only for a HOLD - a projected golden cross doesn't by
+        # itself clear the bar for an add_candidate verdict (that still needs
+        # the full recommendation engine's "comprar"), but it's worth knowing.
+        reasons.append(
+            f"Posible cruce de medias alcista (SMA50/SMA200) en ~{signals.imminent_cross.bars_until} sesiones "
+            "si continúa la tendencia actual"
+        )
     if not reasons:
         reasons.append("Sin señales técnicas relevantes en este momento")
 
@@ -121,6 +144,25 @@ def assess_position_risk(
         reasons=reasons,
         signals=signals,
     )
+
+
+def _safe_assess_position_risk(
+    ticker: str,
+    df: pd.DataFrame,
+    benchmark_close: pd.Series | None,
+    rs_rating: int | None,
+    vix_close: pd.Series | None,
+) -> PositionRisk | None:
+    """`assess_position_risk`, isolated: one holding's GARCH optimizer failing
+    to converge, a backtest edge case, or any other numerical hiccup must
+    never take the rest of a real portfolio's risk read down with it - a
+    holding that fails to compute simply doesn't get a signal this round
+    (rather than the whole request 500ing) and tries again next refresh."""
+    try:
+        return assess_position_risk(ticker, df, benchmark_close, rs_rating=rs_rating, vix_close=vix_close)
+    except Exception:
+        logger.exception("Portfolio risk: skipping %s after a compute failure", ticker)
+        return None
 
 
 def get_portfolio_positions_risk(
@@ -156,8 +198,8 @@ def get_portfolio_positions_risk(
             continue
         benchmark_df = ohlcv_by_ticker.get(benchmark_by_ticker[ticker])
         benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
-        risk = assess_position_risk(
-            ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker), vix_close=vix_close
+        risk = _safe_assess_position_risk(
+            ticker, df, benchmark_close, rs_by_ticker.get(ticker), vix_close
         )
         if risk is not None:
             results.append(risk)
@@ -210,8 +252,8 @@ class PortfolioRiskService:
                     continue
                 benchmark_df = ohlcv_by_ticker.get(benchmark_by_ticker[ticker])
                 benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
-                risk = assess_position_risk(
-                    ticker, df, benchmark_close, rs_rating=rs_by_ticker.get(ticker), vix_close=vix_close
+                risk = _safe_assess_position_risk(
+                    ticker, df, benchmark_close, rs_by_ticker.get(ticker), vix_close
                 )
                 if risk is not None:
                     fresh_by_ticker[ticker] = risk

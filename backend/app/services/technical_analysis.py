@@ -401,6 +401,66 @@ def detect_recent_cross(fast: pd.Series, slow: pd.Series, lookback: int = 5) -> 
     return None
 
 
+IMMINENT_CROSS_LOOKBACK = 15  # bars of recent gap history the trend line is fit over
+IMMINENT_CROSS_HORIZON = 10  # only flag a projected cross within this many bars ahead
+IMMINENT_CROSS_MIN_R2 = 0.5  # the gap's recent trajectory must actually look like a trend, not noise
+
+
+@dataclass(frozen=True, slots=True)
+class ImminentCross:
+    """A cross `detect_recent_cross` hasn't seen yet because it hasn't happened -
+    a projection, not a confirmation. See `detect_imminent_cross`."""
+
+    direction: str  # "golden" | "death" - which way the projected cross points
+    bars_until: int  # projected trading days until fast and slow would meet, at the current rate
+    r_squared: float  # how well a straight line explains the recent gap trajectory (0-1)
+
+
+def detect_imminent_cross(fast: pd.Series, slow: pd.Series) -> ImminentCross | None:
+    """Fits a straight line to `fast - slow` over the last `IMMINENT_CROSS_LOOKBACK`
+    bars and, if that line is actually heading toward zero (not away from it, not
+    flat), projects how many bars until it gets there - a leading complement to
+    `detect_recent_cross`'s lagging, already-happened read. Exists because a
+    confirmed cross is, by construction, old news: two moving averages don't
+    snap together instantly, they converge over days, and by the time SMA50
+    has actually crossed SMA200 a meaningful chunk of the move behind it has
+    usually already happened. Catching the convergence *before* the cross
+    finishes gives a genuine head start to act on, at the cost of being a
+    projection rather than a fact - which is why this is surfaced as a
+    separate, clearly-labeled field (never folded into the scored
+    `ma_cross` factor) and gated by `IMMINENT_CROSS_MIN_R2`: a choppy,
+    directionless gap can trivially produce a spurious "3 bars until cross"
+    from four noisy points, so this only fires when a straight line actually
+    explains most of the recent trajectory (R² is exactly that goodness-of-fit
+    check), and only within `IMMINENT_CROSS_HORIZON` bars - far enough out and
+    a linear extrapolation stops being a reasonable assumption anyway."""
+    gap = (fast - slow).dropna()
+    if len(gap) < IMMINENT_CROSS_LOOKBACK:
+        return None
+    recent = gap.iloc[-IMMINENT_CROSS_LOOKBACK:].to_numpy()
+    current_gap = float(recent[-1])
+    if current_gap == 0:
+        return None  # already crossed, or exactly on it - detect_recent_cross's territory
+
+    x = np.arange(len(recent), dtype=float)
+    slope, intercept = np.polyfit(x, recent, 1)
+    predicted = slope * x + intercept
+    residual_ss = float(np.sum((recent - predicted) ** 2))
+    total_ss = float(np.sum((recent - recent.mean()) ** 2))
+    r_squared = 1 - residual_ss / total_ss if total_ss > 0 else 0.0
+    if r_squared < IMMINENT_CROSS_MIN_R2:
+        return None
+
+    if slope == 0:
+        return None
+    bars_until = -current_gap / slope
+    if bars_until <= 0 or bars_until > IMMINENT_CROSS_HORIZON:
+        return None  # moving away from zero, or too far out for a straight-line projection to mean much
+
+    direction = "death" if current_gap > 0 else "golden"
+    return ImminentCross(direction=direction, bars_until=round(bars_until), r_squared=round(r_squared, 3))
+
+
 @dataclass(frozen=True, slots=True)
 class PriceLevel:
     price: float

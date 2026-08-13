@@ -133,6 +133,65 @@ def test_detect_recent_cross_none_when_no_crossover():
     assert ta.detect_recent_cross(fast, slow, lookback=5) is None
 
 
+def test_detect_imminent_cross_death_when_gap_shrinks_toward_zero():
+    # fast - slow shrinks linearly from 20 to 6 over 15 bars (slope -1): still
+    # positive (fast above slow, a "golden" state) but heading to 0 in 6 bars.
+    gap = list(range(20, 5, -1))  # 20, 19, ..., 6 (15 values)
+    fast = pd.Series(gap, dtype=float)
+    slow = pd.Series([0.0] * len(gap))
+    result = ta.detect_imminent_cross(fast, slow)
+    assert result is not None
+    assert result.direction == "death"
+    assert result.bars_until == 6
+    assert result.r_squared == 1.0  # a perfectly straight line
+
+
+def test_detect_imminent_cross_golden_when_gap_rises_toward_zero():
+    gap = [-20.0 + i for i in range(15)]  # -20, -19, ..., -6
+    fast = pd.Series(gap)
+    slow = pd.Series([0.0] * len(gap))
+    result = ta.detect_imminent_cross(fast, slow)
+    assert result is not None
+    assert result.direction == "golden"
+    assert result.bars_until == 6
+
+
+def test_detect_imminent_cross_none_with_insufficient_history():
+    fast = pd.Series([12.0, 11.0, 10.0])
+    slow = pd.Series([10.0, 10.0, 10.0])
+    assert ta.detect_imminent_cross(fast, slow) is None
+
+
+def test_detect_imminent_cross_none_when_diverging():
+    # Gap growing *away* from zero - moving in the wrong direction to cross soon.
+    gap = [5.0 + i for i in range(15)]  # 5, 6, ..., 19
+    fast = pd.Series(gap)
+    slow = pd.Series([0.0] * len(gap))
+    assert ta.detect_imminent_cross(fast, slow) is None
+
+
+def test_detect_imminent_cross_none_when_flat():
+    # No trend at all in the gap - a constant series has zero variance to explain,
+    # so R² can't clear the goodness-of-fit bar.
+    fast = pd.Series([5.0] * 15)
+    slow = pd.Series([0.0] * 15)
+    assert ta.detect_imminent_cross(fast, slow) is None
+
+
+def test_detect_imminent_cross_none_when_already_crossed():
+    gap = list(range(14, -1, -1))  # 14, 13, ..., 0 - lands exactly on zero
+    fast = pd.Series(gap, dtype=float)
+    slow = pd.Series([0.0] * len(gap))
+    assert ta.detect_imminent_cross(fast, slow) is None
+
+
+def test_detect_imminent_cross_none_when_projection_too_far_out():
+    gap = [100.0 - 0.5 * i for i in range(15)]  # converging, but far too slowly
+    fast = pd.Series(gap)
+    slow = pd.Series([0.0] * len(gap))
+    assert ta.detect_imminent_cross(fast, slow) is None
+
+
 def test_support_resistance_levels_finds_pivots_around_current_price():
     # A clean V-shape then a bounce: pivot low at the trough, pivot high before it.
     prices = [100, 105, 110, 108, 104, 98, 94, 90, 94, 98, 104, 108, 106]

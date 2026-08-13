@@ -129,6 +129,15 @@ class EntryTimingResponse(BaseModel):
     atr_multiple: float
 
 
+class ImminentCrossResponse(BaseModel):
+    """See `technical_analysis.detect_imminent_cross` - a projected, not yet
+    confirmed, MA50/MA200 crossover."""
+
+    direction: str  # "golden" | "death"
+    bars_until: int
+    r_squared: float
+
+
 class CoreSignalsResponse(BaseModel):
     """Everything the recommendation engine and its supporting quant models
     produce for one ticker at one point in time - the same bundle `TickerAnalysisService.analyze()`
@@ -162,6 +171,7 @@ class CoreSignalsResponse(BaseModel):
     trend: str
     stage: str | None
     ma_cross: str | None
+    imminent_cross: ImminentCrossResponse | None
     mansfield_rs: float | None
     rs_rating: int | None
     minervini_score: int

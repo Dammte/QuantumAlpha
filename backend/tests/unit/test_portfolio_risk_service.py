@@ -1,14 +1,34 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 
 from app.services import portfolio_risk_service as prs
 from app.services import recommendation_engine as re
+from app.services import technical_analysis as ta
 
 
 def _ohlc(close: np.ndarray, wiggle: float = 1.0) -> pd.DataFrame:
     close_s = pd.Series(close)
     return pd.DataFrame(
         {"close": close_s, "high": close_s + wiggle, "low": close_s - wiggle, "volume": 1_000_000.0}
+    )
+
+
+def _stub_signals(verdict="esperar", score=0, imminent_cross=None):
+    """A minimal stand-in for CoreTickerSignals carrying only what
+    assess_position_risk actually reads - used to test its signal/reasons
+    logic in isolation from the real indicator pipeline."""
+    return SimpleNamespace(
+        price=105.0,
+        trend=ta.TrendState.SIDEWAYS,
+        stage=None,
+        ma_cross=None,
+        rs_rating=None,
+        nearest_support=None,
+        nearest_resistance=None,
+        recommendation=SimpleNamespace(verdict=verdict, score=score, factors=[]),
+        imminent_cross=imminent_cross,
     )
 
 
@@ -106,6 +126,51 @@ def test_rs_rating_is_passed_through_unchanged():
     assert result.rs_rating == 88
 
 
+def test_hold_escalates_to_watch_when_death_cross_is_imminent(monkeypatch):
+    """The concrete answer to "I bought, it rose 10%, then gave it all back in
+    2 days": a projected (not yet confirmed) death cross is an earlier
+    heads-up than waiting for ma_cross to actually confirm it - a position
+    that would otherwise show as a quiet "mantener" gets escalated to
+    "vigilar" instead, with the projection spelled out in `reasons`."""
+    imminent = ta.ImminentCross(direction="death", bars_until=5, r_squared=0.9)
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(imminent_cross=imminent))
+
+    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
+
+    assert result.signal == prs.WATCH
+    assert any("cruce de medias bajista" in r for r in result.reasons)
+
+
+def test_hold_stays_hold_without_an_imminent_cross(monkeypatch):
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(imminent_cross=None))
+    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
+    assert result.signal == prs.HOLD
+
+
+def test_hold_gets_an_informational_note_when_golden_cross_is_imminent(monkeypatch):
+    """An imminent golden cross doesn't itself clear the bar for add_candidate
+    (that still requires the full recommendation engine's "comprar" verdict) -
+    purely informational for a HOLD, not an escalation."""
+    imminent = ta.ImminentCross(direction="golden", bars_until=4, r_squared=0.9)
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(imminent_cross=imminent))
+
+    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
+
+    assert result.signal == prs.HOLD
+    assert any("cruce de medias alcista" in r for r in result.reasons)
+
+
+def test_exit_warning_unaffected_by_imminent_cross(monkeypatch):
+    """The recommendation engine's own "evitar" verdict already takes priority
+    - an imminent-cross projection doesn't need to (and shouldn't) change
+    anything about an already-urgent signal."""
+    imminent = ta.ImminentCross(direction="golden", bars_until=3, r_squared=0.9)
+    stub = _stub_signals(verdict="evitar", score=-5, imminent_cross=imminent)
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: stub)
+    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
+    assert result.signal == prs.EXIT_WARNING
+
+
 def test_get_portfolio_positions_risk_skips_tickers_with_no_data():
     class _StubMarketData:
         def get_bulk_ohlcv(self, tickers, start, end):
@@ -123,6 +188,43 @@ def test_get_portfolio_positions_risk_empty_tickers_returns_empty():
             raise AssertionError("should not be called for an empty ticker list")
 
     assert prs.get_portfolio_positions_risk([], _StubMarketData()) == []
+
+
+def test_get_portfolio_positions_risk_isolates_a_ticker_whose_compute_raises(monkeypatch):
+    """The exact production bug this test locks in: one holding's GARCH
+    optimizer failing to converge, a backtest edge case, or any other
+    numerical hiccup on a real ticker's data must never take the rest of the
+    portfolio's risk read down with it (previously an uncaught exception here
+    propagated straight to a 500 on the whole /risk response)."""
+
+    class _StubMarketData:
+        def get_bulk_ohlcv(self, tickers, start, end):
+            close = 100 + np.arange(260) * 0.4
+            return {t: _ohlc(close) for t in tickers}
+
+    def flaky_assess(ticker, df, benchmark_close=None, rs_rating=None, vix_close=None):
+        if ticker == "BAD":
+            raise ValueError("simulated GARCH/backtest numerical failure")
+        return prs.PositionRisk(
+            ticker=ticker,
+            currency="USD",
+            price=100.0,
+            trend="uptrend",
+            stage=None,
+            ma_cross=None,
+            rs_rating=None,
+            nearest_support=None,
+            nearest_resistance=None,
+            signal=prs.HOLD,
+            score=0,
+            reasons=["ok"],
+            signals=None,
+        )
+
+    monkeypatch.setattr(prs, "assess_position_risk", flaky_assess)
+
+    results = prs.get_portfolio_positions_risk(["GOOD", "BAD"], _StubMarketData())
+    assert [r.ticker for r in results] == ["GOOD"]
 
 
 class _CountingMarketData:
@@ -196,3 +298,36 @@ def test_service_empty_tickers_returns_empty_without_calling_market_data():
 
     service = prs.PortfolioRiskService()
     assert service.get_positions_risk([], _StubMarketData()) == []
+
+
+def test_service_isolates_a_ticker_whose_compute_raises(monkeypatch):
+    """Same fault-isolation guarantee as
+    test_get_portfolio_positions_risk_isolates_a_ticker_whose_compute_raises,
+    covering the service's own cache-miss loop (a near-duplicate of the
+    module-level function's, since it recomputes independently per ticker)."""
+    market_data = _CountingMarketData()
+
+    def flaky_assess(ticker, df, benchmark_close=None, rs_rating=None, vix_close=None):
+        if ticker == "BAD":
+            raise ValueError("simulated numerical failure")
+        return prs.PositionRisk(
+            ticker=ticker,
+            currency="USD",
+            price=100.0,
+            trend="uptrend",
+            stage=None,
+            ma_cross=None,
+            rs_rating=None,
+            nearest_support=None,
+            nearest_resistance=None,
+            signal=prs.HOLD,
+            score=0,
+            reasons=["ok"],
+            signals=None,
+        )
+
+    monkeypatch.setattr(prs, "assess_position_risk", flaky_assess)
+
+    service = prs.PortfolioRiskService()
+    results = service.get_positions_risk(["GOOD", "BAD"], market_data)
+    assert [r.ticker for r in results] == ["GOOD"]

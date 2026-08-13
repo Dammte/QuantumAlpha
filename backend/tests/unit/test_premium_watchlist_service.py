@@ -164,6 +164,27 @@ def test_build_premium_watchlist_empty_universe_returns_empty(monkeypatch):
     assert pws.build_premium_watchlist([], market_data) == []
 
 
+def test_build_premium_watchlist_isolates_a_candidate_whose_compute_raises(monkeypatch):
+    """The exact production bug this test locks in: one candidate's GARCH
+    optimizer failing to converge, a backtest edge case, or any other
+    numerical hiccup on up to 15 tickers a request must never take the whole
+    tier down with it (previously an uncaught exception propagated straight
+    to a 500 on the whole premium watchlist response)."""
+    good = _snapshot("GOOD", rs_rating=50)
+    bad = _snapshot("BAD", rs_rating=99)
+    market_data = _StubMarketData({"GOOD", "BAD", pws.benchmark_for_region("us")})
+
+    def flaky_compute(close, high, low, volume, benchmark_close, rs_rating, horizon, vix_close=None):
+        if rs_rating == 99:
+            raise ValueError("simulated GARCH/backtest numerical failure")
+        return _signals(score=10)
+
+    monkeypatch.setattr(pws, "compute_core_signals", flaky_compute)
+
+    results = pws.build_premium_watchlist([good, bad], market_data, tiers=[pws.DAILY])
+    assert [r.ticker for r in results] == ["GOOD"]
+
+
 # --- PremiumWatchlistService: per-tier cache TTL -----------------------------
 
 

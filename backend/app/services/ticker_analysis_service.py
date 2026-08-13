@@ -100,6 +100,7 @@ class CoreTickerSignals:
     trend: ta.TrendState
     stage: ta.Stage | None
     ma_cross: str | None
+    imminent_cross: ta.ImminentCross | None  # a projected, not-yet-happened cross - see technical_analysis.py
     mansfield_rs: float | None
     rs_rating: int | None
     minervini_score: int
@@ -216,9 +217,11 @@ def compute_core_signals(
 
     stage = None
     ma_cross = None
+    imminent_cross = None
     if len(close) >= 200:
         stage = ta.classify_stage(price, sma150_s)
         ma_cross = ta.detect_recent_cross(sma50_s, sma200_s, lookback=5)
+        imminent_cross = ta.detect_imminent_cross(sma50_s, sma200_s)
 
     atr14 = _last(atr_s)
     atr_multiple = ta.atr_multiple_from_sma(close, high, low)
@@ -333,6 +336,7 @@ def compute_core_signals(
         trend=trend,
         stage=stage,
         ma_cross=ma_cross,
+        imminent_cross=imminent_cross,
         mansfield_rs=mansfield,
         rs_rating=rs_rating,
         minervini_score=minervini_score,
@@ -498,6 +502,7 @@ class TickerAnalysisService:
             trend=core.trend,
             stage=core.stage,
             ma_cross=core.ma_cross,
+            imminent_cross=core.imminent_cross,
             mansfield_rs=core.mansfield_rs,
             rs_rating=core.rs_rating,
             minervini_score=core.minervini_score,

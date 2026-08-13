@@ -20,6 +20,7 @@ quant pipeline for the "monthly" tier on every request when a month's worth of
 history barely moves it.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
@@ -29,6 +30,8 @@ from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import DEFAULT_REGION, VIX_TICKER, benchmark_for_region, currency_of
 from app.services.ticker_analysis_service import CoreTickerSignals, compute_core_signals
+
+logger = logging.getLogger(__name__)
 
 DAILY = "daily"
 WEEKLY = "weekly"
@@ -141,16 +144,28 @@ def build_premium_watchlist(
             df = ohlcv.get(candidate.ticker)
             if df is None:
                 continue
-            signals = compute_core_signals(
-                df["close"],
-                df["high"],
-                df["low"],
-                df["volume"],
-                benchmark_close,
-                candidate.snapshot.rs_rating,
-                horizon=_MONTE_CARLO_HORIZON[t],
-                vix_close=vix_close,
-            )
+            # One candidate's GARCH optimizer failing to converge, a backtest
+            # edge case, or any other numerical hiccup on 15+ tickers a request
+            # must never take the other 14 down with it - isolated per-ticker so
+            # the list still ships with whatever *did* compute cleanly, which is
+            # the whole reason this list exists ("premium" endorses individually
+            # analyzed names, one bad name shouldn't erase the rest of the work).
+            try:
+                signals = compute_core_signals(
+                    df["close"],
+                    df["high"],
+                    df["low"],
+                    df["volume"],
+                    benchmark_close,
+                    candidate.snapshot.rs_rating,
+                    horizon=_MONTE_CARLO_HORIZON[t],
+                    vix_close=vix_close,
+                )
+            except Exception:
+                logger.exception(
+                    "Premium watchlist: skipping %s (%s tier) after a compute failure", candidate.ticker, t
+                )
+                continue
             if signals is None:
                 continue
             score = _approval_score(signals)

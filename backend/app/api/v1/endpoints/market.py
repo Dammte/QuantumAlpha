@@ -344,9 +344,9 @@ def get_premium_watchlist(
     cache_key = f"premium_watchlist:{region}:{tier or 'all'}"
     durable_ttl = min(_PREMIUM_DURABLE_TTL[t] for t in tiers)
     if not refresh:
-        cached = durable_cache.load_fresh(db, cache_key, durable_ttl)
+        cached = durable_cache.load_fresh_as(db, cache_key, durable_ttl, PremiumWatchlistResponse.model_validate)
         if cached is not None:
-            return PremiumWatchlistResponse.model_validate(cached)
+            return cached
 
     items = service.get_premium_watchlist(region=region, tier=tier, force_refresh=refresh)
     computed_at = datetime.now(UTC)

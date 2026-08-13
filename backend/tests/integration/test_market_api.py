@@ -1,5 +1,8 @@
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import ComputationCacheORM
 from app.services.market_universe import INDUSTRIES, SECTOR_ETFS, universe_tickers
@@ -334,3 +337,43 @@ def test_market_endpoints_survive_a_missing_computation_cache_table(client: Test
         assert len(forecast.json()) == len(SECTOR_ETFS)
     finally:
         ComputationCacheORM.__table__.create(bind=engine)
+
+
+def test_premium_watchlist_recomputes_when_cached_payload_shape_is_stale(
+    client: TestClient, db_session: Session
+) -> None:
+    """The real incident this locks in: `imminent_cross` was added to
+    CoreSignalsResponse after some premium-watchlist rows were already
+    cached, and every read of those rows 500ed on Pydantic validation until
+    they naturally expired (up to 30 days later, for the monthly tier). A
+    cached payload that's fresh by age but the wrong shape must be treated
+    as a miss and recomputed, not crash the endpoint."""
+    db_session.add(
+        ComputationCacheORM(
+            cache_key="premium_watchlist:us:daily",
+            computed_at=datetime.now(UTC),  # fresh by age - this must fail on *shape*, not staleness
+            payload={"items": []},  # missing `computed_at` - an older response shape
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/market/watchlist/premium", params={"tier": "daily"})
+    assert response.status_code == 200
+    assert "items" in response.json()
+
+
+def test_universe_snapshot_recomputes_when_cached_payload_shape_is_stale(
+    client: TestClient, db_session: Session
+) -> None:
+    db_session.add(
+        ComputationCacheORM(
+            cache_key="universe_snapshot:us",
+            computed_at=datetime.now(UTC),
+            payload=[{"ticker": "NOT_ENOUGH_FIELDS"}],  # not a valid TickerSnapshot dict
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/market/screener", params={"region": "us"})
+    assert response.status_code == 200
+    assert len(response.json()) > 0  # recomputed the real ~170-ticker universe, not an empty/broken list

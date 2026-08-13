@@ -18,6 +18,7 @@ synchronously just because the in-process cache was empty again, not because
 the data was actually stale.
 """
 
+import logging
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -45,6 +46,8 @@ from app.services.market_universe import (
     region_config,
 )
 from app.services.markov_chain_model import analyze_markov_chain
+
+logger = logging.getLogger(__name__)
 
 CACHE_TTL = timedelta(hours=3)
 HISTORY_DAYS = 400  # enough calendar days to cover a 252-trading-day lookback + SMA200
@@ -299,9 +302,13 @@ class MarketScreenerService:
         # populates the in-process cache so the *next* call this process makes
         # doesn't even need this DB round trip.
         if db is not None and not force_refresh:
-            durable = durable_cache.load_fresh(db, f"universe_snapshot:{region}", CACHE_TTL)
-            if durable is not None:
-                snapshots = [_snapshot_from_dict(d) for d in durable]
+
+            def _reconstruct_snapshots(payload):
+                return [_snapshot_from_dict(d) for d in payload]
+
+            snapshot_key = f"universe_snapshot:{region}"
+            snapshots = durable_cache.load_fresh_as(db, snapshot_key, CACHE_TTL, _reconstruct_snapshots)
+            if snapshots is not None:
                 self._snapshot_cache[region] = (datetime.now(UTC), snapshots)
                 return snapshots
 
@@ -320,7 +327,15 @@ class MarketScreenerService:
             df = ohlcv_by_ticker.get(ticker)
             if df is None:
                 continue
-            raw = _build_raw(ticker, sector, ticker_industries.get(ticker), df, benchmark_close_series)
+            # One ticker's malformed data (a NaN run, a stock split artifact,
+            # an unexpected data shape from the provider) must never take the
+            # other ~170 down with it - this snapshot is the shared foundation
+            # nearly every market endpoint depends on.
+            try:
+                raw = _build_raw(ticker, sector, ticker_industries.get(ticker), df, benchmark_close_series)
+            except Exception:
+                logger.exception("Universe snapshot: skipping %s after a compute failure", ticker)
+                continue
             if raw is not None:
                 raw_tickers.append(raw)
 
@@ -457,9 +472,10 @@ class MarketScreenerService:
 
         cache_key = f"sector_forecast:{region}"
         if db is not None and not force_refresh:
-            durable = durable_cache.load_fresh(db, cache_key, CACHE_TTL)
-            if durable is not None:
-                forecast = [SectorForecast(**d) for d in durable]
+            forecast = durable_cache.load_fresh_as(
+                db, cache_key, CACHE_TTL, lambda payload: [SectorForecast(**d) for d in payload]
+            )
+            if forecast is not None:
                 self._forecast_cache[region] = (datetime.now(UTC), forecast)
                 return forecast
 

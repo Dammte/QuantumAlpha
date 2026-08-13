@@ -2,10 +2,15 @@ import { useEffect, useState } from 'react'
 import { api } from '../../api'
 import { formatCurrency, formatPercent, garchRegimeLabel, isExceptionalScore } from '../../format'
 import EntryTimingBadge from './EntryTimingBadge'
+import ImminentCrossBadge from './ImminentCrossBadge'
 import RefreshBar from '../RefreshBar'
 
+// No "todas" option on purpose: computing all three tiers at once means the
+// full quant suite (GARCH, Markov, Monte Carlo, backtest, Kelly) over up to
+// 45 tickers in one request - exactly the kind of avoidable load this is
+// meant to prevent. Defaults to "daily" below; weekly/monthly only get
+// computed if you actually click them.
 const TIERS = [
-  { key: '', label: 'Todas' },
   { key: 'daily', label: 'Diaria' },
   { key: 'weekly', label: 'Semanal' },
   { key: 'monthly', label: 'Mensual' },
@@ -53,6 +58,7 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
       </div>
 
       <EntryTimingBadge entryTiming={signals.entry_timing} />
+      <ImminentCrossBadge imminentCross={signals.imminent_cross} />
 
       <p className="premium-watchlist-card__backtest">
         <span className={`sector-tier-badge sector-tier-badge--${badge.tone}`}>{badge.label}</span>
@@ -81,7 +87,7 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
 }
 
 function PremiumWatchlist({ onNavigateToTicker, region }) {
-  const [tier, setTier] = useState('')
+  const [tier, setTier] = useState('daily')
   const [items, setItems] = useState([])
   const [computedAt, setComputedAt] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -92,7 +98,7 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
     async function load() {
       setLoading(true)
       try {
-        const body = await api.getPremiumWatchlist({ region, tier: tier || undefined })
+        const body = await api.getPremiumWatchlist({ region, tier })
         setItems(body.items)
         setComputedAt(body.computed_at)
         setError(null)
@@ -108,7 +114,7 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
   const handleRefresh = async () => {
     setRefreshing(true)
     try {
-      const body = await api.getPremiumWatchlist({ region, tier: tier || undefined, refresh: true })
+      const body = await api.getPremiumWatchlist({ region, tier, refresh: true })
       setItems(body.items)
       setComputedAt(body.computed_at)
       setError(null)
@@ -119,7 +125,7 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
     }
   }
 
-  const sections = TIER_ORDER.filter((t) => !tier || tier === t)
+  const sections = TIER_ORDER.filter((t) => t === tier)
     .map((t) => ({ tier: t, items: items.filter((i) => i.tier === t) }))
     .filter((section) => section.items.length > 0)
 

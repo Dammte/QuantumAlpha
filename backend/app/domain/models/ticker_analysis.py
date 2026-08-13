@@ -9,7 +9,7 @@ from app.services.markov_chain_model import MarkovChainResult
 from app.services.monte_carlo_simulation import MonteCarloResult
 from app.services.recommendation_engine import Recommendation
 from app.services.statistical_structure import StatisticalStructure
-from app.services.technical_analysis import PriceLevel, Stage, TrendState
+from app.services.technical_analysis import ImminentCross, PriceLevel, Stage, TrendState
 from app.services.volatility_model import GarchResult
 from app.services.walk_forward_backtest import WalkForwardBacktestResult
 
@@ -71,6 +71,7 @@ class TickerAnalysis:
     trend: TrendState
     stage: Stage | None
     ma_cross: str | None
+    imminent_cross: ImminentCross | None
     mansfield_rs: float | None
     rs_rating: int | None
     minervini_score: int
