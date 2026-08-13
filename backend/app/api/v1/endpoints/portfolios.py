@@ -12,19 +12,27 @@ from app.api.deps import (
     get_portfolio_repository,
     get_portfolio_risk_service,
     get_portfolio_service,
+    get_premium_watchlist_service,
 )
 from app.domain.models.asset import AssetClass
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
-from app.schemas.market import PortfolioRiskResponse, PositionRiskResponse, PriceLevelResponse
+from app.schemas.market import (
+    PortfolioRiskResponse,
+    PositionRiskResponse,
+    PriceLevelResponse,
+    SwapSuggestionResponse,
+)
 from app.schemas.portfolio import PortfolioCreate, PortfolioRead, PortfolioSummary, PositionRead
 from app.schemas.quant_analysis import CoreSignalsResponse
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services import durable_cache
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
+from app.services.opportunity_cost import find_swap_suggestions
 from app.services.portfolio_risk_service import PortfolioRiskService
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
+from app.services.premium_watchlist_service import PremiumWatchlistService
 from app.services.ticker_analysis_service import CoreTickerSignals
 
 # Several hours, not minutes - see durable_cache.py's docstring. Portfolio risk
@@ -182,6 +190,7 @@ def get_portfolio_risk(
     market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
     screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
     risk_service: Annotated[PortfolioRiskService, Depends(get_portfolio_risk_service)],
+    premium_service: Annotated[PremiumWatchlistService, Depends(get_premium_watchlist_service)],
     db: DbSession,
     refresh: bool = False,
 ) -> PortfolioRiskResponse:
@@ -190,6 +199,9 @@ def get_portfolio_risk(
     boiled down to exit_warning / add_candidate / watch / hold so you can act on
     holdings that break down and size up ones whose setup is confirmed, without
     assuming anything a full analysis wouldn't back. See `portfolio_risk_service.py`.
+    Also flags an opportunity cost when a materially stronger, already-vetted
+    premium candidate exists for a position that isn't already the best use of
+    its own capital - see `opportunity_cost.py`.
 
     Backed by the durable cache (`durable_cache.py`): a normal visit within
     `PORTFOLIO_RISK_DURABLE_TTL` gets back the last computed read instantly,
@@ -214,6 +226,12 @@ def get_portfolio_risk(
     )
     positions = risk_service.get_positions_risk(tickers, market_data, universe_snapshot, force_refresh=refresh)
 
+    # Same two curated universes as the RS lookup above - a premium candidate
+    # from either region is a fair comparison against any held position.
+    us_candidates = premium_service.get_premium_watchlist(region="us")
+    europe_candidates = premium_service.get_premium_watchlist(region="europe")
+    swap_suggestions = find_swap_suggestions(positions, us_candidates + europe_candidates)
+
     computed_at = datetime.now(UTC)
     response = PortfolioRiskResponse(
         positions=[
@@ -236,6 +254,7 @@ def get_portfolio_risk(
             )
             for p in positions
         ],
+        swap_suggestions=[SwapSuggestionResponse(**asdict(s)) for s in swap_suggestions],
         computed_at=computed_at,
     )
     durable_cache.save(db, cache_key, response.model_dump(mode="json"), computed_at=computed_at)

@@ -70,6 +70,15 @@ export function isExceptionalScore(score) {
   return score >= EXCEPTIONAL_SCORE_THRESHOLD
 }
 
+// signal (see portfolio_risk_service.py) -> the same short label wherever a
+// held position's trend signal is shown (positions table, swap suggestions).
+export const SIGNAL_LABELS = {
+  exit_warning: 'VENDER',
+  add_candidate: 'Aumentar',
+  watch: 'Vigilar',
+  hold: 'Mantener',
+}
+
 export const GARCH_REGIME_LABELS = {
   baja: 'volatilidad baja',
   normal: 'volatilidad normal',

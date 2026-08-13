@@ -269,8 +269,22 @@ class PositionRiskResponse(BaseModel):
     signals: CoreSignalsResponse
 
 
+class SwapSuggestionResponse(BaseModel):
+    """See opportunity_cost.py - a held position that isn't broken, but where a
+    materially stronger, already-vetted premium candidate exists instead."""
+
+    held_ticker: str
+    held_score: int
+    held_signal: str
+    candidate_ticker: str
+    candidate_score: float
+    candidate_sector: str
+    candidate_currency: str
+
+
 class PortfolioRiskResponse(BaseModel):
     positions: list[PositionRiskResponse]
+    swap_suggestions: list[SwapSuggestionResponse]
     computed_at: datetime  # when this was last actually computed - may be hours old, see durable_cache.py
 
 

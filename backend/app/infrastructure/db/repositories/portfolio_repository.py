@@ -145,6 +145,26 @@ class PortfolioRepository:
         else, and a broker that lets you buy foreign-listed stock from one
         account is doing exactly this conversion for you under the hood anyway.
 
+        **Floored at 0 after every single transaction, not just at the end** -
+        this is load-bearing, not cosmetic. Nobody is required to log a DEPOSIT
+        before their very first BUY (most existing portfolios never will, since
+        this concept didn't exist until now), and this app has no concept of
+        margin/debt - a real buy always has to be funded by cash that actually
+        exists. So whenever running the numbers straight would send the balance
+        negative, the only consistent reading is that an un-logged deposit must
+        have covered the gap right then, and the balance resets to 0 rather than
+        carrying a debt forward. Concretely: buy $1,000 of a stock with no prior
+        deposit logged, then sell it for $1,500 - flooring at each step gives a
+        cash balance of $1,500 (0 after the buy, +1,500 after the sale), while
+        flooring only the final total would wrongly give $500 (-1,000 then
+        +1,500), silently treating the original $1,000 purchase as a debt the
+        sale had to pay off instead of principal that was simply never logged
+        going in. Floored the same way after a WITHDRAWAL for the identical
+        reason: a withdrawal this app doesn't have covered cash for.
+        See `test_selling_moves_proceeds_into_cash_balance` and
+        `test_cash_balance_never_goes_negative_without_a_logged_deposit` in
+        `test_portfolios_api.py` for these exact scenarios.
+
         `fx_rates` (currency -> multiplier into the portfolio's base currency,
         see `PortfolioService.get_portfolio_summary`) lets a position priced in
         a different currency than the portfolio's base still contribute
@@ -171,10 +191,10 @@ class PortfolioRepository:
         cash_balance = 0.0
         for tx in transactions:
             if tx.transaction_type == TransactionType.DEPOSIT:
-                cash_balance += tx.quantity
+                cash_balance = max(0.0, cash_balance + tx.quantity)
                 continue
             if tx.transaction_type == TransactionType.WITHDRAWAL:
-                cash_balance -= tx.quantity
+                cash_balance = max(0.0, cash_balance - tx.quantity)
                 continue
 
             state = holdings[tx.ticker]
@@ -182,7 +202,7 @@ class PortfolioRepository:
                 state[0] += tx.quantity
                 state[1] += tx.quantity * tx.price + tx.fees
                 if (rate := fx_rate_for(tx.ticker)) is not None:
-                    cash_balance -= (tx.quantity * tx.price + tx.fees) * rate
+                    cash_balance = max(0.0, cash_balance - (tx.quantity * tx.price + tx.fees) * rate)
             else:
                 avg_cost = state[1] / state[0] if state[0] else 0.0
                 cost_of_shares_sold = tx.quantity * avg_cost
@@ -191,7 +211,7 @@ class PortfolioRepository:
                 state[0] -= tx.quantity
                 state[1] -= cost_of_shares_sold
                 if (rate := fx_rate_for(tx.ticker)) is not None:
-                    cash_balance += proceeds * rate
+                    cash_balance = max(0.0, cash_balance + proceeds * rate)
 
         positions = [
             Position(

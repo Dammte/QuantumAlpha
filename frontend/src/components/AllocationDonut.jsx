@@ -3,30 +3,48 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { formatCurrency, formatPercent } from '../format'
 import ChartTooltip from './ChartTooltip'
 
-function AllocationDonut({ positions, totalMarketValue, currency, colorScale }) {
-  const segments = useMemo(
-    () =>
-      [...positions]
-        // A position whose quote (or FX rate, for a non-base-currency ticker)
-        // couldn't be fetched right now has no known base-currency value to
-        // draw a slice for - excluded here rather than plotted as a misleading
-        // $0 sliver or, worse, mixing unconverted currencies in one chart.
-        .filter((position) => position.market_value_base !== null)
-        .sort((a, b) => a.ticker.localeCompare(b.ticker))
-        .map((position) => ({
-          ticker: position.ticker,
-          value: position.market_value_base,
-          weight: totalMarketValue ? position.market_value_base / totalMarketValue : 0,
-          color: colorScale.get(position.ticker),
-        })),
-    [positions, totalMarketValue, colorScale],
-  )
+const CASH_COLOR = { css: 'var(--chart-muted)' }
 
-  if (segments.length === 0 || totalMarketValue <= 0) return null
+// Weighted against the *true* portfolio total (positions + cash, matching the
+// "Valor total de la cartera" hero card) rather than invested capital alone -
+// otherwise the donut's own weights would sum to 100% of a smaller number than
+// the headline total, the exact "why don't these add up" confusion this is
+// meant to avoid.
+function AllocationDonut({ positions, totalMarketValue, cashBalance = 0, currency, colorScale }) {
+  const totalPortfolioValue = totalMarketValue + cashBalance
+
+  const segments = useMemo(() => {
+    const positionSegments = [...positions]
+      // A position whose quote (or FX rate, for a non-base-currency ticker)
+      // couldn't be fetched right now has no known base-currency value to
+      // draw a slice for - excluded here rather than plotted as a misleading
+      // $0 sliver or, worse, mixing unconverted currencies in one chart.
+      .filter((position) => position.market_value_base !== null)
+      .sort((a, b) => a.ticker.localeCompare(b.ticker))
+      .map((position) => ({
+        ticker: position.ticker,
+        value: position.market_value_base,
+        weight: totalPortfolioValue ? position.market_value_base / totalPortfolioValue : 0,
+        color: colorScale.get(position.ticker),
+      }))
+
+    if (cashBalance > 0) {
+      positionSegments.push({
+        ticker: 'Liquidez',
+        value: cashBalance,
+        weight: totalPortfolioValue ? cashBalance / totalPortfolioValue : 0,
+        color: CASH_COLOR,
+        isCash: true,
+      })
+    }
+    return positionSegments
+  }, [positions, cashBalance, totalPortfolioValue, colorScale])
+
+  if (segments.length === 0 || totalPortfolioValue <= 0) return null
 
   return (
     <div className="allocation">
-      <p className="allocation__title">Asignación por posición</p>
+      <p className="allocation__title">Asignación de la cartera</p>
       <div className="allocation__layout">
         <div className="viz-root allocation__donut">
           <ResponsiveContainer width="100%" height={200}>
@@ -61,14 +79,17 @@ function AllocationDonut({ positions, totalMarketValue, currency, colorScale }) 
             </PieChart>
           </ResponsiveContainer>
           <div className="allocation__donut-center">
-            <span className="allocation__donut-total">{formatCurrency(totalMarketValue, currency)}</span>
+            <span className="allocation__donut-total">{formatCurrency(totalPortfolioValue, currency)}</span>
             <span className="allocation__donut-label">Total</span>
           </div>
         </div>
         <ul className="allocation__legend">
           {segments.map((segment) => (
             <li key={segment.ticker}>
-              <span className="ticker-swatch" style={{ '--swatch': segment.color.css, '--swatch-dark': segment.color.css }} />
+              <span
+                className={`ticker-swatch ${segment.isCash ? 'ticker-swatch--cash' : ''}`}
+                style={{ '--swatch': segment.color.css, '--swatch-dark': segment.color.css }}
+              />
               <span className="allocation__legend-ticker">{segment.ticker}</span>
               <span className="allocation__legend-weight">{formatPercent(segment.weight)}</span>
             </li>

@@ -1,5 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.engine import Engine
+
+from app.infrastructure.db.models import ComputationCacheORM
 
 
 def test_create_and_get_portfolio(client: TestClient) -> None:
@@ -238,7 +241,9 @@ def test_portfolio_risk_empty_portfolio_returns_no_positions(client: TestClient)
     portfolio_id = client.post("/api/v1/portfolios", json={"name": "Empty"}).json()["id"]
     response = client.get(f"/api/v1/portfolios/{portfolio_id}/risk")
     assert response.status_code == 200
-    assert response.json()["positions"] == []
+    body = response.json()
+    assert body["positions"] == []
+    assert body["swap_suggestions"] == []
 
 
 def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
@@ -254,7 +259,8 @@ def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
 
     response = client.get(f"/api/v1/portfolios/{portfolio_id}/risk")
     assert response.status_code == 200
-    positions = response.json()["positions"]
+    body = response.json()
+    positions = body["positions"]
     assert {p["ticker"] for p in positions} == {"AAPL", "MSFT"}
     for p in positions:
         assert p["signal"] in {"exit_warning", "add_candidate", "watch", "hold"}
@@ -263,6 +269,12 @@ def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
         # Full quant suite - the same one "Analizar activo" runs - backs every holding now
         assert {"garch", "markov", "monte_carlo", "backtest", "position_sizing"} <= p["signals"].keys()
         assert p["signals"]["recommendation"]["verdict"] in {"comprar", "esperar", "evitar"}
+
+    held_tickers = {p["ticker"] for p in positions}
+    for suggestion in body["swap_suggestions"]:
+        assert suggestion["held_ticker"] in held_tickers
+        assert suggestion["candidate_ticker"] not in held_tickers
+        assert suggestion["candidate_score"] - suggestion["held_score"] >= 4.0
 
 
 def test_portfolio_risk_response_carries_computed_at(client: TestClient) -> None:
@@ -286,15 +298,23 @@ def test_portfolio_risk_response_carries_computed_at(client: TestClient) -> None
 
 def test_selling_moves_proceeds_into_cash_balance(client: TestClient) -> None:
     """The literal bug this feature fixes: selling a position must not make its
-    proceeds disappear from the portfolio's total - they become liquidity."""
+    proceeds disappear from the portfolio's total - they become liquidity.
+
+    No deposit is logged before the buy (the realistic case for basically
+    every existing portfolio, since deposits didn't exist as a concept before
+    this feature) - `cash_balance` floors at 0 rather than going to -1000,
+    since this app has no concept of margin/debt and a real buy always has to
+    be funded by cash that actually exists. See `build_portfolio`'s docstring
+    for why flooring at every step (not just the end) matters: it's what
+    makes the $1500 in proceeds show up in full below, not just $500."""
     portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
     client.post(
         f"/api/v1/portfolios/{portfolio_id}/transactions",
         json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
     )
     body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
-    assert body["cash_balance"] == pytest.approx(-1000.0)  # 1000 spent buying, no cash yet
-    assert body["total_portfolio_value"] == pytest.approx(body["total_market_value"] + body["cash_balance"])
+    assert body["cash_balance"] == 0.0  # floored - no un-logged debt implied by the buy
+    assert body["total_portfolio_value"] == pytest.approx(body["total_market_value"])
 
     client.post(
         f"/api/v1/portfolios/{portfolio_id}/transactions",
@@ -303,9 +323,34 @@ def test_selling_moves_proceeds_into_cash_balance(client: TestClient) -> None:
     body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
     assert body["positions"] == []
     assert body["total_market_value"] == 0.0  # nothing held any more...
-    assert body["cash_balance"] == pytest.approx(500.0)  # ...but the $1500 sale proceeds became cash
-    # ...so the total portfolio value still reflects the $500 gain, not zero.
-    assert body["total_portfolio_value"] == pytest.approx(500.0)
+    assert body["cash_balance"] == pytest.approx(1500.0)  # ...but the full $1500 sale proceeds became cash
+    assert body["total_portfolio_value"] == pytest.approx(1500.0)
+
+
+def test_cash_balance_never_goes_negative_without_a_logged_deposit(client: TestClient) -> None:
+    """General property behind the fix above: however much is spent buying
+    positions with no deposit ever logged to cover it, cash_balance floors at
+    0 instead of accruing an implied debt this app has no concept of."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "MSFT", "transaction_type": "buy", "quantity": 5, "price": 200},
+    )
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["cash_balance"] == 0.0
+    assert body["total_portfolio_value"] == pytest.approx(body["total_market_value"])
+
+    # A withdrawal with nothing behind it floors the same way, for the same reason.
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"transaction_type": "withdrawal", "quantity": 500},
+    )
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/summary").json()
+    assert body["cash_balance"] == 0.0
 
 
 def test_deposit_and_withdrawal_move_cash_balance(client: TestClient) -> None:
@@ -357,6 +402,37 @@ def test_buy_without_price_is_rejected(client: TestClient) -> None:
         json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10},
     )
     assert response.status_code == 422
+
+
+def test_portfolio_risk_survives_a_missing_computation_cache_table(client: TestClient, engine: Engine) -> None:
+    """Reproduces the exact production incident this test is named after: the
+    durable cache's own table doesn't exist yet (a real state - the migration
+    that creates it must be run by hand against Supabase, so there's a real
+    window where the table is genuinely missing). A caught-but-not-rolled-back
+    failure here leaves the session unusable for every query the endpoint
+    makes afterward (fetching the portfolio's transactions), turning an
+    optional-cache miss into an unrelated 500 - see durable_cache.py's
+    module docstring. The recommendation column going blank in production was
+    this exact bug."""
+    ComputationCacheORM.__table__.drop(bind=engine)
+    try:
+        portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+        client.post(
+            f"/api/v1/portfolios/{portfolio_id}/transactions",
+            json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+        )
+
+        response = client.get(f"/api/v1/portfolios/{portfolio_id}/risk")
+        assert response.status_code == 200
+        positions = response.json()["positions"]
+        assert {p["ticker"] for p in positions} == {"AAPL"}
+
+        # And a completely unrelated subsequent request on the same shared
+        # session must still work too - the whole point of rolling back.
+        summary = client.get(f"/api/v1/portfolios/{portfolio_id}/summary")
+        assert summary.status_code == 200
+    finally:
+        ComputationCacheORM.__table__.create(bind=engine)
 
 
 def test_health_check(client: TestClient) -> None:

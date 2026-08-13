@@ -31,6 +31,22 @@ write is a pure optimization on top of a system that already works without
 it (each service's own in-process cache, and a live recompute as the final
 fallback) - a transient DB hiccup should never be the reason a request that
 could still succeed on its own fails instead.
+
+**Every caught failure also rolls back the session before returning.** This
+isn't optional cleanup: on Postgres, one failed statement leaves the whole
+transaction "aborted" until an explicit ROLLBACK - every later statement on
+that *same* session (e.g. the endpoint's own repository queries, which share
+this exact session via FastAPI's per-request DbSession dependency) raises
+`InFailedSqlTransaction` too, even though nothing is actually wrong with
+them. A caught-and-logged exception here that skips the rollback doesn't fail
+softly at all - it silently turns into a 500 on whatever the endpoint does
+next. This is exactly what happened in production the one time this table
+didn't exist yet (before the migration had been run): every other
+`computation_cache` query being swallowed correctly masked *that* failure,
+but the *next* query in the same request (fetching the portfolio's own
+transactions) blew up unhandled - a caught exception two calls upstream
+disguised as an unrelated one downstream. Covered by
+`test_portfolios_api.py::test_portfolio_risk_survives_a_missing_computation_cache_table`.
 """
 
 import logging
@@ -44,16 +60,21 @@ from app.infrastructure.db.repositories.computation_cache_repository import Comp
 logger = logging.getLogger(__name__)
 
 
+def _safe_get(db: Session, cache_key: str) -> tuple[Any, datetime] | None:
+    try:
+        return ComputationCacheRepository(db).get(cache_key)
+    except Exception:
+        logger.exception("Durable cache read failed for %s", cache_key)
+        db.rollback()  # leaves `db` usable for whatever the caller does next - see module docstring
+        return None
+
+
 def load_fresh(db: Session, cache_key: str, max_age: timedelta) -> Any | None:
     """The cached payload if present and younger than `max_age`, else None -
     None either means "nothing cached yet" or "cached, but stale enough that
     the caller should recompute", which is exactly the one bit of information
     a caller needs (it already knows how to compute a fresh value)."""
-    try:
-        cached = ComputationCacheRepository(db).get(cache_key)
-    except Exception:
-        logger.exception("Durable cache read failed for %s", cache_key)
-        return None
+    cached = _safe_get(db, cache_key)
     if cached is None:
         return None
     payload, computed_at = cached
@@ -69,11 +90,7 @@ def load_any(db: Session, cache_key: str) -> tuple[Any, datetime] | None:
     caller that wants to show stale-but-real data (with an "actualizado hace
     X" disclosure) rather than force a live recompute no matter how old the
     last one is."""
-    try:
-        cached = ComputationCacheRepository(db).get(cache_key)
-    except Exception:
-        logger.exception("Durable cache read failed for %s", cache_key)
-        return None
+    cached = _safe_get(db, cache_key)
     if cached is None:
         return None
     payload, computed_at = cached
@@ -95,4 +112,5 @@ def save(db: Session, cache_key: str, payload: Any, computed_at: datetime | None
         ComputationCacheRepository(db).set(cache_key, payload, computed_at)
     except Exception:
         logger.exception("Durable cache write failed for %s", cache_key)
+        db.rollback()  # see module docstring - must leave `db` usable for the rest of the request
     return computed_at

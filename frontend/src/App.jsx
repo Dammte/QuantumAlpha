@@ -16,6 +16,7 @@ import TransactionsList from './components/TransactionsList'
 import MarketView from './components/market/MarketView'
 import Sidebar from './components/Sidebar'
 import RefreshBar from './components/RefreshBar'
+import SwapSuggestions from './components/SwapSuggestions'
 import { DEFAULT_REGION } from './regions'
 
 function App() {
@@ -190,6 +191,8 @@ function App() {
   const dayChangeIsUp = (summary?.total_day_change ?? 0) >= 0
   const periodIsUp = (metrics?.cumulative_return ?? 0) >= 0
   const toneOf = (isUp) => (isUp ? 'up' : 'down')
+  const cashSharePct =
+    summary && summary.total_portfolio_value > 0 ? summary.cash_balance / summary.total_portfolio_value : null
 
   return (
     <div className="app">
@@ -245,25 +248,24 @@ function App() {
                 <p className="hero-card__value">
                   {formatCurrency(summary.total_portfolio_value, summary.base_currency)}
                 </p>
+                <p className={`hero-card__pct hero-card__pct--${toneOf(dayChangeIsUp)}`}>
+                  {dayChangeIsUp ? '▲' : '▼'} {formatCurrency(Math.abs(summary.total_day_change), summary.base_currency)}
+                  {summary.total_day_change_pct !== null && (
+                    <> ({formatPercent(summary.total_day_change_pct, { signed: true })})</>
+                  )}{' '}
+                  hoy
+                </p>
                 <p className="hero-card__hint">
-                  Invertido: {formatCurrency(summary.total_market_value, summary.base_currency)} · Liquidez:{' '}
-                  {formatCurrency(summary.cash_balance, summary.base_currency)}
+                  Invertido: {formatCurrency(summary.total_market_value, summary.base_currency)}
                 </p>
               </div>
 
               <div className="hero-card">
                 <p className="hero-card__label">Liquidez disponible</p>
                 <p className="hero-card__value">{formatCurrency(summary.cash_balance, summary.base_currency)}</p>
-                <p className="hero-card__hint">De ventas, depósitos y retiros - no cuenta como posición abierta</p>
-              </div>
-
-              <div className="hero-card">
-                <p className="hero-card__label">Variación hoy</p>
-                <p className={`hero-card__value hero-card__value--${toneOf(dayChangeIsUp)}`}>
-                  {dayChangeIsUp ? '▲' : '▼'} {formatCurrency(Math.abs(summary.total_day_change), summary.base_currency)}
-                  {summary.total_day_change_pct !== null && (
-                    <span className="hero-card__pct"> ({formatPercent(summary.total_day_change_pct, { signed: true })})</span>
-                  )}
+                <p className="hero-card__hint">
+                  {cashSharePct !== null && `${formatPercent(cashSharePct)} de tu cartera total · `}
+                  no invertida ahora mismo
                 </p>
               </div>
 
@@ -287,11 +289,6 @@ function App() {
                 <p className={`hero-card__value hero-card__value--${toneOf(periodIsUp)}`}>
                   {metrics ? formatPercent(metrics.cumulative_return, { signed: true }) : '—'}
                 </p>
-              </div>
-
-              <div className="hero-card">
-                <p className="hero-card__label">Posiciones</p>
-                <p className="hero-card__value">{summary.positions.length}</p>
               </div>
             </section>
           )}
@@ -334,6 +331,7 @@ function App() {
                 <AllocationDonut
                   positions={summary.positions}
                   totalMarketValue={summary.total_market_value}
+                  cashBalance={summary.cash_balance}
                   currency={summary.base_currency}
                   colorScale={colorScale}
                 />
@@ -342,9 +340,12 @@ function App() {
           </section>
 
           <section className="panel">
-            <h2>Posiciones</h2>
+            <h2>Posiciones {summary && `(${summary.positions.length})`}</h2>
             {risk && (
-              <RefreshBar computedAt={risk.computed_at} onRefresh={handleRefreshRisk} refreshing={riskRefreshing} />
+              <>
+                <RefreshBar computedAt={risk.computed_at} onRefresh={handleRefreshRisk} refreshing={riskRefreshing} />
+                <SwapSuggestions suggestions={risk.swap_suggestions} onNavigateToTicker={navigateToAnalysis} />
+              </>
             )}
             {summary && (
               <PositionsTable

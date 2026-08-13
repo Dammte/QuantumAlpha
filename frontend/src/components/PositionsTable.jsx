@@ -1,11 +1,4 @@
-import { formatCurrency, formatPercent, garchRegimeLabel } from '../format'
-
-const SIGNAL_LABELS = {
-  exit_warning: 'VENDER',
-  add_candidate: 'Aumentar',
-  watch: 'Vigilar',
-  hold: 'Mantener',
-}
+import { SIGNAL_LABELS, formatCurrency, formatPercent, garchRegimeLabel } from '../format'
 
 function backtestSummary(backtest) {
   if (!backtest) return null
@@ -48,7 +41,9 @@ function PositionsTable({ positions, colorScale, totalMarketValue, riskByTicker,
             <th className="num">Precio actual</th>
             <th className="num">Variación hoy</th>
             <th className="num">Valor de mercado</th>
-            <th className="num">Peso</th>
+            <th className="num" title="Peso sobre el capital invertido (no incluye la liquidez disponible)">
+              Peso invertido
+            </th>
             <th className="num">Ganancia total</th>
             {showRiskColumn && <th>Señal de tendencia</th>}
           </tr>

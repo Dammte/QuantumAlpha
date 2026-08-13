@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
+from sqlalchemy.engine import Engine
 
+from app.infrastructure.db.models import ComputationCacheORM
 from app.services.market_universe import INDUSTRIES, SECTOR_ETFS, universe_tickers
 
 
@@ -300,3 +302,35 @@ def test_market_context_has_indices_vix_fear_greed_and_liquidity(client: TestCli
     assert len(body["regime"]["reasons"]) > 0
     assert isinstance(body["news"], list)
     assert "macro" in body  # None without a configured FRED_API_KEY - key must still be present
+
+
+def test_market_endpoints_survive_a_missing_computation_cache_table(client: TestClient, engine: Engine) -> None:
+    """Same production incident as
+    test_portfolios_api.py::test_portfolio_risk_survives_a_missing_computation_cache_table,
+    exercised across every endpoint that threads a `db` session into
+    `get_universe_snapshot`/durable_cache - a caught exception that skips
+    `db.rollback()` doesn't just fail closed on its own cache lookup, it
+    poisons every later query in that request too."""
+    ComputationCacheORM.__table__.drop(bind=engine)
+    try:
+        assert client.get("/api/v1/market/screener").status_code == 200
+        assert client.get("/api/v1/market/movers").status_code == 200
+        assert client.get("/api/v1/market/trend").status_code == 200
+        assert client.get("/api/v1/market/trend/detail").status_code == 200
+        assert client.get("/api/v1/market/industries").status_code == 200
+        assert client.get("/api/v1/market/levels/proximity").status_code == 200
+        assert client.get("/api/v1/market/context").status_code == 200
+
+        watchlist = client.get("/api/v1/market/watchlist")
+        assert watchlist.status_code == 200
+        assert "items" in watchlist.json()
+
+        premium = client.get("/api/v1/market/watchlist/premium", params={"tier": "daily"})
+        assert premium.status_code == 200
+        assert "items" in premium.json()
+
+        forecast = client.get("/api/v1/market/sectors/forecast")
+        assert forecast.status_code == 200
+        assert len(forecast.json()) == len(SECTOR_ETFS)
+    finally:
+        ComputationCacheORM.__table__.create(bind=engine)
