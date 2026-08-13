@@ -207,6 +207,8 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
                   recommendation={analysis.recommendation}
                   entryTiming={analysis.entry_timing}
                   imminentCross={analysis.imminent_cross}
+                  imminentCrossShortTerm={analysis.imminent_cross_short_term}
+                  candlestickPattern={analysis.candlestick_pattern}
                   currency={analysis.currency ?? 'USD'}
                 />
                 <PositionSizingCard

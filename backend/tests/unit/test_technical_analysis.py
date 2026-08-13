@@ -192,6 +192,48 @@ def test_detect_imminent_cross_none_when_projection_too_far_out():
     assert ta.detect_imminent_cross(fast, slow) is None
 
 
+def test_detect_engulfing_pattern_bullish():
+    # Prior bar red (100 -> 95), current bar green and fully covers it (94 -> 102).
+    open_ = pd.Series([100.0, 94.0])
+    close = pd.Series([95.0, 102.0])
+    assert ta.detect_engulfing_pattern(open_, close) == "bullish_engulfing"
+
+
+def test_detect_engulfing_pattern_bearish():
+    # Prior bar green (95 -> 100), current bar red and fully covers it (102 -> 94).
+    open_ = pd.Series([95.0, 102.0])
+    close = pd.Series([100.0, 94.0])
+    assert ta.detect_engulfing_pattern(open_, close) == "bearish_engulfing"
+
+
+def test_detect_engulfing_pattern_none_when_body_does_not_fully_cover_prior():
+    # Current bar is green and bigger than the prior red bar's close, but its
+    # open doesn't reach down to the prior close - not a full engulf.
+    open_ = pd.Series([100.0, 97.0])
+    close = pd.Series([95.0, 102.0])
+    assert ta.detect_engulfing_pattern(open_, close) is None
+
+
+def test_detect_engulfing_pattern_none_when_same_direction():
+    # Two green bars in a row - nothing being reversed/engulfed.
+    open_ = pd.Series([95.0, 100.0])
+    close = pd.Series([100.0, 105.0])
+    assert ta.detect_engulfing_pattern(open_, close) is None
+
+
+def test_detect_engulfing_pattern_none_with_a_doji_prior_bar():
+    # Prior bar has (essentially) no real body to engulf.
+    open_ = pd.Series([100.0, 94.0])
+    close = pd.Series([100.0, 102.0])
+    assert ta.detect_engulfing_pattern(open_, close) is None
+
+
+def test_detect_engulfing_pattern_none_with_insufficient_history():
+    open_ = pd.Series([100.0])
+    close = pd.Series([95.0])
+    assert ta.detect_engulfing_pattern(open_, close) is None
+
+
 def test_support_resistance_levels_finds_pivots_around_current_price():
     # A clean V-shape then a bounce: pivot low at the trough, pivot high before it.
     prices = [100, 105, 110, 108, 104, 98, 94, 90, 94, 98, 104, 108, 106]

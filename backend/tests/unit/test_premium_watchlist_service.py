@@ -8,7 +8,15 @@ from app.services import premium_watchlist_service as pws
 from app.services import technical_analysis as ta
 
 
-def _signals(verdict="comprar", score=6, sig_tests=None, mc_prob=None, has_sizing=False, has_backtest=True):
+def _signals(
+    verdict="comprar",
+    score=6,
+    sig_tests=None,
+    mc_prob=None,
+    has_sizing=False,
+    has_backtest=True,
+    entry_timing=None,
+):
     backtest = SimpleNamespace(significance_tests=sig_tests or []) if has_backtest else None
     monte_carlo = SimpleNamespace(probability_target_before_stop=mc_prob) if mc_prob is not None else None
     position_sizing = SimpleNamespace() if has_sizing else None
@@ -17,6 +25,7 @@ def _signals(verdict="comprar", score=6, sig_tests=None, mc_prob=None, has_sizin
         backtest=backtest,
         monte_carlo=monte_carlo,
         position_sizing=position_sizing,
+        entry_timing=entry_timing,
     )
 
 
@@ -72,13 +81,57 @@ def test_kelly_setup_adds_flat_bonus():
     assert boosted - base == pytest.approx(pws.KELLY_SETUP_BONUS)
 
 
+def test_strong_sector_adds_flat_bonus():
+    base = pws._approval_score(_signals(score=6))
+    boosted = pws._approval_score(_signals(score=6), sector_rs_rank=pws.STRONG_SECTOR_RS_THRESHOLD)
+    assert boosted - base == pytest.approx(pws.STRONG_SECTOR_BONUS)
+
+
+def test_weak_sector_gets_no_bonus():
+    base = pws._approval_score(_signals(score=6))
+    same = pws._approval_score(_signals(score=6), sector_rs_rank=pws.STRONG_SECTOR_RS_THRESHOLD - 1)
+    assert same == pytest.approx(base)
+
+
+def test_missing_sector_rs_rank_gets_no_bonus():
+    """A sector whose own RS rank couldn't be computed right now contributes
+    nothing, rather than guessing - same graceful-degradation posture as
+    everywhere else a cross-sectional rank is used in this codebase."""
+    base = pws._approval_score(_signals(score=6))
+    same = pws._approval_score(_signals(score=6), sector_rs_rank=None)
+    assert same == pytest.approx(base)
+
+
+def _timing(status: str):
+    return SimpleNamespace(status=status)
+
+
+def test_extended_entry_timing_gets_a_ranking_penalty():
+    """Found auditing a real premium daily list: half the candidates were
+    already "extended" per entry_timing, undermining a list specifically
+    meant to be actionable *today*. A fresher, equally-scored setup should
+    outrank an already-extended one, without excluding the extended one
+    outright (it's still a legitimate "comprar" - see entry_timing.py)."""
+    base = pws._approval_score(_signals(score=6, entry_timing=_timing("valid")))
+    extended = pws._approval_score(_signals(score=6, entry_timing=_timing("extended")))
+    assert base - extended == pytest.approx(pws.EXTENDED_ENTRY_PENALTY)
+
+
+def test_optimal_or_missing_entry_timing_gets_no_penalty():
+    base = pws._approval_score(_signals(score=6, entry_timing=None))
+    optimal = pws._approval_score(_signals(score=6, entry_timing=_timing("optimal")))
+    late = pws._approval_score(_signals(score=6, entry_timing=_timing("late")))
+    assert optimal == pytest.approx(base)
+    assert late == pytest.approx(base)
+
+
 # --- build_premium_watchlist: orchestration ----------------------------------
 
 
-def _snapshot(ticker: str, rs_rating: int = 80) -> TickerSnapshot:
+def _snapshot(ticker: str, rs_rating: int = 80, sector: str = "Tecnología") -> TickerSnapshot:
     return TickerSnapshot(
         ticker=ticker,
-        sector="Tecnología",
+        sector=sector,
         industry=None,
         cap_tier="mega",
         price=100.0,
@@ -119,7 +172,7 @@ class _StubMarketData:
     def get_bulk_ohlcv(self, tickers, start, end):
         self.requested = list(tickers)
         # Minimal stand-in for a DataFrame: subscriptable by column name only.
-        fake_frame = {"close": None, "high": None, "low": None, "volume": None}
+        fake_frame = {"close": None, "high": None, "low": None, "volume": None, "open": None}
         return {t: fake_frame for t in tickers if t in self.tickers_with_data}
 
 
@@ -131,7 +184,7 @@ def test_build_premium_watchlist_caps_candidates_and_approved_per_tier(monkeypat
     monkeypatch.setattr(
         pws,
         "compute_core_signals",
-        lambda close, high, low, volume, benchmark_close, rs_rating, horizon, vix_close=None: _signals(
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None: _signals(
             score=rs_rating or 0
         ),
     )
@@ -152,7 +205,9 @@ def test_build_premium_watchlist_skips_tickers_missing_from_ohlcv(monkeypatch):
     monkeypatch.setattr(
         pws,
         "compute_core_signals",
-        lambda close, high, low, volume, benchmark_close, rs_rating, horizon, vix_close=None: _signals(score=10),
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None: _signals(
+            score=10
+        ),
     )
 
     results = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
@@ -174,7 +229,7 @@ def test_build_premium_watchlist_isolates_a_candidate_whose_compute_raises(monke
     bad = _snapshot("BAD", rs_rating=99)
     market_data = _StubMarketData({"GOOD", "BAD", pws.benchmark_for_region("us")})
 
-    def flaky_compute(close, high, low, volume, benchmark_close, rs_rating, horizon, vix_close=None):
+    def flaky_compute(close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None):
         if rs_rating == 99:
             raise ValueError("simulated GARCH/backtest numerical failure")
         return _signals(score=10)
@@ -183,6 +238,33 @@ def test_build_premium_watchlist_isolates_a_candidate_whose_compute_raises(monke
 
     results = pws.build_premium_watchlist([good, bad], market_data, tiers=[pws.DAILY])
     assert [r.ticker for r in results] == ["GOOD"]
+
+
+def test_build_premium_watchlist_ranks_strong_sector_candidate_above_equal_scoring_weak_sector_one(monkeypatch):
+    strong = _snapshot("STRONG_SECTOR", rs_rating=80, sector="Tecnología")
+    weak = _snapshot("WEAK_SECTOR", rs_rating=80, sector="Utilities")
+    market_data = _StubMarketData({"STRONG_SECTOR", "WEAK_SECTOR", pws.benchmark_for_region("us")})
+
+    # Identical underlying score for both - only the sector should break the tie.
+    monkeypatch.setattr(
+        pws,
+        "compute_core_signals",
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None: _signals(
+            score=6
+        ),
+    )
+
+    results = pws.build_premium_watchlist(
+        [strong, weak],
+        market_data,
+        tiers=[pws.DAILY],
+        sector_rs_rank={"Tecnología": 90, "Utilities": 20},
+    )
+
+    assert [r.ticker for r in results] == ["STRONG_SECTOR", "WEAK_SECTOR"]
+    strong_result = next(r for r in results if r.ticker == "STRONG_SECTOR")
+    weak_result = next(r for r in results if r.ticker == "WEAK_SECTOR")
+    assert strong_result.premium_score - weak_result.premium_score == pytest.approx(pws.STRONG_SECTOR_BONUS)
 
 
 # --- PremiumWatchlistService: per-tier cache TTL -----------------------------
@@ -197,11 +279,14 @@ class _StubScreener:
         self.calls += 1
         return self.snapshot
 
+    def get_sector_performance(self, region="us"):
+        return []
+
 
 def test_service_reuses_cache_within_ttl(monkeypatch):
     calls = []
 
-    def fake_build(universe_snapshot, market_data, region="us", tiers=None):
+    def fake_build(universe_snapshot, market_data, region="us", tiers=None, sector_rs_rank=None):
         calls.append(list(tiers or pws.TIERS))
         return []
 
@@ -229,7 +314,7 @@ def test_service_force_refresh_always_recomputes(monkeypatch):
 def test_service_only_recomputes_stale_tiers(monkeypatch):
     calls = []
 
-    def fake_build(universe_snapshot, market_data, region="us", tiers=None):
+    def fake_build(universe_snapshot, market_data, region="us", tiers=None, sector_rs_rank=None):
         calls.append(sorted(tiers))
         return []
 

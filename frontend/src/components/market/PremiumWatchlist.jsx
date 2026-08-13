@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
 import { formatCurrency, formatPercent, garchRegimeLabel, isExceptionalScore } from '../../format'
+import CandlestickPatternBadge from './CandlestickPatternBadge'
 import EntryTimingBadge from './EntryTimingBadge'
 import ImminentCrossBadge from './ImminentCrossBadge'
 import RefreshBar from '../RefreshBar'
@@ -59,6 +60,8 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
 
       <EntryTimingBadge entryTiming={signals.entry_timing} />
       <ImminentCrossBadge imminentCross={signals.imminent_cross} />
+      <ImminentCrossBadge imminentCross={signals.imminent_cross_short_term} shortTerm />
+      <CandlestickPatternBadge pattern={signals.candlestick_pattern} />
 
       <p className="premium-watchlist-card__backtest">
         <span className={`sector-tier-badge sector-tier-badge--${badge.tone}`}>{badge.label}</span>

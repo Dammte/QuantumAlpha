@@ -461,6 +461,58 @@ def detect_imminent_cross(fast: pd.Series, slow: pd.Series) -> ImminentCross | N
     return ImminentCross(direction=direction, bars_until=round(bars_until), r_squared=round(r_squared, 3))
 
 
+# A body at least this much bigger than the prior one's, in the *same*
+# direction as the engulf, filters out a technically-qualifying but trivial
+# one-tick engulf (a barely-bigger body on a low-volatility day) that pattern
+# purists wouldn't call a real reversal signal.
+ENGULFING_MIN_BODY_RATIO = 1.0
+
+
+def detect_engulfing_pattern(open_: pd.Series, close: pd.Series) -> str | None:
+    """Classic two-candle reversal: "bullish_engulfing" when a down candle is
+    immediately followed by an up candle whose real body fully contains the
+    prior one's (the buyers who showed up today didn't just stop the
+    decline, they erased the whole prior session and then some) -
+    "bearish_engulfing" is the mirror. Read purely off closing (settled)
+    bars, same as everything else in this module - never off today's
+    still-moving intraday candle, which isn't "engulfing" anything yet.
+    """
+    valid_open = open_.dropna()
+    valid_close = close.dropna()
+    if len(valid_open) < 2 or len(valid_close) < 2:
+        return None
+
+    prev_open, prev_close = float(valid_open.iloc[-2]), float(valid_close.iloc[-2])
+    curr_open, curr_close = float(valid_open.iloc[-1]), float(valid_close.iloc[-1])
+    prev_body = abs(prev_close - prev_open)
+    if prev_body == 0:
+        return None  # a doji has no real body to engulf
+
+    prev_bearish = prev_close < prev_open
+    prev_bullish = prev_close > prev_open
+    curr_bullish = curr_close > curr_open
+    curr_bearish = curr_close < curr_open
+    curr_body = abs(curr_close - curr_open)
+
+    if (
+        prev_bearish
+        and curr_bullish
+        and curr_open <= prev_close
+        and curr_close >= prev_open
+        and curr_body >= prev_body * ENGULFING_MIN_BODY_RATIO
+    ):
+        return "bullish_engulfing"
+    if (
+        prev_bullish
+        and curr_bearish
+        and curr_open >= prev_close
+        and curr_close <= prev_open
+        and curr_body >= prev_body * ENGULFING_MIN_BODY_RATIO
+    ):
+        return "bearish_engulfing"
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class PriceLevel:
     price: float

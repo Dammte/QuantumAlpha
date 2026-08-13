@@ -72,6 +72,8 @@ class TickerAnalysis:
     stage: Stage | None
     ma_cross: str | None
     imminent_cross: ImminentCross | None
+    imminent_cross_short_term: ImminentCross | None
+    candlestick_pattern: str | None
     mansfield_rs: float | None
     rs_rating: int | None
     minervini_score: int

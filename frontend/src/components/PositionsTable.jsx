@@ -118,6 +118,12 @@ function PositionsTable({ positions, colorScale, totalMarketValue, riskByTicker,
                       <span className={`signal-badge signal-badge--${risk.signal}`} title={riskTooltip(risk)}>
                         {SIGNAL_LABELS[risk.signal] ?? risk.signal}
                         <span className="signal-badge__score"> ({risk.score >= 0 ? '+' : ''}{risk.score})</span>
+                        {risk.signal === 'add_candidate' && risk.signals?.entry_timing?.status === 'extended' && (
+                          <span title="Setup válido, pero muy extendido - más prudente esperar un retroceso antes de añadir">
+                            {' '}
+                            ⚠️
+                          </span>
+                        )}
                       </span>
                     ) : riskLoading ? (
                       <span className="signal-badge signal-badge--pending" title="Calculando la señal técnica completa (tendencia, GARCH, Markov, backtest)…">

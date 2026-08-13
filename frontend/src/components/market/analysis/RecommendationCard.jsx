@@ -1,4 +1,5 @@
 import { formatCurrency, formatRatio } from '../../../format'
+import CandlestickPatternBadge from '../CandlestickPatternBadge'
 import EntryTimingBadge from '../EntryTimingBadge'
 import ImminentCrossBadge from '../ImminentCrossBadge'
 
@@ -51,7 +52,14 @@ function ScoreGauge({ score }) {
   )
 }
 
-function RecommendationCard({ recommendation, entryTiming, imminentCross, currency }) {
+function RecommendationCard({
+  recommendation,
+  entryTiming,
+  imminentCross,
+  imminentCrossShortTerm,
+  candlestickPattern,
+  currency,
+}) {
   const meta = VERDICT_META[recommendation.verdict] ?? { label: recommendation.verdict, tone: 'neutral' }
   const triggered = recommendation.factors.filter((f) => f.triggered)
 
@@ -68,6 +76,8 @@ function RecommendationCard({ recommendation, entryTiming, imminentCross, curren
         <EntryTimingBadge entryTiming={entryTiming} showDescription />
       )}
       <ImminentCrossBadge imminentCross={imminentCross} />
+      <ImminentCrossBadge imminentCross={imminentCrossShortTerm} shortTerm />
+      <CandlestickPatternBadge pattern={candlestickPattern} />
 
       {recommendation.verdict === 'comprar' && (
         <div className="recommendation-card__levels">

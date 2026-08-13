@@ -58,6 +58,34 @@ BACKTEST_COMPARISON = "comprar vs evitar"
 BACKTEST_EDGE_BONUS = 3.0
 KELLY_SETUP_BONUS = 1.0
 MONTE_CARLO_EDGE_WEIGHT = 2.0
+# Same "RS Rating >= 70" bar Minervini's own Trend Template already uses for
+# an individual stock (see technical_analysis.minervini_checklist) - applied
+# here to the *sector's* cross-sectional RS rank instead
+# (MarketScreenerService.get_sector_performance), so a candidate leading in a
+# sector that's itself leading gets a modest nudge over an equally-scored one
+# in a lagging sector. CANSLIM/IBD's own "buy leaders in leading industries"
+# principle, made concrete: two names can clear every bar on their own merits
+# and still not be equally good bets if the wind is at one's back and not the
+# other's. Deliberately smaller than BACKTEST_EDGE_BONUS - this is a ranking
+# nudge among already-qualified "comprar" verdicts, not a validated,
+# ablation-tested factor the way the core recommendation score's factors are
+# (see recommendation_engine.py's own docstring on that distinction) - same
+# character as the Kelly/Monte-Carlo bonuses already here, not the same rigor
+# bar as the score itself.
+STRONG_SECTOR_RS_THRESHOLD = 70
+STRONG_SECTOR_BONUS = 1.0
+# entry_timing.py is deliberately informational for the core recommendation -
+# "extended" doesn't mean "avoid", it means the easy, low-risk part of the
+# move likely already happened, which is a genuinely different question from
+# "is this a good stock". But this list exists specifically to be a short,
+# curated set worth acting on *today* (see the daily/weekly/monthly cadence
+# above) - among two names that clear the exact same bar on every other
+# count, the one that isn't already extended is the more actionable pick for
+# a list with that stated purpose, so it should rank above the other rather
+# than tie with it. A modest ranking penalty, not exclusion: an extended name
+# can still be the best (or only) candidate available and will still show up,
+# just no longer tied with a fresher setup that did just as well elsewhere.
+EXTENDED_ENTRY_PENALTY = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,12 +102,17 @@ class PremiumWatchlistItem:
     premium_score: float
 
 
-def _approval_score(signals: CoreTickerSignals) -> float | None:
+def _approval_score(signals: CoreTickerSignals, sector_rs_rank: int | None = None) -> float | None:
     """Returns a ranking score for a candidate that earns a spot on the premium
     list, or None to reject it. A rule-based "comprar" score alone isn't enough:
     a ticker whose OWN walk-forward backtest shows "evitar" has historically beaten
     "comprar" is excluded outright, regardless of today's score - the same
-    objectivity principle the market regime and sector rotation reads apply."""
+    objectivity principle the market regime and sector rotation reads apply.
+
+    `sector_rs_rank` is this candidate's *sector's* own cross-sectional RS
+    rank (MarketScreenerService.get_sector_performance) - None when sector
+    performance couldn't be computed, which contributes nothing rather than
+    guessing. See STRONG_SECTOR_BONUS."""
     if signals.recommendation.verdict != "comprar":
         return None
 
@@ -104,6 +137,10 @@ def _approval_score(signals: CoreTickerSignals) -> float | None:
         score += signals.monte_carlo.probability_target_before_stop * MONTE_CARLO_EDGE_WEIGHT
     if signals.position_sizing is not None:
         score += KELLY_SETUP_BONUS  # a genuinely sizeable, favorable-odds trade setup
+    if sector_rs_rank is not None and sector_rs_rank >= STRONG_SECTOR_RS_THRESHOLD:
+        score += STRONG_SECTOR_BONUS  # leading in a sector that's itself leading - CANSLIM/IBD's own principle
+    if signals.entry_timing is not None and signals.entry_timing.status == "extended":
+        score -= EXTENDED_ENTRY_PENALTY  # already ran - a fresher, equally-scored setup ranks above it here
     return score
 
 
@@ -112,8 +149,10 @@ def build_premium_watchlist(
     market_data: MarketDataService,
     region: str = DEFAULT_REGION,
     tiers: list[str] | None = None,
+    sector_rs_rank: dict[str, int] | None = None,
 ) -> list[PremiumWatchlistItem]:
     tiers = tiers if tiers else list(TIERS)
+    sector_rs_rank = sector_rs_rank or {}
 
     candidates_by_tier: dict[str, list[wl.WatchlistItem]] = {}
     all_candidate_tickers: set[str] = set()
@@ -156,6 +195,7 @@ def build_premium_watchlist(
                     df["high"],
                     df["low"],
                     df["volume"],
+                    df["open"],
                     benchmark_close,
                     candidate.snapshot.rs_rating,
                     horizon=_MONTE_CARLO_HORIZON[t],
@@ -168,7 +208,7 @@ def build_premium_watchlist(
                 continue
             if signals is None:
                 continue
-            score = _approval_score(signals)
+            score = _approval_score(signals, sector_rs_rank.get(candidate.sector))
             if score is None:
                 continue
             scored.append(
@@ -219,7 +259,13 @@ class PremiumWatchlistService:
 
         if stale:
             universe_snapshot = self.screener.get_universe_snapshot(region)
-            recomputed = build_premium_watchlist(universe_snapshot, self.market_data, region=region, tiers=stale)
+            # Already cheaply cached on its own (MarketScreenerService.CACHE_TTL) -
+            # this rarely triggers a real fetch of its own. See STRONG_SECTOR_BONUS.
+            sector_performance = self.screener.get_sector_performance(region)
+            sector_rs_rank = {s.sector: s.rs_rank for s in sector_performance if s.rs_rank is not None}
+            recomputed = build_premium_watchlist(
+                universe_snapshot, self.market_data, region=region, tiers=stale, sector_rs_rank=sector_rs_rank
+            )
             recomputed_by_tier: dict[str, list[PremiumWatchlistItem]] = {t: [] for t in stale}
             for item in recomputed:
                 recomputed_by_tier[item.tier].append(item)

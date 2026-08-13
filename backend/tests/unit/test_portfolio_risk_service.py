@@ -11,11 +11,19 @@ from app.services import technical_analysis as ta
 def _ohlc(close: np.ndarray, wiggle: float = 1.0) -> pd.DataFrame:
     close_s = pd.Series(close)
     return pd.DataFrame(
-        {"close": close_s, "high": close_s + wiggle, "low": close_s - wiggle, "volume": 1_000_000.0}
+        {
+            "open": close_s,
+            "close": close_s,
+            "high": close_s + wiggle,
+            "low": close_s - wiggle,
+            "volume": 1_000_000.0,
+        }
     )
 
 
-def _stub_signals(verdict="esperar", score=0, imminent_cross=None):
+def _stub_signals(
+    verdict="esperar", score=0, imminent_cross=None, imminent_cross_short_term=None, candlestick_pattern=None
+):
     """A minimal stand-in for CoreTickerSignals carrying only what
     assess_position_risk actually reads - used to test its signal/reasons
     logic in isolation from the real indicator pipeline."""
@@ -29,6 +37,8 @@ def _stub_signals(verdict="esperar", score=0, imminent_cross=None):
         nearest_resistance=None,
         recommendation=SimpleNamespace(verdict=verdict, score=score, factors=[]),
         imminent_cross=imminent_cross,
+        imminent_cross_short_term=imminent_cross_short_term,
+        candlestick_pattern=candlestick_pattern,
     )
 
 
@@ -169,6 +179,58 @@ def test_exit_warning_unaffected_by_imminent_cross(monkeypatch):
     monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: stub)
     result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
     assert result.signal == prs.EXIT_WARNING
+
+
+def test_add_candidate_still_surfaces_an_imminent_short_term_death_cross(monkeypatch):
+    """The real gap this test locks in, found auditing a real portfolio: a
+    position can score "comprar" (ADD_CANDIDATE) on the strength of its
+    overall multi-factor picture while SMA20/SMA50 are actively converging
+    toward a short-term death cross - a real, actionable heads-up for anyone
+    managing that position on a shorter horizon that must not be silently
+    dropped just because the headline signal is upbeat."""
+    imminent_short = ta.ImminentCross(direction="death", bars_until=5, r_squared=0.85)
+    stub = _stub_signals(verdict="comprar", score=6, imminent_cross_short_term=imminent_short)
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: stub)
+
+    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
+
+    assert result.signal == prs.ADD_CANDIDATE
+    assert any("corto plazo" in r and "bajista" in r for r in result.reasons)
+
+
+def test_hold_escalates_to_watch_when_short_term_death_cross_is_imminent(monkeypatch):
+    """The short-term (SMA20/SMA50) counterpart of
+    test_hold_escalates_to_watch_when_death_cross_is_imminent - relevant for a
+    position actively managed on a shorter horizon, which can turn well
+    before the SMA50/SMA200 picture does."""
+    imminent_short = ta.ImminentCross(direction="death", bars_until=3, r_squared=0.85)
+    stub = _stub_signals(imminent_cross_short_term=imminent_short)
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: stub)
+
+    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
+
+    assert result.signal == prs.WATCH
+    assert any("corto plazo" in r and "bajista" in r for r in result.reasons)
+
+
+def test_hold_escalates_to_watch_on_a_bearish_engulfing_candle(monkeypatch):
+    stub = _stub_signals(candlestick_pattern="bearish_engulfing")
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: stub)
+
+    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
+
+    assert result.signal == prs.WATCH
+    assert any("envolvente bajista" in r for r in result.reasons)
+
+
+def test_hold_gets_a_note_on_a_bullish_engulfing_candle(monkeypatch):
+    stub = _stub_signals(candlestick_pattern="bullish_engulfing")
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: stub)
+
+    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
+
+    assert result.signal == prs.HOLD
+    assert any("envolvente alcista" in r for r in result.reasons)
 
 
 def test_get_portfolio_positions_risk_skips_tickers_with_no_data():

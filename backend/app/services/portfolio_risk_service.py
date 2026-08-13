@@ -78,7 +78,14 @@ def assess_position_risk(
     vix_close: pd.Series | None = None,
 ) -> PositionRisk | None:
     signals = compute_core_signals(
-        df["close"], df["high"], df["low"], df["volume"], benchmark_close, rs_rating, vix_close=vix_close
+        df["close"],
+        df["high"],
+        df["low"],
+        df["volume"],
+        df["open"],
+        benchmark_close,
+        rs_rating,
+        vix_close=vix_close,
     )
     if signals is None:
         return None
@@ -91,41 +98,82 @@ def assess_position_risk(
         and abs(signals.nearest_resistance.distance_pct) <= PROXIMITY_THRESHOLD
     )
     # A *confirmed* death cross already factors into the recommendation engine's
-    # score (and from there, often the "evitar" verdict above). This is the
-    # earlier, still-projected case: nothing else has flagged this position yet,
-    # but SMA50/SMA200 are converging - worth active attention before it's a
-    # lagging confirmation, not after. See technical_analysis.detect_imminent_cross.
+    # score (and from there, often the "evitar" verdict above). These are the
+    # earlier, still-projected cases: nothing else has flagged this position
+    # yet, but a pair of moving averages is converging - worth active
+    # attention before it's a lagging confirmation, not after. Both the
+    # SMA50/SMA200 (medium/long-term) and SMA20/SMA50 (short-term - relevant
+    # for a position actively managed on a shorter horizon, which can turn
+    # well before the longer-term picture does) versions count here. See
+    # technical_analysis.detect_imminent_cross.
     imminent_death_cross = signals.imminent_cross is not None and signals.imminent_cross.direction == "death"
+    imminent_death_cross_short = (
+        signals.imminent_cross_short_term is not None and signals.imminent_cross_short_term.direction == "death"
+    )
+    # The one price-action pattern checked here rather than left to the
+    # recommendation engine's score: a bearish engulfing candle is a
+    # single-session event, not a multi-day trend read like everything else
+    # this checklist scores - worth surfacing immediately on the position
+    # that just printed one, not waiting for it to show up in slower-moving
+    # indicators. See technical_analysis.detect_engulfing_pattern.
+    bearish_engulfing = signals.candlestick_pattern == "bearish_engulfing"
 
+    watch_worthy = (
+        near_support or near_resistance or imminent_death_cross or imminent_death_cross_short or bearish_engulfing
+    )
     if signals.recommendation.verdict == "evitar":
         signal = EXIT_WARNING
     elif signals.recommendation.verdict == "comprar":
         signal = ADD_CANDIDATE
-    elif near_support or near_resistance or imminent_death_cross:
+    elif watch_worthy:
         signal = WATCH
     else:
         signal = HOLD
 
+    # Deliberately *not* gated by which `signal` tier this landed in: an
+    # add_candidate position with a strong short-term breakdown projected
+    # (a "comprar" verdict absolutely can carry one - the recommendation
+    # engine looks at the whole picture, this looks at one specific,
+    # narrower thing) still deserves that context visible, not silently
+    # dropped because the headline signal was upbeat. A real gap this
+    # closes: a held position can score "comprar" (ADD_CANDIDATE) while
+    # SMA20/SMA50 are actively converging toward a short-term death cross -
+    # exactly the situation a short-term-managed position needs a heads-up
+    # on, regardless of what the primary badge says.
     reasons = [f"{f.label} ({f.points:+d})" for f in signals.recommendation.factors if f.triggered]
-    if signal == WATCH:
-        if near_support or near_resistance:
-            nearest = signals.nearest_support if near_support else signals.nearest_resistance
-            kind_label = "soporte" if nearest.kind == "support" else "resistencia"
-            pct = abs(nearest.distance_pct) * 100
-            reasons.append(f"Precio a {pct:.1f}% de un nivel de {kind_label} en {nearest.price:.2f}")
-        if imminent_death_cross:
-            reasons.append(
-                f"Posible cruce de medias bajista (SMA50/SMA200) en ~{signals.imminent_cross.bars_until} "
-                "sesiones si continúa la tendencia actual - vigilar de cerca"
-            )
-    elif signal == HOLD and signals.imminent_cross is not None and signals.imminent_cross.direction == "golden":
-        # Informational only for a HOLD - a projected golden cross doesn't by
-        # itself clear the bar for an add_candidate verdict (that still needs
-        # the full recommendation engine's "comprar"), but it's worth knowing.
+    if near_support or near_resistance:
+        nearest = signals.nearest_support if near_support else signals.nearest_resistance
+        kind_label = "soporte" if nearest.kind == "support" else "resistencia"
+        pct = abs(nearest.distance_pct) * 100
+        reasons.append(f"Precio a {pct:.1f}% de un nivel de {kind_label} en {nearest.price:.2f}")
+
+    if imminent_death_cross:
         reasons.append(
-            f"Posible cruce de medias alcista (SMA50/SMA200) en ~{signals.imminent_cross.bars_until} sesiones "
-            "si continúa la tendencia actual"
+            f"Posible cruce de medias bajista (SMA50/SMA200) en ~{signals.imminent_cross.bars_until} "
+            "sesiones si continúa la tendencia actual - vigilar de cerca"
         )
+    elif signals.imminent_cross is not None and signals.imminent_cross.direction == "golden":
+        reasons.append(
+            f"Posible cruce de medias alcista (SMA50/SMA200) en ~{signals.imminent_cross.bars_until} "
+            "sesiones si continúa la tendencia actual"
+        )
+
+    ict_short = signals.imminent_cross_short_term
+    if imminent_death_cross_short:
+        reasons.append(
+            f"Posible cruce de medias bajista de corto plazo (SMA20/SMA50) en ~{ict_short.bars_until} "
+            "sesiones - relevante si gestionas esta posición a corto plazo"
+        )
+    elif ict_short is not None and ict_short.direction == "golden":
+        reasons.append(
+            f"Posible cruce de medias alcista de corto plazo (SMA20/SMA50) en ~{ict_short.bars_until} sesiones"
+        )
+
+    if bearish_engulfing:
+        reasons.append("Vela envolvente bajista en la última sesión - posible cambio de tendencia a corto plazo")
+    elif signals.candlestick_pattern == "bullish_engulfing":
+        reasons.append("Vela envolvente alcista en la última sesión")
+
     if not reasons:
         reasons.append("Sin señales técnicas relevantes en este momento")
 

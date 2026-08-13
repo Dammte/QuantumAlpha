@@ -100,7 +100,9 @@ class CoreTickerSignals:
     trend: ta.TrendState
     stage: ta.Stage | None
     ma_cross: str | None
-    imminent_cross: ta.ImminentCross | None  # a projected, not-yet-happened cross - see technical_analysis.py
+    imminent_cross: ta.ImminentCross | None  # SMA50/SMA200, projected - see technical_analysis.py
+    imminent_cross_short_term: ta.ImminentCross | None  # SMA20/SMA50, for a shorter-horizon-managed position
+    candlestick_pattern: str | None  # "bullish_engulfing" | "bearish_engulfing" - see detect_engulfing_pattern
     mansfield_rs: float | None
     rs_rating: int | None
     minervini_score: int
@@ -146,6 +148,7 @@ def compute_core_signals(
     high: pd.Series,
     low: pd.Series,
     volume: pd.Series,
+    open_: pd.Series,
     benchmark_close: pd.Series | None,
     rs_rating: int | None,
     horizon: str = DEFAULT_HORIZON,
@@ -222,6 +225,17 @@ def compute_core_signals(
         stage = ta.classify_stage(price, sma150_s)
         ma_cross = ta.detect_recent_cross(sma50_s, sma200_s, lookback=5)
         imminent_cross = ta.detect_imminent_cross(sma50_s, sma200_s)
+
+    # Short-term counterpart of the above (SMA20/SMA50, not SMA50/SMA200) -
+    # for a position managed on a shorter horizon, this is the trend guide
+    # that actually matters day to day: SMA50/SMA200 can stay bullish for
+    # months after a short-term swing has already turned. Only needs 50 bars,
+    # not 200, so it's gated separately.
+    imminent_cross_short_term = None
+    if len(close) >= 50:
+        imminent_cross_short_term = ta.detect_imminent_cross(sma20_s, sma50_s)
+
+    candlestick_pattern = ta.detect_engulfing_pattern(open_, close)
 
     atr14 = _last(atr_s)
     atr_multiple = ta.atr_multiple_from_sma(close, high, low)
@@ -337,6 +351,8 @@ def compute_core_signals(
         stage=stage,
         ma_cross=ma_cross,
         imminent_cross=imminent_cross,
+        imminent_cross_short_term=imminent_cross_short_term,
+        candlestick_pattern=candlestick_pattern,
         mansfield_rs=mansfield,
         rs_rating=rs_rating,
         minervini_score=minervini_score,
@@ -398,7 +414,7 @@ class TickerAnalysisService:
         vix_df = ohlcv.get(VIX_TICKER)
         vix_close = vix_df["close"] if vix_df is not None else None
 
-        close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
+        close, high, low, volume, open_ = df["close"], df["high"], df["low"], df["volume"], df["open"]
         rs_rating = self._rs_rating_for(ticker)
         # Fetched here (not after, as it used to be) so the fundamentals factor
         # can actually feed into the recommendation - this is the one path that
@@ -410,6 +426,7 @@ class TickerAnalysisService:
             high,
             low,
             volume,
+            open_,
             benchmark_close,
             rs_rating,
             horizon,
@@ -503,6 +520,8 @@ class TickerAnalysisService:
             stage=core.stage,
             ma_cross=core.ma_cross,
             imminent_cross=core.imminent_cross,
+            imminent_cross_short_term=core.imminent_cross_short_term,
+            candlestick_pattern=core.candlestick_pattern,
             mansfield_rs=core.mansfield_rs,
             rs_rating=core.rs_rating,
             minervini_score=core.minervini_score,
