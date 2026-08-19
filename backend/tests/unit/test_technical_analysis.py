@@ -1,8 +1,169 @@
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from app.services import technical_analysis as ta
+
+
+def _ohlcv_df(dates, closes, volumes=None, wiggle=1.0):
+    # The DatetimeIndex has to be attached to `closes` *before* deriving
+    # open/high/low from it - building each column as a bare, unindexed
+    # pd.Series and only assigning the DatetimeIndex on the final
+    # pd.DataFrame(..., index=...) call silently reindex-aligns every column
+    # to all-NaN (RangeIndex labels don't match DatetimeIndex labels).
+    index = pd.to_datetime(list(dates))
+    closes = pd.Series(closes, index=index, dtype=float)
+    volumes = pd.Series(volumes, index=index, dtype=float) if volumes is not None else pd.Series(
+        [1000.0] * len(closes), index=index
+    )
+    return pd.DataFrame(
+        {
+            "open": closes - wiggle / 2,
+            "high": closes + wiggle,
+            "low": closes - wiggle,
+            "close": closes,
+            "volume": volumes,
+        }
+    )
+
+
+def test_resample_ohlcv_weekly_aggregates_ohlc_and_volume_correctly():
+    # Two full business weeks: Mon 2024-01-01 - Fri 2024-01-05, then
+    # Mon 2024-01-08 - Fri 2024-01-12. Both weeks end exactly on their
+    # Friday, so both are "closed" and neither is dropped even without
+    # include_partial.
+    dates = pd.bdate_range("2024-01-01", periods=10)
+    closes = [10, 11, 9, 12, 13, 20, 22, 18, 25, 24]
+    volumes = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+    df = _ohlcv_df(dates, closes, volumes, wiggle=1.0)
+
+    weekly = ta.resample_ohlcv(df, rule="W-FRI")
+
+    assert len(weekly) == 2
+    week1, week2 = weekly.iloc[0], weekly.iloc[1]
+    assert week1["open"] == pytest.approx(10 - 0.5)  # first bar's open
+    assert week1["high"] == pytest.approx(14.0)  # max(close)+wiggle over the week
+    assert week1["low"] == pytest.approx(8.0)  # min(close)-wiggle over the week
+    assert week1["close"] == pytest.approx(13.0)  # last bar's close
+    assert week1["volume"] == pytest.approx(1500.0)  # sum
+    assert week2["close"] == pytest.approx(24.0)
+    assert week2["volume"] == pytest.approx(4000.0)
+    assert weekly.index[0].date() == date(2024, 1, 5)  # labeled by the week's Friday
+    assert weekly.index[1].date() == date(2024, 1, 12)
+
+
+def test_resample_ohlcv_drops_still_forming_week_by_default():
+    # Two complete weeks (as above) plus a single Monday of a third week -
+    # that third week hasn't finished trading, so it must not be reported as
+    # a "weekly bar" unless explicitly asked for.
+    dates = list(pd.bdate_range("2024-01-01", periods=10)) + [pd.Timestamp("2024-01-15")]
+    closes = [10, 11, 9, 12, 13, 20, 22, 18, 25, 24, 30]
+    df = _ohlcv_df(dates, closes)
+
+    default = ta.resample_ohlcv(df, rule="W-FRI")
+    assert len(default) == 2
+
+    with_partial = ta.resample_ohlcv(df, rule="W-FRI", include_partial=True)
+    assert len(with_partial) == 3
+    assert with_partial.iloc[2]["close"] == pytest.approx(30.0)
+    assert with_partial.iloc[2]["volume"] == pytest.approx(1000.0)  # only that one Monday
+
+
+def test_resample_ohlcv_empty_df_returns_empty():
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    assert ta.resample_ohlcv(empty).empty
+
+
+def test_closed_bars_drops_the_bar_dated_today():
+    dates = pd.bdate_range("2024-01-01", periods=5)
+    df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
+    result = ta.closed_bars(df, today=date(2024, 1, 5))
+    assert len(result) == 4
+    assert result.index[-1] == dates[-2]
+
+
+def test_closed_bars_keeps_every_bar_when_the_last_one_is_not_today():
+    dates = pd.bdate_range("2024-01-01", periods=5)
+    df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
+    result = ta.closed_bars(df, today=date(2024, 1, 8))
+    assert len(result) == 5
+
+
+def test_closed_bars_empty_df_returns_empty():
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    assert ta.closed_bars(empty).empty
+
+
+def test_detect_cross_with_quality_strong_golden_cross():
+    # slow is flat at 100; fast sits well below it, then crosses decisively
+    # with growing separation, a positive slope, and a volume spike exactly
+    # on the confirming bar.
+    slow = pd.Series([100.0] * 30)
+    fast = pd.Series([95.0] * 24 + [96.0, 98.0, 101.0, 104.0, 108.0, 112.0])
+    close = fast
+    high, low = close + 1, close - 1
+    volume = pd.Series([1000.0] * 26 + [5000.0] + [1000.0] * 3)  # spike at index 26, the cross bar
+
+    result = ta.detect_cross_with_quality(fast, slow, high, low, close, volume)
+
+    assert result is not None
+    assert result.direction == "golden"
+    assert result.bars_since == 3  # confirmed at index 26, latest bar is index 29
+    assert result.separation_atr is not None and result.separation_atr > ta.CROSS_STRONG_SEPARATION_ATR
+    assert result.fast_slope > result.slow_slope  # diverging upward
+    assert result.volume_confirmation is not None and result.volume_confirmation > ta.CROSS_STRONG_RELATIVE_VOLUME
+    assert result.quality == "strong"
+
+
+def test_detect_cross_with_quality_downgrades_to_weak_without_volume_confirmation():
+    # Identical setup to the "strong" case above, minus the volume spike -
+    # separation and slope alone aren't enough.
+    slow = pd.Series([100.0] * 30)
+    fast = pd.Series([95.0] * 24 + [96.0, 98.0, 101.0, 104.0, 108.0, 112.0])
+    close = fast
+    high, low = close + 1, close - 1
+    volume = pd.Series([1000.0] * 30)  # flat - no confirmation on the cross bar
+
+    result = ta.detect_cross_with_quality(fast, slow, high, low, close, volume)
+
+    assert result is not None
+    assert result.quality == "weak"
+
+
+def test_detect_cross_with_quality_noise_when_separation_is_negligible():
+    # fast and slow are practically overlapping - the sign technically flips,
+    # but by a fraction of a single ATR, not a real separation.
+    slow = pd.Series([100.0] * 30)
+    fast = pd.Series([99.9] * 25 + [100.05] * 5)
+    close = fast
+    high, low = close + 1, close - 1
+
+    result = ta.detect_cross_with_quality(fast, slow, high, low, close)
+
+    assert result is not None
+    assert result.direction == "golden"
+    assert result.separation_atr is not None and result.separation_atr < ta.CROSS_NOISE_SEPARATION_ATR
+    assert result.quality == "noise"
+
+
+def test_detect_cross_with_quality_none_when_no_cross_happened():
+    slow = pd.Series([100.0] * 30)
+    fast = pd.Series([90.0] * 30)  # always below, never crosses
+    assert ta.detect_cross_with_quality(fast, slow) is None
+
+
+def test_detect_cross_with_quality_works_without_optional_series():
+    # high/low/close/volume are all optional - separation_atr and
+    # volume_confirmation degrade to None rather than raising.
+    slow = pd.Series([100.0] * 10)
+    fast = pd.Series([95.0] * 5 + [105.0] * 5)
+    result = ta.detect_cross_with_quality(fast, slow)
+    assert result is not None
+    assert result.direction == "golden"
+    assert result.separation_atr is None
+    assert result.volume_confirmation is None
 
 
 def test_sma_basic():

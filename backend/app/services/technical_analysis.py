@@ -6,10 +6,58 @@ cheap to unit test in isolation - same philosophy as `metrics_service.py`.
 """
 
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 
 import numpy as np
 import pandas as pd
+
+
+def resample_ohlcv(df: pd.DataFrame, rule: str = "W-FRI", include_partial: bool = False) -> pd.DataFrame:
+    """Aggregates daily OHLCV bars into weekly (`rule="W-FRI"`, the default -
+    weeks ending Friday) or monthly (`rule="ME"`) bars: open=first, high=max,
+    low=min, close=last, volume=sum. Purely a re-aggregation of the daily
+    frame already in memory - no network call, so a weekly/monthly read costs
+    nothing beyond what the daily history already paid for (see
+    `PortfolioRiskService`'s docstring for the per-ticker network-call
+    incident this is careful not to repeat).
+
+    The still-forming last period is dropped unless `include_partial=True`: a
+    week that hasn't actually finished trading yet isn't a "weekly bar" any
+    more than today's still-open daily candle is a closed daily bar (see
+    `closed_bars`) - a discrete signal (cross, stage, pattern) evaluated on it
+    would repaint intraweek the same way a same-day daily read does. This is
+    detected from the data itself, with no "today" needed from the caller: if
+    the last raw daily bar falls short of the resampled period's own right
+    edge, that period hasn't closed yet.
+    """
+    if df.empty:
+        return df
+    agg = df.resample(rule, label="right", closed="right").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    )
+    agg = agg.dropna(subset=["close"])
+    if not include_partial and not agg.empty and df.index[-1] < agg.index[-1]:
+        agg = agg.iloc[:-1]
+    return agg
+
+
+def closed_bars(df: pd.DataFrame, today: date | None = None) -> pd.DataFrame:
+    """Drops the in-progress bar so discrete signals (crosses, patterns,
+    stage) are only ever evaluated on the last *settled* close - never on a
+    same-session price that can still move before the actual close (the D6
+    fix: continuous reads like price/RSI/ADX are fine live, but a discrete
+    event evaluated mid-session appears and disappears as the price moves,
+    which is repainting, not a decision). `today` is injectable for tests;
+    defaults to the real current date, compared by calendar date only."""
+    if df.empty:
+        return df
+    today = today or date.today()
+    last_bar_date = df.index[-1]
+    last_date = last_bar_date.date() if hasattr(last_bar_date, "date") else last_bar_date
+    if last_date >= today:
+        return df.iloc[:-1]
+    return df
 
 
 def sma(series: pd.Series, window: int) -> pd.Series:
@@ -425,6 +473,131 @@ def detect_recent_cross(fast: pd.Series, slow: pd.Series, lookback: int = 5) -> 
     if (changes < 0).any() and signs.iloc[-1] < 0:
         return "death"
     return None
+
+
+# First-pass thresholds, not ablation-calibrated yet - same status
+# BUY_THRESHOLD/AVOID_THRESHOLD started at in recommendation_engine.py before
+# their own audit. Revisit once scripts/factor_ablation_study.py can measure
+# whether "strong"-quality crosses actually outperform "weak" ones.
+CROSS_QUALITY_LOOKBACK = 5  # same default as detect_recent_cross
+CROSS_SLOPE_LOOKBACK = 5  # bars used to estimate how fast/slow are trending right now
+CROSS_NOISE_SEPARATION_ATR = 0.15  # medias prácticamente solapadas -> ruido, no señal
+CROSS_STRONG_SEPARATION_ATR = 0.5  # separación clara entre las medias -> parte del criterio de "strong"
+CROSS_STRONG_RELATIVE_VOLUME = 1.2  # volumen mínimo (vs su media de 20 sesiones) en la barra del cruce
+
+
+@dataclass(frozen=True, slots=True)
+class CrossQuality:
+    """A confirmed cross (`detect_recent_cross`'s territory) with the context
+    that actually says whether to trust it - two moving averages barely
+    separated and flat printing a "death cross" on a quiet volume day is not
+    the same signal as one with clean separation, a slope backing it, and
+    volume behind it, even though a plain golden/death label reports both
+    identically."""
+
+    direction: str  # "golden" | "death"
+    bars_since: int  # bars since the cross was confirmed (0 = the latest closed bar)
+    separation_atr: float | None  # |fast - slow| at the latest bar, in multiples of ATR - None if ATR unavailable
+    fast_slope: float  # % change per bar of the fast MA over CROSS_SLOPE_LOOKBACK bars
+    slow_slope: float  # % change per bar of the slow MA over CROSS_SLOPE_LOOKBACK bars
+    volume_confirmation: float | None  # relative volume on the cross bar - None if volume wasn't supplied
+    quality: str  # "strong" | "weak" | "noise"
+
+
+def _pct_slope(series: pd.Series, lookback: int) -> float | None:
+    """% change per bar over the trailing `lookback` bars - a simple, robust
+    normalized slope (comparable across tickers/price levels), not a
+    regression fit like `detect_imminent_cross` uses: this only needs a rough
+    "is it rising or falling and how fast", not a goodness-of-fit projection."""
+    valid = series.dropna()
+    if len(valid) <= lookback:
+        return None
+    start = valid.iloc[-lookback - 1]
+    if pd.isna(start) or start == 0:
+        return None
+    return float((valid.iloc[-1] / start - 1) / lookback)
+
+
+def detect_cross_with_quality(
+    fast: pd.Series,
+    slow: pd.Series,
+    high: pd.Series | None = None,
+    low: pd.Series | None = None,
+    close: pd.Series | None = None,
+    volume: pd.Series | None = None,
+    lookback: int = CROSS_QUALITY_LOOKBACK,
+) -> CrossQuality | None:
+    """Like `detect_recent_cross`, but with the context that says whether to
+    trust it: how many bars ago it confirmed, how separated the two averages
+    already are (in ATR, so it's comparable across tickers and price levels),
+    whether both are actually trending apart in the cross's direction, and
+    whether volume showed up on the bar it happened. `high`/`low`/`close` are
+    only needed for the ATR-based separation reading; `volume` only for the
+    volume-confirmation reading - both degrade to `None` gracefully, same
+    philosophy as the rest of this module, rather than requiring every caller
+    to supply everything."""
+    diff = (fast - slow).dropna()
+    if len(diff) < 2:
+        return None
+    window = diff.iloc[-(lookback + 1) :] if len(diff) > lookback + 1 else diff
+    signs = np.sign(window)
+    changes = signs.diff().dropna()
+
+    if (changes > 0).any() and signs.iloc[-1] > 0:
+        direction = "golden"
+        matching_changes = changes[changes > 0]
+    elif (changes < 0).any() and signs.iloc[-1] < 0:
+        direction = "death"
+        matching_changes = changes[changes < 0]
+    else:
+        return None
+
+    # The most recent matching transition's position in the *full* diff
+    # series (not just the lookback window) gives an exact bars-since count
+    # even when lookback is small.
+    cross_position = diff.index.get_loc(matching_changes.index[-1])
+    bars_since = len(diff) - 1 - cross_position
+
+    separation_atr = None
+    if high is not None and low is not None and close is not None:
+        latest_atr = atr(high, low, close).iloc[-1]
+        if not pd.isna(latest_atr) and latest_atr > 0:
+            separation_atr = float(abs(diff.iloc[-1]) / latest_atr)
+
+    fast_slope = _pct_slope(fast, CROSS_SLOPE_LOOKBACK) or 0.0
+    slow_slope = _pct_slope(slow, CROSS_SLOPE_LOOKBACK) or 0.0
+    # "Diverging" in the cross's own direction: for a golden cross the fast
+    # MA should be pulling away upward relative to the slow one (and the
+    # mirror for a death cross) - a cross where the two slopes are converging
+    # back together right after crossing is a weaker signal even at a
+    # reasonable ATR separation.
+    diverging = (fast_slope - slow_slope) > 0 if direction == "golden" else (fast_slope - slow_slope) < 0
+
+    volume_confirmation = None
+    if volume is not None:
+        volume_confirmation = relative_volume(volume.iloc[: cross_position + 1])
+
+    if separation_atr is not None and separation_atr < CROSS_NOISE_SEPARATION_ATR:
+        quality = "noise"
+    elif (
+        separation_atr is not None
+        and separation_atr >= CROSS_STRONG_SEPARATION_ATR
+        and diverging
+        and (volume_confirmation is None or volume_confirmation >= CROSS_STRONG_RELATIVE_VOLUME)
+    ):
+        quality = "strong"
+    else:
+        quality = "weak"
+
+    return CrossQuality(
+        direction=direction,
+        bars_since=bars_since,
+        separation_atr=separation_atr,
+        fast_slope=fast_slope,
+        slow_slope=slow_slope,
+        volume_confirmation=volume_confirmation,
+        quality=quality,
+    )
 
 
 IMMINENT_CROSS_LOOKBACK = 15  # bars of recent gap history the trend line is fit over
