@@ -40,7 +40,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from app.services.recommendation_engine import build_recommendation
+from app.services.recommendation_engine import Recommendation, build_recommendation
 from app.services.technical_analysis import (
     classify_stage,
     classify_trend,
@@ -56,7 +56,7 @@ N_PERMUTATIONS = 5000
 VERDICTS = ("comprar", "esperar", "evitar")
 
 
-def _replay_verdict_at(
+def replay_recommendation_at(
     i: int,
     close: pd.Series,
     sma20: pd.Series,
@@ -69,11 +69,17 @@ def _replay_verdict_at(
     minus_di: pd.Series,
     atr14: pd.Series,
     volume: pd.Series | None = None,
-) -> str | None:
-    """Rebuilds the recommendation verdict using only values knowable at bar
-    `i` - either a scalar reading at `i`, or (for the functions that need a
-    lookback window - `classify_stage`, `detect_recent_cross`, `obv_divergence`)
-    a slice `[:i+1]`, still using no information beyond bar `i`."""
+) -> Recommendation | None:
+    """Rebuilds the *full* recommendation (verdict, score, and - the part
+    `_replay_verdict_at` below used to throw away, see D7 in
+    docs/quant_methodology.md - stop_loss/take_profit) using only values
+    knowable at bar `i` - either a scalar reading at `i`, or (for the
+    functions that need a lookback window - `classify_stage`,
+    `detect_recent_cross`, `obv_divergence`) a slice `[:i+1]`, still using no
+    information beyond bar `i`. `backtest_engine.py`'s triple-barrier
+    labeling is the reason this now returns the whole `Recommendation`, not
+    just its verdict - it needs the stop/target build_recommendation actually
+    proposed at that point in time, not a second, separately-computed one."""
     price = close.iloc[i]
     s20, s50, s200 = sma20.iloc[i], sma50.iloc[i], sma200.iloc[i]
     if pd.isna(s20) or pd.isna(s50) or pd.isna(s200):
@@ -123,7 +129,30 @@ def _replay_verdict_at(
         minervini_range_confirmed=range_confirmed,
         obv_divergence=obv_div,
     )
-    return rec.verdict
+    return rec
+
+
+def _replay_verdict_at(
+    i: int,
+    close: pd.Series,
+    sma20: pd.Series,
+    sma50: pd.Series,
+    sma150: pd.Series,
+    sma200: pd.Series,
+    rsi14: pd.Series,
+    adx14: pd.Series,
+    plus_di: pd.Series,
+    minus_di: pd.Series,
+    atr14: pd.Series,
+    volume: pd.Series | None = None,
+) -> str | None:
+    """Thin wrapper around `replay_recommendation_at` for callers (this
+    module's own bucket-stats loop below) that only need the verdict, not
+    the full `Recommendation`."""
+    rec = replay_recommendation_at(
+        i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, volume
+    )
+    return rec.verdict if rec is not None else None
 
 
 def _permutation_test(

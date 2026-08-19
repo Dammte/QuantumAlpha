@@ -65,6 +65,37 @@ def test_replay_verdict_incorporates_minervini_range_confirmation():
     assert verdict in ("comprar", "esperar", "evitar")
 
 
+def test_replay_recommendation_at_returns_none_before_smas_are_valid():
+    close = pd.Series(np.linspace(100, 110, 50))
+    bundle = _indicator_bundle(close)
+    assert wf.replay_recommendation_at(10, **bundle) is None
+
+
+def test_replay_recommendation_at_carries_a_stop_loss_for_a_comprar_verdict():
+    # D7: the whole point of this refactor - a replayed "comprar" verdict
+    # must carry the stop_loss/take_profit build_recommendation actually
+    # proposed at that point, not just the bare verdict string.
+    close = _synthetic_regime_series(n=800, block=800)  # one long uptrend block
+    bundle = _indicator_bundle(close)
+    rec = wf.replay_recommendation_at(700, **bundle)
+    assert rec is not None
+    if rec.verdict == "comprar":
+        assert rec.stop_loss is not None
+        assert rec.stop_loss < close.iloc[700]
+        assert rec.take_profit is not None
+
+
+def test_replay_recommendation_at_matches_replay_verdict_at():
+    # _replay_verdict_at is now a thin wrapper - confirms it stays consistent
+    # with the fuller function it delegates to.
+    close = _synthetic_regime_series(n=400)
+    bundle = _indicator_bundle(close)
+    rec = wf.replay_recommendation_at(300, **bundle)
+    verdict = wf._replay_verdict_at(300, **bundle)
+    assert rec is not None
+    assert rec.verdict == verdict
+
+
 def test_replay_verdict_incorporates_obv_divergence_when_volume_given():
     close = _synthetic_regime_series(n=400)
     bundle = _indicator_bundle(close)
