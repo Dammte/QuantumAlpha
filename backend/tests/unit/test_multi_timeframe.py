@@ -22,6 +22,7 @@ def _read(
         stage=stage,
         ma_cross_50_200=ma_cross_50_200,
         ma_cross_20_50=None,
+        cross_quality_20_50=None,
         imminent_cross_50_200=None,
         imminent_cross_20_50=None,
         macd_cross=macd_cross,

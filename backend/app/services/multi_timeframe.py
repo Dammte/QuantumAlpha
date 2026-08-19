@@ -55,6 +55,11 @@ class TimeframeRead:
     stage: ta.Stage | None
     ma_cross_50_200: str | None  # "golden" | "death" | None, confirmed within the last few closed bars
     ma_cross_20_50: str | None
+    # Full quality read (separation/slope/volume) for the 20/50 pair - unlike
+    # the 50/200 pair, `exit_engine.py` needs `quality`, not just direction,
+    # for its death-cross hard trigger, so this carries the whole object
+    # rather than just bars_since like ma_cross_50_200 does.
+    cross_quality_20_50: ta.CrossQuality | None
     imminent_cross_50_200: ta.ImminentCross | None
     imminent_cross_20_50: ta.ImminentCross | None
     macd_cross: str | None  # "bullish" | "bearish" - MACD line vs its own signal line
@@ -116,9 +121,11 @@ def _read_timeframe(
             ma_cross_50_200, bars_since_cross = quality.direction, quality.bars_since
         imminent_50_200 = ta.detect_imminent_cross(sma50_s, sma200_s)
 
-    ma_cross_20_50, imminent_20_50 = None, None
+    ma_cross_20_50, cross_quality_20_50, imminent_20_50 = None, None, None
     if len(close) >= MIN_BARS_FOR_20_50_CROSS:
-        ma_cross_20_50 = ta.detect_recent_cross(sma20_s, sma50_s, lookback=5)
+        cross_quality_20_50 = ta.detect_cross_with_quality(sma20_s, sma50_s, high, low, close, volume)
+        if cross_quality_20_50 is not None:
+            ma_cross_20_50 = cross_quality_20_50.direction
         imminent_20_50 = ta.detect_imminent_cross(sma20_s, sma50_s)
 
     macd_line, macd_signal, macd_hist = ta.macd(close)
@@ -143,6 +150,7 @@ def _read_timeframe(
         stage=stage,
         ma_cross_50_200=ma_cross_50_200,
         ma_cross_20_50=ma_cross_20_50,
+        cross_quality_20_50=cross_quality_20_50,
         imminent_cross_50_200=imminent_50_200,
         imminent_cross_20_50=imminent_20_50,
         macd_cross=macd_cross,
@@ -175,6 +183,7 @@ def _empty_daily_read() -> TimeframeRead:
         stage=None,
         ma_cross_50_200=None,
         ma_cross_20_50=None,
+        cross_quality_20_50=None,
         imminent_cross_50_200=None,
         imminent_cross_20_50=None,
         macd_cross=None,
