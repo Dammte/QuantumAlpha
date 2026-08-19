@@ -8,6 +8,9 @@ from app.core.config import Settings, get_settings
 from app.domain.interfaces.market_data_provider import MarketDataProvider
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
+from app.infrastructure.db.repositories.position_signal_snapshot_repository import (
+    PositionSignalSnapshotRepository,
+)
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.infrastructure.db.session import get_db
@@ -106,6 +109,10 @@ def get_recommendation_snapshot_repository(db: DbSession) -> RecommendationSnaps
 
 def get_trade_plan_repository(db: DbSession) -> TradePlanRepository:
     return TradePlanRepository(db)
+
+
+def get_position_signal_snapshot_repository(db: DbSession) -> PositionSignalSnapshotRepository:
+    return PositionSignalSnapshotRepository(db)
 
 
 def get_asset_repository(db: DbSession) -> AssetRepository:

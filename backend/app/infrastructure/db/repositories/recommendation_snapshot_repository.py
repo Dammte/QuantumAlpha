@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.models.recommendation_snapshot import RecommendationSnapshot
 from app.infrastructure.db.models import RecommendationSnapshotORM
 
 
@@ -48,3 +51,24 @@ class RecommendationSnapshotRepository:
             .limit(limit)
         )
         return list(self.db.scalars(stmt).all())
+
+    def list_all(self, since: datetime | None = None) -> list[RecommendationSnapshot]:
+        """Every snapshot across every ticker, as domain objects - the raw
+        material `signal_performance_service.py` aggregates into per-verdict
+        hit rates and mean returns. Deliberately a separate method from
+        `list_for_ticker` (which stays ORM-returning, unchanged, for the
+        existing per-ticker history endpoint) rather than widening that
+        method's contract for a second, unrelated use case."""
+        stmt = select(RecommendationSnapshotORM).order_by(RecommendationSnapshotORM.created_at)
+        if since is not None:
+            stmt = stmt.where(RecommendationSnapshotORM.created_at >= since)
+        return [
+            RecommendationSnapshot(
+                ticker=orm.ticker,
+                created_at=orm.created_at,
+                verdict=orm.verdict,
+                score=orm.score,
+                price=float(orm.price),
+            )
+            for orm in self.db.scalars(stmt).all()
+        ]

@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 
+from app.domain.interfaces.position_signal_snapshot_repository import PositionSignalSnapshotRepositoryPort
 from app.domain.interfaces.trade_plan_repository import TradePlanRepositoryPort
 from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.domain.models.trade_plan import TradePlan
@@ -31,6 +32,7 @@ from app.services import trade_manager as tm
 from app.services import trade_plan_service as tps
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, currency_of
+from app.services.recommendation_engine import ENGINE_VERSION
 from app.services.ticker_analysis_service import HISTORY_YEARS, CoreTickerSignals, compute_core_signals
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,7 @@ def assess_position_risk(
     portfolio_id: int | None = None,
     transactions: list[Transaction] | None = None,
     trade_plan_repo: TradePlanRepositoryPort | None = None,
+    position_signal_snapshot_repo: PositionSignalSnapshotRepositoryPort | None = None,
 ) -> PositionRisk | None:
     signals = compute_core_signals(
         df["close"],
@@ -310,6 +313,24 @@ def assess_position_risk(
             elif assessment.urgency == ee.ExitUrgency.WATCH and signal == HOLD:
                 signal = WATCH
 
+        # Fase 0 instrumentation: one row per genuinely fresh evaluation (this
+        # function only runs on a cache miss - see PortfolioRiskService.get_positions_risk
+        # below), capturing the *final* signal/exit_urgency after the
+        # escalation above, not an intermediate value - see
+        # PositionSignalSnapshotORM's docstring for why this data didn't
+        # exist at all before this phase.
+        if position_signal_snapshot_repo is not None:
+            position_signal_snapshot_repo.save(
+                portfolio_id=portfolio_id,
+                ticker=ticker,
+                signal=signal,
+                exit_urgency=exit_urgency,
+                score=signals.recommendation.score,
+                price=signals.price,
+                r_multiple=r_multiple,
+                engine_version=ENGINE_VERSION,
+            )
+
     return PositionRisk(
         ticker=ticker,
         currency=currency_of(ticker),
@@ -342,6 +363,7 @@ def _safe_assess_position_risk(
     portfolio_id: int | None = None,
     transactions: list[Transaction] | None = None,
     trade_plan_repo: TradePlanRepositoryPort | None = None,
+    position_signal_snapshot_repo: PositionSignalSnapshotRepositoryPort | None = None,
 ) -> PositionRisk | None:
     """`assess_position_risk`, isolated: one holding's GARCH optimizer failing
     to converge, a backtest edge case, or any other numerical hiccup must
@@ -358,6 +380,7 @@ def _safe_assess_position_risk(
             portfolio_id=portfolio_id,
             transactions=transactions,
             trade_plan_repo=trade_plan_repo,
+            position_signal_snapshot_repo=position_signal_snapshot_repo,
         )
     except Exception:
         logger.exception("Portfolio risk: skipping %s after a compute failure", ticker)
@@ -371,6 +394,7 @@ def get_portfolio_positions_risk(
     portfolio_id: int | None = None,
     transactions: list[Transaction] | None = None,
     trade_plan_repo: TradePlanRepositoryPort | None = None,
+    position_signal_snapshot_repo: PositionSignalSnapshotRepositoryPort | None = None,
 ) -> list[PositionRisk]:
     """Runs `assess_position_risk` for every ticker actually held, reusing the
     universe snapshot's RS Rating when a holding happens to be in a curated
@@ -412,6 +436,7 @@ def get_portfolio_positions_risk(
             portfolio_id=portfolio_id,
             transactions=transactions,
             trade_plan_repo=trade_plan_repo,
+            position_signal_snapshot_repo=position_signal_snapshot_repo,
         )
         if risk is not None:
             results.append(risk)
@@ -443,6 +468,7 @@ class PortfolioRiskService:
         portfolio_id: int | None = None,
         transactions: list[Transaction] | None = None,
         trade_plan_repo: TradePlanRepositoryPort | None = None,
+        position_signal_snapshot_repo: PositionSignalSnapshotRepositoryPort | None = None,
     ) -> list[PositionRisk]:
         if not tickers:
             return []
@@ -482,6 +508,7 @@ class PortfolioRiskService:
                     portfolio_id=portfolio_id,
                     transactions=transactions,
                     trade_plan_repo=trade_plan_repo,
+                    position_signal_snapshot_repo=position_signal_snapshot_repo,
                 )
                 if risk is not None:
                     fresh_by_ticker[ticker] = risk

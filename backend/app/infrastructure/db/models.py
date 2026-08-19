@@ -125,6 +125,33 @@ class TradePlanORM(Base):
     closed_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
+class PositionSignalSnapshotORM(Base):
+    """Fase 0 instrumentation (docs/quant_methodology.md): the audit trail
+    `RecommendationSnapshotORM` never kept for *position-level* signals - the
+    buy-side verdict from "Analizar activo" was recorded, but
+    `portfolio_risk_service.py`'s own `signal`/`exit_urgency` for a held
+    position never was, so "how many times did the system say hold and the
+    stock fell" could never be answered even in principle. Written only on a
+    genuinely fresh (non-cached) risk evaluation - see
+    `PortfolioRiskService`'s cache and `assess_position_risk`'s
+    `position_signal_snapshot_repo` parameter.
+    """
+
+    __tablename__ = "position_signal_snapshots"
+    __table_args__ = (Index("ix_position_signal_snapshots_portfolio_ticker", "portfolio_id", "ticker"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC), index=True)
+    signal: Mapped[str] = mapped_column(String(20))
+    exit_urgency: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    score: Mapped[int]
+    price: Mapped[float] = mapped_column(Numeric(20, 8))
+    r_multiple: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    engine_version: Mapped[str] = mapped_column(String(40))
+
+
 class ComputationCacheORM(Base):
     """Durable, restart-proof companion to each service's own in-process cache
     (see `market_screener_service.py`, `portfolio_risk_service.py`,

@@ -12,6 +12,7 @@ from app.api.deps import (
     get_portfolio_repository,
     get_portfolio_risk_service,
     get_portfolio_service,
+    get_position_signal_snapshot_repository,
     get_premium_watchlist_service,
     get_trade_plan_repository,
 )
@@ -19,6 +20,9 @@ from app.domain.models.asset import AssetClass
 from app.domain.models.trade_plan import TradePlan
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
+from app.infrastructure.db.repositories.position_signal_snapshot_repository import (
+    PositionSignalSnapshotRepository,
+)
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.schemas.market import (
     PortfolioRiskResponse,
@@ -240,6 +244,9 @@ def get_portfolio_risk(
     risk_service: Annotated[PortfolioRiskService, Depends(get_portfolio_risk_service)],
     premium_service: Annotated[PremiumWatchlistService, Depends(get_premium_watchlist_service)],
     trade_plan_repo: Annotated[TradePlanRepository, Depends(get_trade_plan_repository)],
+    position_signal_snapshot_repo: Annotated[
+        PositionSignalSnapshotRepository, Depends(get_position_signal_snapshot_repository)
+    ],
     db: DbSession,
     refresh: bool = False,
 ) -> PortfolioRiskResponse:
@@ -287,6 +294,7 @@ def get_portfolio_risk(
         portfolio_id=portfolio_id,
         transactions=transactions,
         trade_plan_repo=trade_plan_repo,
+        position_signal_snapshot_repo=position_signal_snapshot_repo,
     )
 
     # Same two curated universes as the RS lookup above - a premium candidate
