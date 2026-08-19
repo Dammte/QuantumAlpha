@@ -21,7 +21,13 @@ def _position(ticker: str, signal: str, score: int) -> PositionRisk:
     )
 
 
-def _candidate(ticker: str, score: float, sector: str = "Tecnología") -> PremiumWatchlistItem:
+def _candidate(
+    ticker: str, premium_score: float, sector: str = "Tecnología", raw_score: int | None = None
+) -> PremiumWatchlistItem:
+    # raw_score defaults to premium_score's own value when the test doesn't
+    # care about the distinction (no bonus applied) - see
+    # test_margin_uses_raw_score_not_bonus_inflated_premium_score below for
+    # tests that do.
     return PremiumWatchlistItem(
         ticker=ticker,
         sector=sector,
@@ -32,7 +38,8 @@ def _candidate(ticker: str, score: float, sector: str = "Tecnología") -> Premiu
         tier="daily",
         reasons=["reason"],
         signals=None,  # not touched by find_swap_suggestions
-        premium_score=score,
+        premium_score=premium_score,
+        raw_score=int(premium_score) if raw_score is None else raw_score,
     )
 
 
@@ -98,3 +105,25 @@ def test_score_comparison_is_against_the_single_best_candidate_only() -> None:
     suggestions = find_swap_suggestions(positions, candidates)
     assert len(suggestions) == 1
     assert suggestions[0].candidate_ticker == "NVDA"
+
+
+def test_margin_uses_raw_score_not_bonus_inflated_premium_score() -> None:
+    """D10: premium_score can run well above the same candidate's raw checklist
+    score once backtest/Monte-Carlo/Kelly/sector bonuses are folded in (see
+    premium_watchlist_service._approval_score) - a held position's score never
+    receives those bonuses. Comparing the bonus-inflated premium_score against
+    a raw position score (a prior bug) let a candidate clear SWAP_SCORE_MARGIN
+    on bonus points alone despite the two checklists being genuinely close."""
+    positions = [_position("AAPL", WATCH, 5)]
+    # premium_score (9.0) - held score (5) = 4.0, clears the margin - but the
+    # underlying raw checklist score is only 6, a 1-point gap that shouldn't.
+    candidates = [_candidate("NVDA", premium_score=9.0, raw_score=6)]
+    assert find_swap_suggestions(positions, candidates) == []
+
+
+def test_suggestion_reports_the_raw_score_not_the_bonus_inflated_one() -> None:
+    positions = [_position("AAPL", WATCH, 2)]
+    candidates = [_candidate("NVDA", premium_score=17.0, raw_score=10)]
+    suggestions = find_swap_suggestions(positions, candidates)
+    assert len(suggestions) == 1
+    assert suggestions[0].candidate_score == 10.0  # raw, not the 17.0 premium_score

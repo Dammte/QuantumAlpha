@@ -56,3 +56,19 @@ def test_position_sizing_only_present_for_a_comprar_verdict_with_a_trade_setup()
     signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
     assert signals.recommendation.verdict != "comprar"
     assert signals.position_sizing is None
+
+
+def test_52_week_range_factor_never_fires_with_only_60_bars():
+    # D11: rolling_extreme_price/distance_to_rolling_extreme now require the
+    # full 252-bar window by default - a ticker with only 60 bars (the
+    # minimum MIN_BARS_REQUIRED accepts at all) must not have its "52-week
+    # range" answered with whatever 60 days happen to be available. This
+    # backs the single most validated factor in the checklist (see
+    # docs/quant_methodology.md), so it's the highest-stakes instance of D11.
+    close, high, low, volume, open_ = _series(100 + np.arange(60) * 0.4)
+    signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
+    assert signals is not None
+    assert signals.dist_52w_high is None
+    assert signals.dist_52w_low is None
+    range_factor = "Movimiento confirmado: precio 25%+ sobre su mínimo anual y dentro del 25% de su máximo anual"
+    assert not any(f.triggered for f in signals.recommendation.factors if f.label == range_factor)

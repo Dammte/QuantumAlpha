@@ -155,25 +155,44 @@ def pct_change_over(closes: pd.Series, periods: int) -> float | None:
     return float(closes.iloc[-1] / previous - 1)
 
 
-def distance_to_rolling_extreme(closes: pd.Series, window: int, kind: str) -> float | None:
+def distance_to_rolling_extreme(
+    closes: pd.Series, window: int, kind: str, min_periods: int | None = None
+) -> float | None:
     """% distance of the latest close from its rolling max (`kind="high"`) or
-    min (`kind="low"`) over `window` sessions - e.g. distance to the 52-week high."""
-    if closes.empty:
+    min (`kind="low"`) over `window` sessions - e.g. distance to the 52-week high.
+
+    Returns `None`, not an approximation, when fewer than `window` bars are
+    available: a "52-week high" computed on 60 days of history isn't a
+    52-week high, it's a 3-month high mislabeled as an annual one - and this
+    fed straight into the checklist's single most validated factor (see
+    `recommendation_engine.py`'s comment on `minervini_range_confirmed`), so
+    silently answering a different question than the one asked was a real
+    bug, not a harmless fallback. `min_periods` lets a caller opt into a
+    shorter minimum on purpose (e.g. a test exercising the max/min logic
+    itself, not the "is this really annual" question) - it defaults to
+    requiring the full `window`."""
+    required = window if min_periods is None else min_periods
+    if len(closes) < required:
         return None
-    windowed = closes.iloc[-window:] if len(closes) > window else closes
+    windowed = closes.iloc[-window:]
     extreme = windowed.max() if kind == "high" else windowed.min()
     if pd.isna(extreme) or extreme == 0:
         return None
     return float(closes.iloc[-1] / extreme - 1)
 
 
-def rolling_extreme_price(closes: pd.Series, window: int, kind: str) -> float | None:
+def rolling_extreme_price(
+    closes: pd.Series, window: int, kind: str, min_periods: int | None = None
+) -> float | None:
     """Same as `distance_to_rolling_extreme` but returns the raw price level
     instead of a % distance - used by the Minervini checklist, which tests
-    against the actual 52-week high/low price."""
-    if closes.empty:
+    against the actual 52-week high/low price. See `distance_to_rolling_extreme`
+    for why `None` on a short series is the correct answer, not an
+    approximation, and what `min_periods` is for."""
+    required = window if min_periods is None else min_periods
+    if len(closes) < required:
         return None
-    windowed = closes.iloc[-window:] if len(closes) > window else closes
+    windowed = closes.iloc[-window:]
     extreme = windowed.max() if kind == "high" else windowed.min()
     return None if pd.isna(extreme) else float(extreme)
 
@@ -387,11 +406,18 @@ def classify_trend(price: float, sma20: float | None, sma50: float | None, sma20
 
 def detect_recent_cross(fast: pd.Series, slow: pd.Series, lookback: int = 5) -> str | None:
     """"golden" if `fast` crossed above `slow` within the last `lookback` bars,
-    "death" if it crossed below, else None. Used for MA50/MA200 and MACD/signal crosses."""
+    "death" if it crossed below, else None. Used for MA50/MA200 and MACD/signal crosses.
+
+    `lookback` counts bar-to-bar transitions, not points in the window: seeing
+    a transition that happened `lookback` bars ago needs both that bar *and*
+    the one right before it, so the slice pulled is `lookback + 1` points wide.
+    (A prior off-by-one pulled only `lookback` points - `lookback - 1`
+    transitions - so `lookback=5` actually only checked the last 4 bar-to-bar
+    changes; a cross exactly 5 bars back was silently missed.)"""
     diff = (fast - slow).dropna()
     if len(diff) < 2:
         return None
-    window = diff.iloc[-lookback:] if len(diff) > lookback else diff
+    window = diff.iloc[-(lookback + 1) :] if len(diff) > lookback + 1 else diff
     signs = np.sign(window)
     changes = signs.diff().dropna()
     if (changes > 0).any() and signs.iloc[-1] > 0:

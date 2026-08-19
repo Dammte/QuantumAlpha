@@ -100,6 +100,15 @@ class PremiumWatchlistItem:
     reasons: list[str]  # why the cheap pre-filter even considered this ticker
     signals: CoreTickerSignals  # the full deep-dive result that got it approved
     premium_score: float
+    # The raw, un-bonused `signals.recommendation.score` - kept alongside
+    # `premium_score` (which folds in up to ~+7/-1 of backtest/Monte
+    # Carlo/Kelly/sector/entry-timing bonuses, see `_approval_score`) so a
+    # caller comparing this candidate against something that was never run
+    # through those bonuses - e.g. a held position's plain checklist score in
+    # `opportunity_cost.py` - has a same-scale number to compare against
+    # instead of reaching for the bonus-inflated one. See that module's
+    # docstring for why this distinction matters.
+    raw_score: int
 
 
 def _approval_score(signals: CoreTickerSignals, sector_rs_rank: int | None = None) -> float | None:
@@ -225,6 +234,7 @@ def build_premium_watchlist(
                         reasons=candidate.reasons,
                         signals=signals,
                         premium_score=score,
+                        raw_score=signals.recommendation.score,
                     ),
                 )
             )

@@ -94,13 +94,33 @@ def test_pct_change_over():
 
 def test_distance_to_rolling_extreme_high_is_zero_at_the_peak():
     closes = pd.Series([90.0, 95.0, 100.0])
-    assert ta.distance_to_rolling_extreme(closes, window=252, kind="high") == pytest.approx(0.0)
+    # min_periods=3 opts into a short window on purpose here, to test the
+    # max/min math in isolation - the default (no min_periods) is exercised
+    # below, where it must return None instead of quietly answering with
+    # whatever's available (D11).
+    assert ta.distance_to_rolling_extreme(closes, window=252, kind="high", min_periods=3) == pytest.approx(0.0)
 
 
 def test_distance_to_rolling_extreme_low():
     closes = pd.Series([100.0, 90.0, 95.0])
     # latest close (95) vs the rolling min (90) -> +5.56%
-    assert ta.distance_to_rolling_extreme(closes, window=252, kind="low") == pytest.approx(95 / 90 - 1)
+    result = ta.distance_to_rolling_extreme(closes, window=252, kind="low", min_periods=3)
+    assert result == pytest.approx(95 / 90 - 1)
+
+
+def test_distance_to_rolling_extreme_none_when_window_is_not_full():
+    # D11: a "52-week" (window=252) read used to silently fall back to
+    # whatever shorter history was available and label it as if it were the
+    # real annual figure - e.g. a 60-bar (~3 month) high reported as a 52-week
+    # high. Without an explicit min_periods, it must be None instead.
+    closes = pd.Series(np.linspace(90.0, 100.0, 60))
+    assert ta.distance_to_rolling_extreme(closes, window=252, kind="high") is None
+    assert ta.distance_to_rolling_extreme(closes, window=252, kind="low") is None
+
+
+def test_distance_to_rolling_extreme_none_below_explicit_min_periods_too():
+    closes = pd.Series(np.linspace(90.0, 100.0, 30))
+    assert ta.distance_to_rolling_extreme(closes, window=252, kind="high", min_periods=60) is None
 
 
 def test_classify_trend_uptrend_when_mas_are_stacked_bullishly():
@@ -131,6 +151,23 @@ def test_detect_recent_cross_none_when_no_crossover():
     fast = pd.Series([12, 12, 13, 13, 14])
     slow = pd.Series([11, 11, 11, 11, 11])
     assert ta.detect_recent_cross(fast, slow, lookback=5) is None
+
+
+def test_detect_recent_cross_detects_a_cross_exactly_lookback_bars_ago():
+    # D5: a prior off-by-one pulled `lookback` *points* (lookback-1
+    # transitions) instead of `lookback` *transitions* - so lookback=5 only
+    # ever really checked the last 4 bar-to-bar changes, and a cross that
+    # happened exactly 5 bars back was silently missed. diff = fast - slow is
+    # negative for 5 bars, then positive for 5 bars: the golden cross happens
+    # 4 bars before the last one, i.e. is only visible if the window actually
+    # spans lookback+1=6 points (5 transitions), not 5.
+    diff = [-5, -4, -3, -2, -1, 1, 2, 3, 4, 5]
+    fast = pd.Series(diff)
+    slow = pd.Series([0] * len(diff))
+    assert ta.detect_recent_cross(fast, slow, lookback=5) == "golden"
+    # Confirms the fix is about window width, not just "any lookback": with a
+    # window too narrow to reach the transition at all, it's still None.
+    assert ta.detect_recent_cross(fast, slow, lookback=3) is None
 
 
 def test_detect_imminent_cross_death_when_gap_shrinks_toward_zero():
@@ -259,8 +296,19 @@ def test_support_resistance_levels_empty_series():
 
 def test_rolling_extreme_price_high_and_low():
     closes = pd.Series([90.0, 110.0, 95.0])
-    assert ta.rolling_extreme_price(closes, window=252, kind="high") == pytest.approx(110.0)
-    assert ta.rolling_extreme_price(closes, window=252, kind="low") == pytest.approx(90.0)
+    assert ta.rolling_extreme_price(closes, window=252, kind="high", min_periods=3) == pytest.approx(110.0)
+    assert ta.rolling_extreme_price(closes, window=252, kind="low", min_periods=3) == pytest.approx(90.0)
+
+
+def test_rolling_extreme_price_none_when_window_is_not_full():
+    # D11: same guard as distance_to_rolling_extreme - this backs the +2 point
+    # "Movimiento confirmado" factor in recommendation_engine.py, the single
+    # most validated factor in the checklist per docs/quant_methodology.md, so
+    # silently truncating its input window was the highest-stakes instance of
+    # this bug.
+    closes = pd.Series(np.linspace(90.0, 110.0, 60))
+    assert ta.rolling_extreme_price(closes, window=252, kind="high") is None
+    assert ta.rolling_extreme_price(closes, window=252, kind="low") is None
 
 
 def test_dmi_dominant_plus_di_in_a_clean_uptrend():
