@@ -109,11 +109,16 @@ Puntos que no son negociables:
 
 ## Estado del refactor del motor de salida (agosto 2026)
 
-Trabajo en curso en la rama `exit-engine-overhaul`, en fases (ver el plan original en el
-historial de commits de esa rama). Completado: bugs D5/D10/D11, núcleo multi-timeframe
-(`multi_timeframe.py`), motor de salida independiente (`exit_engine.py`) y persistencia de
-`trade_plan` integrados en producción (`GET /portfolios/{id}/risk`). Pendiente: trailing stops
-tipo Chandelier (`trade_manager.py`), instrumentación de rendimiento de señales, backtest
-honesto con triple-barrera, recalibración de pesos con evidencia, riesgo a nivel de cartera,
-y la interfaz (panel de acciones del día, semáforo multi-temporalidad). Ver
-`docs/quant_methodology.md` §8 para el detalle de lo ya hecho.
+Rama `exit-engine-overhaul` (ver el plan original en su historial de commits), completa en las
+8 fases previstas. Motor de salida independiente (`exit_engine.py`), lectura multi-timeframe
+(`multi_timeframe.py`), `trade_plan` persistido, trailing stops Chandelier y salidas escalonadas
+(`trade_manager.py`), instrumentación de rendimiento de señales (`signal_performance_service.py`,
+`GET /system/signal-performance`), backtest honesto con triple-barrera (`backtest_engine.py`),
+estudio de ablación reescrito (`factor_ablation_study.py` — reescrito y validado, **no ejecutado
+todavía contra el universo real ni usado para recalibrar ningún peso**, decisión explícita del
+propietario), riesgo a nivel de cartera (`portfolio_construction_service.py`), y la interfaz
+(panel "Acciones requeridas hoy", semáforo multi-timeframe, ficha de posición, vista
+"Rendimiento del sistema") — todo integrado en producción vía `GET /portfolios/{id}/risk` salvo
+`backtest_engine.py`/`portfolio_construction_service.py`, que existen y están probados pero
+todavía no están conectados a un endpoint en vivo (integrarlos es trabajo de UI nuevo, no una
+extensión de un campo existente). Ver `docs/quant_methodology.md` §8-9 para el detalle completo.

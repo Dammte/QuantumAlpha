@@ -1,4 +1,5 @@
 import { formatCurrency, formatPercent, formatRatio } from '../../format'
+import { stageLabel } from '../../marketFormat'
 import TrendBadge from './TrendBadge'
 
 const DEFAULT_COLUMNS = ['price', 'change_1d', 'change_1w', 'rsi14', 'relative_volume', 'trend']
@@ -22,8 +23,6 @@ const COLUMN_LABELS = {
   trend: 'Tendencia',
   stage: 'Fase',
 }
-
-const STAGE_LABELS = { stage1: 'Fase 1 (base)', stage2: 'Fase 2 (avance)', stage3: 'Fase 3 (techo)', stage4: 'Fase 4 (declive)' }
 
 function renderCell(row, column) {
   switch (column) {
@@ -57,7 +56,7 @@ function renderCell(row, column) {
     case 'trend':
       return <TrendBadge trend={row.trend} />
     case 'stage':
-      return row.stage ? (STAGE_LABELS[row.stage] ?? row.stage) : '—'
+      return stageLabel(row.stage)
     default:
       return row[column]
   }

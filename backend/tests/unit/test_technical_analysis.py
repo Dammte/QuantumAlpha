@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import numpy as np
 import pandas as pd
@@ -76,18 +76,42 @@ def test_resample_ohlcv_empty_df_returns_empty():
     assert ta.resample_ohlcv(empty).empty
 
 
-def test_closed_bars_drops_the_bar_dated_today():
+def test_closed_bars_drops_the_bar_dated_today_before_the_close_cutoff():
     dates = pd.bdate_range("2024-01-01", periods=5)
     df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
-    result = ta.closed_bars(df, today=date(2024, 1, 5))
+    # Same calendar day as the last bar, but still mid-session (10:00 UTC is
+    # well before CLOSED_BAR_CUTOFF_UTC) - the bar could still move before
+    # the actual close, so it's excluded exactly like the old date-only check.
+    result = ta.closed_bars(df, now=datetime(2024, 1, 5, 10, 0, tzinfo=UTC))
     assert len(result) == 4
     assert result.index[-1] == dates[-2]
+
+
+def test_closed_bars_keeps_todays_bar_once_past_the_close_cutoff():
+    # The real-world gap this closes: markets had genuinely closed hours
+    # earlier (e.g. 21:56 UTC, well past the US close), but the old
+    # calendar-date-only check still excluded the day's already-final bar
+    # until UTC midnight - a several-hour nightly blackout on every discrete
+    # signal (crosses, price-vs-MA, patterns), which is exactly what let a
+    # same-day breakdown go undetected until the next morning.
+    dates = pd.bdate_range("2024-01-01", periods=5)
+    df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
+    result = ta.closed_bars(df, now=datetime(2024, 1, 5, 22, 0, tzinfo=UTC))
+    assert len(result) == 5
+    assert result.index[-1] == dates[-1]
+
+
+def test_closed_bars_right_at_the_cutoff_boundary_is_still_settled():
+    dates = pd.bdate_range("2024-01-01", periods=5)
+    df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
+    result = ta.closed_bars(df, now=datetime(2024, 1, 5, 21, 30, tzinfo=UTC))
+    assert len(result) == 5
 
 
 def test_closed_bars_keeps_every_bar_when_the_last_one_is_not_today():
     dates = pd.bdate_range("2024-01-01", periods=5)
     df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
-    result = ta.closed_bars(df, today=date(2024, 1, 8))
+    result = ta.closed_bars(df, now=datetime(2024, 1, 8, 10, 0, tzinfo=UTC))
     assert len(result) == 5
 
 

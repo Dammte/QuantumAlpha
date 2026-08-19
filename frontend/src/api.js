@@ -114,4 +114,6 @@ export const api = {
 
   getTickerAnalysis: (ticker, { horizon } = {}) =>
     request(`/api/v1/market/tickers/${ticker}/analysis${toQueryString({ horizon })}`),
+
+  getSignalPerformance: () => request('/api/v1/system/signal-performance'),
 }

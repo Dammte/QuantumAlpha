@@ -23,6 +23,7 @@ def _timeframe_read(
     cross_quality_20_50: ta.CrossQuality | None = None,
     imminent_cross_50_200: ta.ImminentCross | None = None,
     imminent_cross_20_50: ta.ImminentCross | None = None,
+    macd_cross: str | None = None,
     price_vs_sma20: str | None = None,
     price_vs_sma50: str | None = None,
 ) -> mtf.TimeframeRead:
@@ -35,7 +36,7 @@ def _timeframe_read(
         cross_quality_20_50=cross_quality_20_50,
         imminent_cross_50_200=imminent_cross_50_200,
         imminent_cross_20_50=imminent_cross_20_50,
-        macd_cross=None,
+        macd_cross=macd_cross,
         macd_histogram_turning=None,
         rsi14=None,
         adx14=None,
@@ -89,6 +90,7 @@ def _evaluate(
     position: ee.PositionContext | None = None,
     multi_timeframe: mtf.MultiTimeframeRead | None = None,
     consecutive_closes_below_daily_sma50: int = 0,
+    consecutive_closes_below_daily_sma_fast: int = 0,
     nearest_support: ta.PriceLevel | None = None,
     nearest_resistance: ta.PriceLevel | None = None,
     obv_divergence: str | None = None,
@@ -105,6 +107,7 @@ def _evaluate(
         position=position or _position(),
         multi_timeframe=multi_timeframe or _mtf(),
         consecutive_closes_below_daily_sma50=consecutive_closes_below_daily_sma50,
+        consecutive_closes_below_daily_sma_fast=consecutive_closes_below_daily_sma_fast,
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
         obv_divergence=obv_divergence,
@@ -194,7 +197,7 @@ def test_exit_now_confirmed_death_cross_20_50_with_quality_below_both_mas():
     daily = _timeframe_read(cross_quality_20_50=quality, price_vs_sma20="below", price_vs_sma50="below")
     result = _evaluate(multi_timeframe=_mtf(daily=daily))
     assert result.urgency == ee.ExitUrgency.EXIT_NOW
-    assert any("Death cross SMA20/SMA50 confirmado" in r for r in result.reasons)
+    assert any("Death cross SMA21/SMA50 confirmado" in r for r in result.reasons)
 
 
 def test_no_exit_now_death_cross_20_50_when_quality_is_noise():
@@ -204,7 +207,7 @@ def test_no_exit_now_death_cross_20_50_when_quality_is_noise():
     )
     daily = _timeframe_read(cross_quality_20_50=quality, price_vs_sma20="below", price_vs_sma50="below")
     result = _evaluate(multi_timeframe=_mtf(daily=daily))
-    assert not any("Death cross SMA20/SMA50 confirmado" in r for r in result.reasons)
+    assert not any("Death cross SMA21/SMA50 confirmado" in r for r in result.reasons)
 
 
 def test_exit_now_when_last_relevant_support_is_broken():
@@ -304,6 +307,47 @@ def test_no_stalled_reduce_without_a_resolvable_r_multiple():
     assert not any("sin progreso" in r for r in result.reasons)
 
 
+def test_reduce_on_a_fresh_confirmed_break_below_the_fast_daily_sma():
+    # Real-world motivating case: a held position scoring well on the buy
+    # checklist (would otherwise stay ADD_CANDIDATE) closes below its own
+    # SMA21 for the first time - the propietario's own primary short-term
+    # timing signal. consecutive_closes_below_daily_sma_fast == 1 means
+    # today is the break itself, not an old, already-known one.
+    result = _evaluate(consecutive_closes_below_daily_sma_fast=1)
+    assert result.urgency == ee.ExitUrgency.REDUCE
+    assert any(f"por debajo de la SMA{mtf.FAST_MA_PERIOD} diaria" in r for r in result.reasons)
+
+
+def test_fast_sma_break_reduce_overrides_add_candidate_via_portfolio_risk_service_precedence():
+    # Confirms the actual bug report this fixes: REDUCE (unlike TIGHTEN_STOP)
+    # is one of the two urgencies portfolio_risk_service.py lets override an
+    # ADD_CANDIDATE badge to EXIT_WARNING - see its precedence comment. This
+    # test only checks the urgency tier itself; the override behavior is
+    # exercised in test_portfolio_risk_service.py.
+    result = _evaluate(consecutive_closes_below_daily_sma_fast=1)
+    assert result.urgency in (ee.ExitUrgency.EXIT_NOW, ee.ExitUrgency.REDUCE)
+
+
+def test_no_reduce_when_fast_sma_break_is_not_fresh():
+    # Already known/reported on a prior evaluation (3 consecutive sessions,
+    # not the day of the break) - stays visible at WATCH, doesn't re-fire REDUCE.
+    result = _evaluate(consecutive_closes_below_daily_sma_fast=3)
+    assert result.urgency == ee.ExitUrgency.WATCH
+    assert not any("Cierre confirmado por debajo" in r for r in result.reasons)
+
+
+def test_watch_when_price_has_stayed_below_the_fast_sma_for_several_sessions():
+    result = _evaluate(consecutive_closes_below_daily_sma_fast=4)
+    assert result.urgency == ee.ExitUrgency.WATCH
+    assert any(f"sigue por debajo de la SMA{mtf.FAST_MA_PERIOD} diaria" in r for r in result.reasons)
+    assert any("4 sesiones consecutivas" in r for r in result.reasons)
+
+
+def test_no_fast_sma_watch_or_reduce_when_price_is_above_it():
+    result = _evaluate(consecutive_closes_below_daily_sma_fast=0)
+    assert result.urgency == ee.ExitUrgency.HOLD
+
+
 # --- TIGHTEN_STOP ------------------------------------------------------------
 
 
@@ -312,7 +356,7 @@ def test_tighten_stop_imminent_death_cross_20_50():
     daily = _timeframe_read(imminent_cross_20_50=imminent)
     result = _evaluate(multi_timeframe=_mtf(daily=daily))
     assert result.urgency == ee.ExitUrgency.TIGHTEN_STOP
-    assert any("corto plazo (SMA20/SMA50) proyectado" in r for r in result.reasons)
+    assert any("corto plazo (SMA21/SMA50) proyectado" in r for r in result.reasons)
 
 
 def test_no_tighten_stop_imminent_death_cross_20_50_below_r2_threshold():
@@ -330,6 +374,19 @@ def test_tighten_stop_when_adx_falls_from_a_real_trend():
 
 def test_no_tighten_stop_when_adx_was_never_really_trending():
     result = _evaluate(adx14=18.0, adx_recent_max=22.0)
+    assert result.urgency == ee.ExitUrgency.HOLD
+
+
+def test_tighten_stop_on_confirmed_daily_macd_bearish_cross():
+    daily = _timeframe_read(macd_cross="bearish")
+    result = _evaluate(multi_timeframe=_mtf(daily=daily))
+    assert result.urgency == ee.ExitUrgency.TIGHTEN_STOP
+    assert any("Cruce bajista de MACD confirmado" in r for r in result.reasons)
+
+
+def test_no_tighten_stop_on_bullish_macd_cross():
+    daily = _timeframe_read(macd_cross="bullish")
+    result = _evaluate(multi_timeframe=_mtf(daily=daily))
     assert result.urgency == ee.ExitUrgency.HOLD
 
 
@@ -385,7 +442,7 @@ def test_exit_now_outranks_a_simultaneously_triggered_tighten_stop_and_all_reaso
 
 def test_weekly_bearish_plus_projected_20_50_death_cross_plus_below_sma50_never_holds():
     """D3's acceptance test: an asset with a bearish weekly, a high-confidence
-    imminent SMA20/50 death cross, and price already confirmed below the
+    imminent SMA21/50 death cross, and price already confirmed below the
     daily SMA50 must return EXIT_NOW or REDUCE - never HOLD - *even with* an
     RS Rating of 85 and excellent fundamentals. Those two are not simulated
     as "passed but ignored": evaluate_exit's signature has no rs_rating,

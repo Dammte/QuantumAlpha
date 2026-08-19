@@ -2,7 +2,7 @@ import { MARKET_SECTIONS } from '../marketSections'
 import { REGIONS } from '../regions'
 import MarketClock from './MarketClock'
 
-function Sidebar({ view, marketSection, region, onSelectPortfolio, onSelectMarketSection, onRegionChange }) {
+function Sidebar({ view, marketSection, region, onSelectPortfolio, onSelectMarketSection, onRegionChange, onSelectPerformance }) {
   return (
     <aside className="sidebar">
       <div className="sidebar__brand">
@@ -22,6 +22,14 @@ function Sidebar({ view, marketSection, region, onSelectPortfolio, onSelectMarke
           onClick={onSelectPortfolio}
         >
           Mi Cartera
+        </button>
+
+        <button
+          type="button"
+          className={`sidebar__item ${view === 'performance' ? 'sidebar__item--active' : ''}`}
+          onClick={onSelectPerformance}
+        >
+          Rendimiento del sistema
         </button>
 
         <p className="sidebar__group-label">Mercado</p>

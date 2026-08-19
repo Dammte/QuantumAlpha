@@ -304,6 +304,7 @@ class PositionRiskResponse(BaseModel):
     r_multiple: float | None
     multi_timeframe: MultiTimeframeResponse | None
     scaled_exit: ScaledExitPlanResponse | None
+    bars_held: int | None  # closed daily bars since trade_plan.entry_date - "sesiones mantenidas" in the UI
 
 
 class SwapSuggestionResponse(BaseModel):

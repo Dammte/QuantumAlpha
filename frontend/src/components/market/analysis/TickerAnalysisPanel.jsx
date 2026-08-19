@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../../api'
 import { formatCurrency, formatPercent, formatRatio } from '../../../format'
+import { stageLabel } from '../../../marketFormat'
 import StatTile from '../../StatTile'
 import TrendBadge from '../TrendBadge'
 import PriceChart from './PriceChart'
@@ -18,7 +19,6 @@ import MonteCarloChart from './MonteCarloChart'
 import BacktestCard from './BacktestCard'
 import PositionSizingCard from './PositionSizingCard'
 
-const STAGE_LABELS = { stage1: 'Fase 1 (base)', stage2: 'Fase 2 (avance)', stage3: 'Fase 3 (techo)', stage4: 'Fase 4 (declive)' }
 const REGIME_LABELS = {
   tendencial: 'Tendencial',
   reversion: 'Reversión a la media',
@@ -166,7 +166,7 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
 
           <div className="stat-grid" style={{ marginBottom: 20 }}>
             <StatTile label="Tendencia" value={<TrendBadge trend={analysis.trend} />} />
-            <StatTile label="Fase (Weinstein)" value={analysis.stage ? STAGE_LABELS[analysis.stage] : '—'} />
+            <StatTile label="Fase (Weinstein)" value={stageLabel(analysis.stage)} />
             <StatTile label="RS Rating" value={analysis.rs_rating ?? '—'} hint={analysis.rs_rating === null ? 'fuera de nuestro universo curado' : undefined} />
             <StatTile label="Mansfield RS" value={analysis.mansfield_rs !== null ? formatRatio(analysis.mansfield_rs) : '—'} />
             <StatTile label="RSI (14)" value={analysis.rsi14 !== null ? analysis.rsi14.toFixed(1) : '—'} />

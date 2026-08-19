@@ -105,6 +105,7 @@ def evaluate_exit(
     position: PositionContext,
     multi_timeframe: mtf.MultiTimeframeRead,
     consecutive_closes_below_daily_sma50: int,
+    consecutive_closes_below_daily_sma_fast: int,
     nearest_support: ta.PriceLevel | None,
     nearest_resistance: ta.PriceLevel | None,
     obv_divergence: str | None,
@@ -125,6 +126,9 @@ def evaluate_exit(
     - `consecutive_closes_below_daily_sma50`: how many of the most recent
       *closed* daily bars have closed below the daily SMA50, counting back
       from the latest - 0 if the latest close is at or above it.
+    - `consecutive_closes_below_daily_sma_fast`: same idea, against the daily
+      fast MA (`mtf.FAST_MA_PERIOD`, 21) - the propietario's own primary
+      short-term timing MA, faster and more reactive than the SMA50 above.
     - `nearest_support`/`nearest_resistance`: from
       `technical_analysis.support_resistance_levels` on the daily frame.
     - `obv_divergence`, `rsi14`, `adx14`, `atr_multiple`, `candlestick_pattern`:
@@ -173,7 +177,7 @@ def evaluate_exit(
         and daily.price_vs_sma50 == "below"
     ):
         reasons_by_tier[ExitUrgency.EXIT_NOW].append(
-            "Death cross SMA20/SMA50 confirmado (calidad "
+            f"Death cross SMA{mtf.FAST_MA_PERIOD}/SMA50 confirmado (calidad "
             f"'{daily.cross_quality_20_50.quality}'), precio por debajo de ambas medias."
         )
 
@@ -234,6 +238,19 @@ def evaluate_exit(
             f"Posición sin progreso tras {position.bars_held} sesiones sin alcanzar +1R - capital inmovilizado."
         )
 
+    # Rotura confirmada de la media rápida diaria (SMA{FAST_MA_PERIOD}, ver
+    # mtf.FAST_MA_PERIOD): el propio disparador de entrada/salida a corto
+    # plazo del propietario, mucho más rápido que esperar a que la SMA{FAST_MA_PERIOD}
+    # llegue a cruzar la SMA50 (el disparador TIGHTEN_STOP de más abajo, que
+    # sigue existiendo para el cruce medio/lento). Fires una sola vez, el día
+    # de la rotura - no cada sesión que el precio siga por debajo (eso ya
+    # queda cubierto, sin escalar más, en WATCH).
+    if consecutive_closes_below_daily_sma_fast == 1:
+        reasons_by_tier[ExitUrgency.REDUCE].append(
+            f"Cierre confirmado por debajo de la SMA{mtf.FAST_MA_PERIOD} diaria - "
+            "ruptura de la media rápida que se usa para gestionar esta posición a corto plazo."
+        )
+
     # --- TIGHTEN_STOP: subir el stop, mantener --------------------------
 
     imminent_20_50 = daily.imminent_cross_20_50
@@ -243,8 +260,18 @@ def evaluate_exit(
         and imminent_20_50.r_squared >= IMMINENT_CROSS_20_50_MIN_R2
     ):
         reasons_by_tier[ExitUrgency.TIGHTEN_STOP].append(
-            "Cruce de medias bajista de corto plazo (SMA20/SMA50) proyectado en "
+            f"Cruce de medias bajista de corto plazo (SMA{mtf.FAST_MA_PERIOD}/SMA50) proyectado en "
             f"~{imminent_20_50.bars_until} sesiones (R²={imminent_20_50.r_squared:.2f})."
+        )
+
+    # MACD (línea vs. señal) en diario, ya confirmado sobre velas cerradas -
+    # el otro indicador que el propietario nombra explícitamente junto a las
+    # medias/RSI. Nivel TIGHTEN_STOP, no más alto: un cruce de MACD por sí
+    # solo es propenso a whipsaw en mercados laterales (mismo motivo por el
+    # que "ADX cayendo" está en este mismo nivel, no en REDUCE).
+    if daily.macd_cross == "bearish":
+        reasons_by_tier[ExitUrgency.TIGHTEN_STOP].append(
+            "Cruce bajista de MACD confirmado en diario (línea MACD por debajo de su señal)."
         )
 
     adx_falling = (
@@ -277,6 +304,15 @@ def evaluate_exit(
     if near_support or (near_resistance and candlestick_pattern != "bearish_engulfing"):
         reasons_by_tier[ExitUrgency.WATCH].append(
             "Precio cerca de un nivel técnico relevante (soporte/resistencia)."
+        )
+
+    # La rotura de la SMA{FAST_MA_PERIOD} ya se avisó (REDUCE) el día en que
+    # ocurrió - mientras el precio se mantenga por debajo en sesiones
+    # posteriores, sigue visible aquí sin volver a escalar cada día.
+    if consecutive_closes_below_daily_sma_fast > 1:
+        reasons_by_tier[ExitUrgency.WATCH].append(
+            f"Precio sigue por debajo de la SMA{mtf.FAST_MA_PERIOD} diaria "
+            f"({consecutive_closes_below_daily_sma_fast} sesiones consecutivas)."
         )
 
     reduce_already_fired = bool(reasons_by_tier[ExitUrgency.REDUCE])

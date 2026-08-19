@@ -86,8 +86,12 @@ from app.services.volatility_model import GarchResult
 # Bumped whenever the factor list or a weight changes materially - stamped
 # onto every persisted RecommendationSnapshotORM row (see models.py) so a
 # past verdict can always be traced back to the exact scoring logic that
-# produced it, not just "some earlier version of the app".
-ENGINE_VERSION = "2026-08-audit-v2"
+# produced it, not just "some earlier version of the app". Also stamped onto
+# TradePlan/PositionSignalSnapshot (see trade_plan_service.py), so this
+# tracks the exit engine's own trigger set too, not only this file's score -
+# bumped for v3 even though no buy-side factor/weight changed, because
+# exit_engine.py's triggers did (see docs/quant_methodology.md §9.1).
+ENGINE_VERSION = "2026-08-audit-v3"
 
 BUY_THRESHOLD = 5
 AVOID_THRESHOLD = -3

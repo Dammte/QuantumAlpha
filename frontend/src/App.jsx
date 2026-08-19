@@ -17,6 +17,8 @@ import MarketView from './components/market/MarketView'
 import Sidebar from './components/Sidebar'
 import RefreshBar from './components/RefreshBar'
 import SwapSuggestions from './components/SwapSuggestions'
+import TodayActionsPanel from './components/TodayActionsPanel'
+import SystemPerformanceView from './components/SystemPerformanceView'
 import { DEFAULT_REGION } from './regions'
 
 function App() {
@@ -206,6 +208,7 @@ function App() {
           setMarketSection(key)
         }}
         onRegionChange={setRegion}
+        onSelectPerformance={() => setView('performance')}
       />
       <div className="app-content">
         {view === 'portfolio' && portfolios.length > 0 && (
@@ -221,7 +224,14 @@ function App() {
 
         {error && <div className="banner banner--error">{error}</div>}
 
-        {view === 'market' ? (
+        {view === 'performance' ? (
+          <main className="dashboard">
+            <section className="panel">
+              <h2>Rendimiento del sistema</h2>
+              <SystemPerformanceView />
+            </section>
+          </main>
+        ) : view === 'market' ? (
           <MarketView
             section={marketSection}
             presetTicker={presetTicker}
@@ -241,6 +251,8 @@ function App() {
           </section>
         ) : (
           <main className="dashboard">
+          <TodayActionsPanel riskByTicker={riskByTicker} onNavigateToTicker={navigateToAnalysis} />
+
           {summary && (
             <section className="hero-row">
               <div className="hero-card hero-card--primary">

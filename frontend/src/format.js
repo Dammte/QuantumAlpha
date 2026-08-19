@@ -89,3 +89,76 @@ export const GARCH_REGIME_LABELS = {
 export function garchRegimeLabel(regime) {
   return GARCH_REGIME_LABELS[regime] ?? regime
 }
+
+// exit_urgency (see exit_engine.ExitUrgency) - the position-level urgency
+// read that can override `signal` above (see portfolio_risk_service.py) but
+// is shown as its own, more granular badge wherever a specific action is
+// asked for: "acciones requeridas hoy" and the position detail card. `hold`
+// intentionally shares no visual urgency with the other four - it's the
+// "nothing to do" state, not a fifth severity tier.
+export const EXIT_URGENCY_LABELS = {
+  exit_now: 'Vender ya',
+  reduce: 'Reducir posición',
+  tighten_stop: 'Subir el stop',
+  watch: 'Vigilar de cerca',
+  hold: 'Tesis intacta',
+}
+
+export const EXIT_URGENCY_TONE = {
+  exit_now: 'down',
+  reduce: 'down',
+  tighten_stop: 'warn',
+  watch: 'warn',
+  hold: 'neutral',
+}
+
+export const EXIT_URGENCY_ICON = {
+  exit_now: '🔴',
+  reduce: '🟠',
+  tighten_stop: '🟡',
+  watch: '🔵',
+  hold: '',
+}
+
+// Mirrors exit_engine.py's own `_URGENCY_SEVERITY` (index = severity, most
+// urgent first) - "hold" deliberately excluded, it never needs an action.
+export const EXIT_URGENCY_SEVERITY = ['exit_now', 'reduce', 'tighten_stop', 'watch']
+
+// The tiers the "acciones requeridas hoy" panel surfaces - "watch" is a
+// passive monitoring state (already visible as the WATCH badge in the
+// positions table), not something to act on today, so it's deliberately
+// narrower than EXIT_URGENCY_SEVERITY above.
+export const ACTION_REQUIRED_URGENCY_TIERS = ['exit_now', 'reduce', 'tighten_stop']
+
+export function exitUrgencyRank(urgency) {
+  const idx = EXIT_URGENCY_SEVERITY.indexOf(urgency)
+  return idx === -1 ? EXIT_URGENCY_SEVERITY.length : idx
+}
+
+export function formatRMultiple(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—'
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}R`
+}
+
+// multi_timeframe.MultiTimeframeRead.alignment - the semáforo's headline read.
+export const TIMEFRAME_ALIGNMENT_LABELS = {
+  bullish_aligned: 'Alineación alcista (semanal + diaria)',
+  bearish_aligned: 'Alineación bajista (semanal + diaria)',
+  conflicted: 'Temporalidades en conflicto',
+  transitioning: 'En transición',
+}
+
+export const TIMEFRAME_ALIGNMENT_TONE = {
+  bullish_aligned: 'up',
+  bearish_aligned: 'down',
+  conflicted: 'warn',
+  transitioning: 'neutral',
+}
+
+// trade_manager.ScaledExitPlan.action - a suggested (never automatic)
+// partial exit at the +1R/+2R milestones.
+export const SCALED_EXIT_ACTION_LABELS = {
+  none: 'Sin recorte sugerido todavía',
+  sell_at_1r: 'Recoger parte en +1R',
+  sell_at_2r: 'Recoger parte en +2R',
+}

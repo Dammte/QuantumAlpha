@@ -328,6 +328,7 @@ def get_portfolio_risk(
                 r_multiple=p.r_multiple,
                 multi_timeframe=_multi_timeframe_to_response(p.multi_timeframe) if p.multi_timeframe else None,
                 scaled_exit=_scaled_exit_to_response(p.scaled_exit) if p.scaled_exit else None,
+                bars_held=p.bars_held,
             )
             for p in positions
         ],

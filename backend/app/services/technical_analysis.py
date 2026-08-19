@@ -6,11 +6,23 @@ cheap to unit test in isolation - same philosophy as `metrics_service.py`.
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, datetime, time
 from enum import Enum
 
 import numpy as np
 import pandas as pd
+
+# Conservative, single global cutoff (UTC time-of-day) used by `closed_bars`
+# to decide whether *today's* bar is safe to treat as settled - not a real
+# exchange calendar (same documented tradeoff as the frontend's MarketClock:
+# regular hours only, no holidays, a rare enough edge case not to chase).
+# Picked to sit safely past the latest close this project's supported
+# regions can produce, under either DST state, plus a buffer for the data
+# provider to actually publish the settled bar:
+#   - US (NYSE/NASDAQ): 16:00 ET -> 20:00 UTC (EDT, summer) / 21:00 UTC (EST, winter)
+#   - Europe (Paris/Frankfurt-style): 17:30 CET/CEST -> 15:30-16:30 UTC
+# 21:00 UTC (the latest of those, EST) + a ~30min settlement buffer.
+CLOSED_BAR_CUTOFF_UTC = time(21, 30)
 
 
 def resample_ohlcv(df: pd.DataFrame, rule: str = "W-FRI", include_partial: bool = False) -> pd.DataFrame:
@@ -42,20 +54,31 @@ def resample_ohlcv(df: pd.DataFrame, rule: str = "W-FRI", include_partial: bool 
     return agg
 
 
-def closed_bars(df: pd.DataFrame, today: date | None = None) -> pd.DataFrame:
+def closed_bars(df: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
     """Drops the in-progress bar so discrete signals (crosses, patterns,
     stage) are only ever evaluated on the last *settled* close - never on a
     same-session price that can still move before the actual close (the D6
     fix: continuous reads like price/RSI/ADX are fine live, but a discrete
     event evaluated mid-session appears and disappears as the price moves,
-    which is repainting, not a decision). `today` is injectable for tests;
-    defaults to the real current date, compared by calendar date only."""
+    which is repainting, not a decision).
+
+    A bar dated strictly before today (UTC calendar date) is always settled.
+    A bar dated *today* is only treated as settled once `now`'s time-of-day
+    is past `CLOSED_BAR_CUTOFF_UTC` - comparing by calendar date alone (the
+    original D6 fix) meant a session that had already closed hours earlier
+    was still excluded until UTC midnight, silently running every discrete
+    signal (crosses, price-vs-MA, patterns) a stale day behind for several
+    hours every single evening. `now` is injectable for tests (a full
+    datetime, ideally UTC-aware); defaults to the real current UTC time."""
     if df.empty:
         return df
-    today = today or date.today()
+    now = now or datetime.now(UTC)
+    today = now.date()
     last_bar_date = df.index[-1]
     last_date = last_bar_date.date() if hasattr(last_bar_date, "date") else last_bar_date
-    if last_date >= today:
+    if last_date > today:
+        return df.iloc[:-1]
+    if last_date == today and now.time() < CLOSED_BAR_CUTOFF_UTC:
         return df.iloc[:-1]
     return df
 

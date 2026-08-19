@@ -2318,3 +2318,275 @@
   margin: 14px 0 0;
   font-style: italic;
 }
+
+/* Acciones requeridas hoy (Fase 7 - the exit engine's actual payoff) */
+
+.today-actions__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.today-actions__item {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: var(--bg);
+}
+
+.today-actions__item--exit_now {
+  border-left-color: var(--series-critical);
+}
+
+.today-actions__item--reduce {
+  border-left-color: var(--series-2);
+}
+
+.today-actions__item--tighten_stop {
+  border-left-color: #ad7a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  .today-actions__item--tighten_stop {
+    border-left-color: #eda100;
+  }
+}
+
+.today-actions__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.today-actions__icon {
+  font-size: 13px;
+}
+
+.today-actions__verb {
+  font-weight: 700;
+  color: var(--text-h);
+  font-size: 14px;
+}
+
+.today-actions__ticker {
+  font: inherit;
+  font-weight: 700;
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.today-actions__ticker:hover,
+.today-actions__ticker:focus-visible {
+  text-decoration: underline;
+}
+
+.today-actions__r {
+  margin-left: auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.today-actions__reasons {
+  margin: 6px 0 0;
+  padding: 0 0 0 18px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* Semáforo multi-temporalidad (weekly bias / daily execution - see multi_timeframe.py) */
+
+.mtf-semaphore {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.mtf-semaphore--compact {
+  margin-top: 4px;
+}
+
+.mtf-semaphore__dots {
+  display: flex;
+  gap: 10px;
+}
+
+.mtf-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text);
+  cursor: help;
+}
+
+.mtf-dot__mark {
+  font-size: 9px;
+}
+
+.mtf-dot--up .mtf-dot__mark {
+  color: var(--series-good);
+}
+
+.mtf-dot--down .mtf-dot__mark {
+  color: var(--series-critical);
+}
+
+.mtf-dot--neutral .mtf-dot__mark {
+  color: var(--chart-muted);
+}
+
+.mtf-dot--empty .mtf-dot__mark {
+  color: var(--border);
+}
+
+.mtf-semaphore--compact .mtf-dot__label {
+  display: none;
+}
+
+.mtf-semaphore__conflicts {
+  margin: 0;
+  padding: 0 0 0 18px;
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* Positions table additions: inline semáforo + expandable detail row */
+
+.positions-table__signal-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.positions-table__expand-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.positions-table__expand-toggle:hover {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.positions-table__detail-row td {
+  background: var(--bg);
+  border-top: none;
+  padding: 0 12px 16px !important;
+}
+
+/* Ficha de posición (position detail card) */
+
+.position-detail {
+  padding: 12px 4px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.position-detail__stats {
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+
+.position-detail__thesis {
+  font-size: 12.5px;
+  color: var(--text);
+  font-style: italic;
+  margin: 0;
+}
+
+.position-detail__scaled-exit {
+  font-size: 13px;
+  color: var(--text-h);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0;
+}
+
+.position-detail__section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.position-detail__reasons ul,
+.position-detail__mtf {
+  margin: 0;
+}
+
+.position-detail__reasons ul {
+  padding: 0 0 0 18px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.position-detail__footnote {
+  font-size: 11px;
+  color: var(--text);
+  margin: 0;
+  opacity: 0.8;
+}
+
+/* Rendimiento del sistema (Fase 0 instrumentation view) */
+
+.system-performance__updated {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0 0 16px;
+}
+
+.system-performance__hint {
+  font-size: 12.5px;
+  color: var(--text);
+  margin: 0 0 12px;
+}
+
+.system-performance__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.system-performance__table th,
+.system-performance__table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.system-performance__table th.num,
+.system-performance__table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.system-performance__table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  font-weight: 600;
+}

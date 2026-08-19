@@ -97,6 +97,12 @@ class PositionRisk:
     # conditions as the fields above (no portfolio context supplied, or no
     # open trade plan for this ticker).
     scaled_exit: tm.ScaledExitPlan | None = None
+    # Closed daily bars since `trade_plan.entry_date` (Fase 7's position
+    # detail card - "sesiones mantenidas"). Same None-when-no-portfolio-
+    # context rule as the fields above; computed once already inside the
+    # `if portfolio_id is not None...` block below (`tps.bars_held_since`),
+    # just not previously threaded out of this function.
+    bars_held: int | None = None
 
 
 def _recent_max(series: pd.Series, lookback: int = RECENT_LOOKBACK) -> float | None:
@@ -229,6 +235,7 @@ def assess_position_risk(
     r_multiple: float | None = None
     multi_timeframe: mtf.MultiTimeframeRead | None = None
     scaled_exit: tm.ScaledExitPlan | None = None
+    bars_held: int | None = None
 
     if portfolio_id is not None and trade_plan_repo is not None and transactions is not None:
         multi_timeframe = mtf.analyze_multi_timeframe(df)
@@ -239,6 +246,9 @@ def assess_position_risk(
             exit_price = float(closed["close"].iloc[-1])
             held_quantity = tps.current_held_quantity(transactions, ticker)
             consecutive_below_sma50 = ta.consecutive_closes_below(closed["close"], ta.sma(closed["close"], 50))
+            consecutive_below_fast_sma = ta.consecutive_closes_below(
+                closed["close"], ta.sma(closed["close"], mtf.FAST_MA_PERIOD)
+            )
             rsi_recent_max = _recent_max(ta.rsi(closed["close"]))
             adx_recent_max = _recent_max(ta.adx(closed["high"], closed["low"], closed["close"]))
             bars_held = tps.bars_held_since(closed, plan.entry_date)
@@ -256,6 +266,7 @@ def assess_position_risk(
                 position=position_context,
                 multi_timeframe=multi_timeframe,
                 consecutive_closes_below_daily_sma50=consecutive_below_sma50,
+                consecutive_closes_below_daily_sma_fast=consecutive_below_fast_sma,
                 nearest_support=signals.nearest_support,
                 nearest_resistance=signals.nearest_resistance,
                 obv_divergence=signals.obv_divergence,
@@ -351,6 +362,7 @@ def assess_position_risk(
         r_multiple=r_multiple,
         multi_timeframe=multi_timeframe,
         scaled_exit=scaled_exit,
+        bars_held=bars_held,
     )
 
 

@@ -314,6 +314,12 @@ def test_portfolio_risk_includes_exit_engine_and_trade_plan_fields(client: TestC
     assert multi_timeframe["daily"] is not None
     assert multi_timeframe["alignment"] in {"bullish_aligned", "bearish_aligned", "conflicted", "transitioning"}
 
+    # Fase 7 (position detail card - "sesiones mantenidas"): a same-session
+    # buy has held for 0 closed bars since entry, never None or negative once
+    # a trade plan exists.
+    assert position["bars_held"] is not None
+    assert position["bars_held"] >= 0
+
 
 def test_portfolio_risk_trailing_stop_persists_and_never_moves_down(client: TestClient) -> None:
     """Paso E (trade_manager.py): the Chandelier trailing stop persisted in
