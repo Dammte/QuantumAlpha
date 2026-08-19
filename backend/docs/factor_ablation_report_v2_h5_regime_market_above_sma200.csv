@@ -1,0 +1,15 @@
+factor,current_points,n_triggered,n_not_triggered,mean_return_triggered_pct,mean_return_not_triggered_pct,mean_difference_pct,t_stat,p_value,permutation_p_value,permutation_p_value_bh,significant_at_1pct,significant_at_1pct_bh,directionally_consistent,mean_ic,ic_ir,n_ic_buckets,multivariate_coef_pct,multivariate_p_value
+trend_up,2,26900,64403,-0.185,0.013,-0.198,-7.069,0.0,0.0002,0.00047,True,True,False,-0.0245,-0.268,109,-0.1526,0.0001
+trend_down,-3,8141,83162,0.308,-0.08,0.388,6.267,0.0,0.0002,0.00047,True,True,False,0.0178,0.255,109,0.4339,0.0
+adx_strong_trend,1,20948,70355,-0.232,0.01,-0.243,-7.961,0.0,0.0002,0.00047,True,True,False,-0.0258,-0.369,109,-0.1469,0.00038
+rsi_oversold_bounce,1,1481,89822,0.609,-0.056,0.666,4.34,2e-05,0.0002,0.00047,True,True,True,0.0178,0.323,101,0.5997,0.0
+atr_parabolic,-2,10415,80888,-0.243,-0.02,-0.223,-5.725,0.0,0.0002,0.00047,True,True,True,-0.0187,-0.255,109,-0.0159,0.76936
+vix_stress,-2,4400,86903,0.379,-0.067,0.446,3.908,9e-05,0.0002,0.00047,True,True,False,0.1182,0.798,20,0.3648,0.0
+death_cross,-2,1298,90005,0.302,-0.05,0.353,2.2,0.02796,0.0026,0.0052,True,True,False,0.0049,0.114,107,0.1221,0.30567
+minervini_range_position,1,49483,41820,-0.084,-0.0,-0.084,-2.994,0.00276,0.0038,0.00665,True,True,False,-0.0007,-0.008,109,0.0106,0.77589
+stage2,2,47280,44023,-0.082,-0.006,-0.077,-2.771,0.00559,0.006,0.00933,True,True,False,-0.0042,-0.041,109,0.0832,0.03784
+stage4,-3,18449,72854,0.003,-0.058,0.06,1.498,0.1341,0.07778,0.1089,False,False,False,0.0026,0.03,109,-0.1264,0.00504
+golden_cross,1,1396,89907,0.138,-0.048,0.186,1.862,0.06282,0.09758,0.12419,False,False,True,0.0048,0.125,107,0.3287,0.00384
+rsi_overbought_outside_strong_trend,-1,133,91170,-0.57,-0.045,-0.526,-1.331,0.18561,0.13837,0.16143,False,False,True,-0.0168,-0.482,59,-0.3897,0.28309
+obv_bullish,1,6571,84732,0.014,-0.05,0.064,1.208,0.2271,0.23275,0.25066,False,False,True,-0.0006,-0.011,109,-0.0142,0.79387
+obv_bearish,-2,8084,83219,-0.025,-0.047,0.023,0.497,0.61931,0.63627,0.63627,False,False,False,0.0029,0.066,109,0.0847,0.08404

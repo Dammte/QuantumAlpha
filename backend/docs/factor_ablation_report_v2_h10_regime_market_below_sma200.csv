@@ -1,0 +1,12 @@
+factor,current_points,n_triggered,n_not_triggered,mean_return_triggered_pct,mean_return_not_triggered_pct,mean_difference_pct,t_stat,p_value,permutation_p_value,permutation_p_value_bh,significant_at_1pct,significant_at_1pct_bh,directionally_consistent,mean_ic,ic_ir,n_ic_buckets,multivariate_coef_pct,multivariate_p_value
+trend_down,-3,899,1720,1.796,0.34,1.455,5.008,0.0,0.0002,0.0011,True,True,False,0.0915,0.326,19,1.2645,0.00019
+vix_stress,-2,745,1874,4.117,-0.463,4.579,14.534,0.0,0.0002,0.0011,True,True,False,0.2482,0.767,6,4.4369,0.0
+death_cross,-2,82,2537,3.357,0.758,2.599,3.451,0.00087,0.0006,0.0022,True,True,False,0.0524,0.826,13,1.0772,0.14123
+trend_up,2,233,2386,-0.437,0.964,-1.401,-4.061,6e-05,0.0024,0.0066,True,True,False,-0.0857,-0.817,17,-0.6061,0.25557
+stage4,-3,1244,1375,1.128,0.579,0.549,2.074,0.03822,0.03779,0.08138,False,False,False,0.0162,0.061,19,-0.407,0.23537
+adx_strong_trend,1,127,2492,-0.314,0.899,-1.212,-2.279,0.02413,0.04639,0.08138,False,False,False,-0.0912,-0.544,18,-0.0156,0.98075
+stage2,2,596,2023,0.368,0.979,-0.611,-2.098,0.03613,0.05179,0.08138,False,False,False,-0.0198,-0.074,19,0.1704,0.68906
+obv_bearish,-2,181,2438,0.024,0.9,-0.876,-2.185,0.02986,0.09138,0.12565,False,False,True,-0.0321,-0.283,18,-0.4156,0.40856
+minervini_range_position,1,524,2095,0.425,0.944,-0.519,-1.677,0.09391,0.11358,0.13882,False,False,False,-0.0277,-0.102,18,0.2745,0.50481
+obv_bullish,1,259,2360,0.645,0.861,-0.217,-0.456,0.64862,0.62028,0.6823,False,False,False,0.0598,0.45,18,0.0478,0.9097
+rsi_oversold_bounce,1,46,2573,0.448,0.847,-0.399,-0.445,0.6582,0.69206,0.69206,False,False,False,0.0257,0.227,10,-0.3604,0.70762

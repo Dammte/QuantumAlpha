@@ -1,0 +1,15 @@
+factor,current_points,n_triggered,n_not_triggered,mean_return_triggered_pct,mean_return_not_triggered_pct,mean_difference_pct,t_stat,p_value,permutation_p_value,permutation_p_value_bh,significant_at_1pct,significant_at_1pct_bh,directionally_consistent,mean_ic,ic_ir,n_ic_buckets,multivariate_coef_pct,multivariate_p_value
+trend_down,-3,4048,41497,0.437,-0.096,0.532,5.092,0.0,0.0002,0.0014,True,True,False,0.0234,0.264,108,0.5742,0.0
+adx_strong_trend,1,10431,35114,-0.277,0.02,-0.296,-5.255,0.0,0.0002,0.0014,True,True,False,-0.0211,-0.217,108,-0.2772,0.00023
+trend_up,2,13406,32139,-0.189,0.011,-0.2,-3.883,0.0001,0.0008,0.00373,True,True,False,-0.0144,-0.124,108,-0.1265,0.0758
+stage2,2,23611,21934,-0.112,0.02,-0.131,-2.625,0.00868,0.0086,0.02408,True,False,False,-0.0068,-0.052,108,-0.0011,0.98752
+minervini_range_position,1,24696,20849,-0.108,0.023,-0.131,-2.599,0.00936,0.008,0.02408,True,False,False,-0.0073,-0.063,108,-0.0264,0.69642
+death_cross,-2,644,44901,0.468,-0.056,0.523,2.275,0.02323,0.0134,0.03126,False,False,False,0.0086,0.143,101,0.2346,0.27784
+atr_parabolic,-2,5160,40385,-0.172,-0.033,-0.139,-1.959,0.05014,0.07738,0.15477,False,False,True,-0.0055,-0.065,107,0.1693,0.08524
+stage4,-3,9207,36338,0.011,-0.063,0.075,1.053,0.29229,0.22775,0.31886,False,False,False,0.0018,0.015,108,-0.2136,0.00907
+obv_bullish,1,3315,42230,0.063,-0.057,0.12,1.249,0.2118,0.21516,0.31886,False,False,True,0.0004,0.005,108,0.0345,0.72452
+obv_bearish,-2,4058,41487,0.055,-0.058,0.113,1.298,0.19428,0.18716,0.31886,False,False,False,0.0075,0.105,108,0.1909,0.03126
+golden_cross,1,700,44845,0.153,-0.051,0.204,0.957,0.33869,0.30914,0.39345,False,False,True,-0.0006,-0.011,101,0.3111,0.1301
+rsi_overbought_outside_strong_trend,-1,68,45477,-0.545,-0.048,-0.497,-0.763,0.4479,0.44431,0.51836,False,False,True,-0.0114,-0.218,41,-0.463,0.47668
+vix_stress,-2,2263,43282,-0.01,-0.05,0.041,0.228,0.81956,0.72985,0.786,False,False,False,0.0767,0.4,19,-0.0236,0.83918
+rsi_oversold_bounce,1,734,44811,-0.04,-0.048,0.008,0.032,0.97438,0.96801,0.96801,False,False,True,0.003,0.04,96,-0.0194,0.92348

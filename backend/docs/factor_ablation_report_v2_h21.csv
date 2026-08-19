@@ -1,0 +1,16 @@
+factor,current_points,n_triggered,n_not_triggered,mean_return_triggered_pct,mean_return_not_triggered_pct,mean_difference_pct,t_stat,p_value,permutation_p_value,permutation_p_value_bh,significant_at_1pct,significant_at_1pct_bh,directionally_consistent,mean_ic,ic_ir,n_ic_buckets,multivariate_coef_pct,multivariate_p_value
+trend_down,-3,2304,20598,0.959,-0.107,1.066,5.999,0.0,0.0002,0.001,True,True,False,0.0224,0.178,108,0.9319,0.0
+vix_stress,-2,1823,21079,0.947,-0.082,1.029,4.186,3e-05,0.0002,0.001,True,True,False,0.0863,0.421,20,0.7916,0.0
+market_below_sma200,-2,1312,21590,1.82,-0.111,1.931,8.371,0.0,0.0002,0.001,True,True,False,0.1924,0.726,18,1.715,0.0
+stage4,-3,4986,17916,0.28,-0.078,0.358,2.931,0.00339,0.0008,0.003,True,True,False,-0.0049,-0.032,108,-0.1468,0.29226
+stage2,2,11505,11397,-0.132,0.134,-0.266,-3.053,0.00227,0.002,0.006,True,True,False,-0.0043,-0.026,108,-0.021,0.8689
+adx_strong_trend,1,4926,17976,-0.24,0.066,-0.306,-3.055,0.00226,0.0038,0.0095,True,True,False,-0.0106,-0.09,108,-0.0947,0.47166
+trend_up,2,6415,16487,-0.188,0.073,-0.262,-2.883,0.00395,0.0054,0.01157,True,False,False,-0.003,-0.021,108,0.0021,0.9864
+minervini_range_position,1,11986,10916,-0.108,0.119,-0.227,-2.593,0.00951,0.011,0.02062,False,False,False,-0.013,-0.082,108,0.0954,0.42015
+obv_bullish,1,1662,21240,0.358,-0.028,0.386,2.234,0.02561,0.0226,0.03766,False,False,True,0.0069,0.078,108,0.2955,0.08269
+atr_parabolic,-2,2419,20483,-0.264,0.031,-0.295,-2.239,0.0252,0.03679,0.05519,False,False,True,-0.0024,-0.021,107,-0.0098,0.95497
+rsi_oversold_bounce,1,368,22534,0.563,-0.009,0.572,1.398,0.16291,0.09318,0.12707,False,False,True,0.0025,0.024,81,0.5597,0.11142
+golden_cross,1,341,22561,-0.477,0.007,-0.484,-1.546,0.12301,0.19036,0.23795,False,False,False,-0.0037,-0.049,95,-0.3401,0.35053
+death_cross,-2,330,22572,0.293,-0.004,0.298,0.79,0.43032,0.40052,0.46214,False,False,False,0.008,0.111,93,-0.2211,0.55298
+obv_bearish,-2,1980,20922,-0.034,0.003,-0.037,-0.252,0.80089,0.80744,0.86511,False,False,True,0.0089,0.114,108,0.0619,0.69237
+rsi_overbought_outside_strong_trend,-1,45,22857,0.069,-0.0,0.069,0.061,0.95149,0.94801,0.94801,False,False,False,-0.0033,-0.046,30,0.283,0.77537

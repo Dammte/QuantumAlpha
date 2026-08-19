@@ -1,3 +1,5 @@
+from datetime import UTC, date, datetime
+
 import numpy as np
 import pandas as pd
 
@@ -141,8 +143,7 @@ def test_daily_only_fallback_is_transitioning_when_weekly_is_unavailable():
 # series, where the direction is unambiguous on both timeframes at once.
 
 
-def _ohlcv_df(n_days: int, closes) -> pd.DataFrame:
-    dates = pd.bdate_range("2015-01-01", periods=n_days)
+def _ohlcv_df_with_dates(dates, closes) -> pd.DataFrame:
     close = pd.Series(closes, index=dates, dtype=float)
     return pd.DataFrame(
         {
@@ -150,9 +151,13 @@ def _ohlcv_df(n_days: int, closes) -> pd.DataFrame:
             "high": close + 1.0,
             "low": close - 1.0,
             "close": close,
-            "volume": pd.Series([1_000_000.0] * n_days, index=dates),
+            "volume": pd.Series([1_000_000.0] * len(closes), index=dates),
         }
     )
+
+
+def _ohlcv_df(n_days: int, closes) -> pd.DataFrame:
+    return _ohlcv_df_with_dates(pd.bdate_range("2015-01-01", periods=n_days), closes)
 
 
 def test_analyze_multi_timeframe_end_to_end_bullish_aligned():
@@ -199,5 +204,25 @@ def test_analyze_multi_timeframe_weekly_resample_has_no_network_cost():
     import inspect
 
     params = inspect.signature(mtf.analyze_multi_timeframe).parameters
-    assert list(params) == ["daily_df"]
+    assert list(params) == ["daily_df", "now"]
     assert params["daily_df"].annotation in ("pd.DataFrame", pd.DataFrame)
+
+
+def test_analyze_multi_timeframe_never_confirms_a_signal_off_the_unclosed_bar():
+    # The literal acceptance criterion from the original audit: a discrete
+    # signal (here, price vs. its own fast MA) that only exists because of
+    # *today's* still-in-progress bar must never be "confirmed" - end to end
+    # through analyze_multi_timeframe, not just at closed_bars() in isolation.
+    # A steady decline for 59 sessions puts the close reliably below its own
+    # rolling fast MA; today's bar then gaps sharply higher - if (and only
+    # if) that bar counts as settled does price_vs_sma20 flip to "above".
+    today = date(2024, 6, 14)  # a Friday - avoids any weekend/bdate_range edge case
+    dates = pd.bdate_range(end=today, periods=60)
+    closes = [120.0 - i * 0.5 for i in range(59)] + [150.0]
+    df = _ohlcv_df_with_dates(dates, closes)
+
+    before_close = mtf.analyze_multi_timeframe(df, now=datetime(2024, 6, 14, 10, 0, tzinfo=UTC))
+    assert before_close.daily.price_vs_sma20 == "below"
+
+    after_close = mtf.analyze_multi_timeframe(df, now=datetime(2024, 6, 14, 22, 0, tzinfo=UTC))
+    assert after_close.daily.price_vs_sma20 == "above"

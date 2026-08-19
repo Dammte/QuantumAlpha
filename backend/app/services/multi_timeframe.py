@@ -17,6 +17,7 @@ were tuned.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 import pandas as pd
 
@@ -107,9 +108,9 @@ def _price_vs(price: float, moving_average: float | None) -> str | None:
 
 
 def _read_timeframe(
-    df: pd.DataFrame, timeframe: str, stage_ma_window: int, min_bars_for_stage: int
+    df: pd.DataFrame, timeframe: str, stage_ma_window: int, min_bars_for_stage: int, now: datetime | None = None
 ) -> TimeframeRead | None:
-    closed = ta.closed_bars(df)
+    closed = ta.closed_bars(df, now=now)
     if len(closed) < 2:
         return None
     close, high, low, volume = closed["close"], closed["high"], closed["low"], closed["volume"]
@@ -271,18 +272,23 @@ def combine_timeframes(weekly: TimeframeRead | None, daily: TimeframeRead) -> tu
     return alignment, alignment_score, conflicts
 
 
-def analyze_multi_timeframe(daily_df: pd.DataFrame) -> MultiTimeframeRead:
+def analyze_multi_timeframe(daily_df: pd.DataFrame, now: datetime | None = None) -> MultiTimeframeRead:
     """Weekly bias, daily execution - see module docstring and
     `combine_timeframes` for the alignment rules. `daily_df` is the same
     daily OHLCV frame every caller already fetches; weekly is derived from it
-    at zero extra network cost via `resample_ohlcv`."""
+    at zero extra network cost via `resample_ohlcv`. `now` passes straight
+    through to `technical_analysis.closed_bars` (both timeframes) - injectable
+    for tests that need to control whether "today's" bar counts as settled;
+    defaults to the real current UTC time in production, same as `closed_bars`
+    itself."""
     daily = (
-        _read_timeframe(daily_df, "daily", DAILY_STAGE_MA_WINDOW, MIN_DAILY_BARS_FOR_STAGE) or _empty_daily_read()
+        _read_timeframe(daily_df, "daily", DAILY_STAGE_MA_WINDOW, MIN_DAILY_BARS_FOR_STAGE, now=now)
+        or _empty_daily_read()
     )
 
     weekly_df = ta.resample_ohlcv(daily_df, WEEKLY_RULE)
     weekly = (
-        _read_timeframe(weekly_df, "weekly", WEEKLY_STAGE_MA_WINDOW, MIN_WEEKLY_BARS_FOR_STAGE)
+        _read_timeframe(weekly_df, "weekly", WEEKLY_STAGE_MA_WINDOW, MIN_WEEKLY_BARS_FOR_STAGE, now=now)
         if len(weekly_df) >= 2
         else None
     )
