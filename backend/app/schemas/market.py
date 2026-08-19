@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
 from app.schemas.common import PriceLevelResponse
-from app.schemas.quant_analysis import CoreSignalsResponse
+from app.schemas.quant_analysis import CoreSignalsResponse, MultiTimeframeResponse
 
 
 class NewsArticleResponse(BaseModel):
@@ -253,6 +253,22 @@ class PremiumWatchlistItemResponse(BaseModel):
     signals: CoreSignalsResponse
 
 
+class TradePlanResponse(BaseModel):
+    """See `domain.models.trade_plan.TradePlan` - the persisted (or, for a
+    position opened before this existed, point-in-time reconstructed) stop/
+    target/thesis the exit engine judges this position against. `None` when
+    there's no currently-open lot to plan for (see `trade_plan_service.py`)."""
+
+    entry_price: float
+    entry_date: date
+    initial_stop: float | None
+    initial_target: float | None
+    current_stop: float | None
+    highest_close_since_entry: float
+    thesis: str
+    engine_version: str
+
+
 class PositionRiskResponse(BaseModel):
     ticker: str
     currency: str
@@ -267,6 +283,14 @@ class PositionRiskResponse(BaseModel):
     score: int
     reasons: list[str]
     signals: CoreSignalsResponse
+    # Added for the independent exit engine (see exit_engine.py) - all
+    # additive, `signal`/`score`/`reasons` above are unchanged and still mean
+    # exactly what they meant before this existed.
+    exit_urgency: str | None  # "exit_now"|"reduce"|"tighten_stop"|"watch"|"hold" - None if no open trade plan
+    exit_reasons: list[str]
+    trade_plan: TradePlanResponse | None
+    r_multiple: float | None
+    multi_timeframe: MultiTimeframeResponse | None
 
 
 class SwapSuggestionResponse(BaseModel):

@@ -15,13 +15,19 @@ so scoring N holdings is one network round-trip, not N.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 
+from app.domain.interfaces.trade_plan_repository import TradePlanRepositoryPort
 from app.domain.models.ticker_snapshot import TickerSnapshot
+from app.domain.models.trade_plan import TradePlan
+from app.domain.models.transaction import Transaction
+from app.services import exit_engine as ee
+from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
+from app.services import trade_plan_service as tps
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, currency_of
 from app.services.ticker_analysis_service import HISTORY_YEARS, CoreTickerSignals, compute_core_signals
@@ -29,6 +35,11 @@ from app.services.ticker_analysis_service import HISTORY_YEARS, CoreTickerSignal
 logger = logging.getLogger(__name__)
 
 PROXIMITY_THRESHOLD = 0.03  # within 3% of a level counts as "close to it"
+# How many recent bars count as "recent" for the exit engine's "falling from
+# a real peak" reads (RSI/ADX) - two trading weeks, long enough to catch a
+# genuine recent overbought/trending peak, short enough that a peak from a
+# month ago doesn't still count as "recent".
+RECENT_LOOKBACK = 10
 
 # Same idiom as MarketScreenerService/PremiumWatchlistService: the full quant
 # suite per holding (GARCH, Markov, Monte Carlo, walk-forward backtest) is
@@ -68,6 +79,24 @@ class PositionRisk:
     score: int
     reasons: list[str]
     signals: CoreTickerSignals  # the full quant suite backing this signal
+    # Added for the independent exit engine (exit_engine.py, see its
+    # docstring for why this is a *separate* read from `signal`/`score`/
+    # `reasons` above, not a replacement) - all `None`/empty when the caller
+    # doesn't supply portfolio context (`portfolio_id`/`transactions`/
+    # `trade_plan_repo` below), so every existing caller of this function
+    # keeps working unchanged.
+    exit_urgency: str | None = None  # "exit_now" | "reduce" | "tighten_stop" | "watch" | "hold"
+    exit_reasons: list[str] = field(default_factory=list)
+    trade_plan: TradePlan | None = None
+    r_multiple: float | None = None
+    multi_timeframe: mtf.MultiTimeframeRead | None = None
+
+
+def _recent_max(series: pd.Series, lookback: int = RECENT_LOOKBACK) -> float | None:
+    valid = series.dropna()
+    if valid.empty:
+        return None
+    return float(valid.iloc[-lookback:].max())
 
 
 def assess_position_risk(
@@ -76,6 +105,9 @@ def assess_position_risk(
     benchmark_close: pd.Series | None = None,
     rs_rating: int | None = None,
     vix_close: pd.Series | None = None,
+    portfolio_id: int | None = None,
+    transactions: list[Transaction] | None = None,
+    trade_plan_repo: TradePlanRepositoryPort | None = None,
 ) -> PositionRisk | None:
     signals = compute_core_signals(
         df["close"],
@@ -177,6 +209,74 @@ def assess_position_risk(
     if not reasons:
         reasons.append("Sin señales técnicas relevantes en este momento")
 
+    # --- Independent exit engine (D2/D3 fix - see exit_engine.py's docstring) ---
+    # Only runs when the caller supplies portfolio context: a bare technical
+    # read (e.g. from a caller that only wants "Analizar activo"-style
+    # signals, or an as-yet-unupdated test double) still gets the legacy
+    # verdict-based `signal` above unchanged, just without this layered on
+    # top - `exit_urgency` stays `None` in that case, never a guess.
+    exit_urgency: str | None = None
+    exit_reasons: list[str] = []
+    trade_plan: TradePlan | None = None
+    r_multiple: float | None = None
+    multi_timeframe: mtf.MultiTimeframeRead | None = None
+
+    if portfolio_id is not None and trade_plan_repo is not None and transactions is not None:
+        multi_timeframe = mtf.analyze_multi_timeframe(df)
+        plan = tps.ensure_trade_plan(trade_plan_repo, portfolio_id, ticker, transactions, df)
+        closed = ta.closed_bars(df)
+        if plan is not None and not closed.empty:
+            trade_plan = plan
+            exit_price = float(closed["close"].iloc[-1])
+            consecutive_below_sma50 = ta.consecutive_closes_below(closed["close"], ta.sma(closed["close"], 50))
+            rsi_recent_max = _recent_max(ta.rsi(closed["close"]))
+            adx_recent_max = _recent_max(ta.adx(closed["high"], closed["low"], closed["close"]))
+            bars_held = tps.bars_held_since(closed, plan.entry_date)
+            # average_cost defaults to this lot's own entry price (a DCA'd
+            # position's true blended cost isn't threaded through here yet -
+            # exit_engine.evaluate_exit doesn't actually read average_cost or
+            # quantity today, only current_stop/initial_target/r_multiple, so
+            # this doesn't affect the urgency verdict; it's a known
+            # simplification for the position-sizing work in a later phase).
+            position_context = tps.build_position_context(
+                plan, exit_price, quantity=0.0, average_cost=plan.entry_price, bars_held=bars_held
+            )
+            assessment = ee.evaluate_exit(
+                price=exit_price,
+                position=position_context,
+                multi_timeframe=multi_timeframe,
+                consecutive_closes_below_daily_sma50=consecutive_below_sma50,
+                nearest_support=signals.nearest_support,
+                nearest_resistance=signals.nearest_resistance,
+                obv_divergence=signals.obv_divergence,
+                relative_volume=signals.relative_volume,
+                rsi14=signals.rsi14,
+                rsi_recent_max=rsi_recent_max,
+                adx14=signals.adx14,
+                adx_recent_max=adx_recent_max,
+                atr_multiple=signals.atr_multiple,
+                candlestick_pattern=signals.candlestick_pattern,
+            )
+            exit_urgency = assessment.urgency.value
+            exit_reasons = assessment.reasons
+            r_multiple = position_context.r_multiple
+
+            # The exit engine's read outranks a "comprar" verdict for the
+            # tiers that mean real trouble (protecting capital already on
+            # the table matters more than "would this still be a fresh
+            # buy") - this is the actual D2/D3 fix: previously nothing could
+            # ever override ADD_CANDIDATE/HOLD except the buy-side score
+            # itself. TIGHTEN_STOP deliberately does *not* override
+            # ADD_CANDIDATE (same precedent as the imminent-cross case
+            # above - still worth surfacing, not urgent enough to relabel
+            # the badge).
+            if assessment.urgency in (ee.ExitUrgency.EXIT_NOW, ee.ExitUrgency.REDUCE):
+                signal = EXIT_WARNING
+            elif assessment.urgency == ee.ExitUrgency.TIGHTEN_STOP and signal not in (EXIT_WARNING, ADD_CANDIDATE):
+                signal = WATCH
+            elif assessment.urgency == ee.ExitUrgency.WATCH and signal == HOLD:
+                signal = WATCH
+
     return PositionRisk(
         ticker=ticker,
         currency=currency_of(ticker),
@@ -191,6 +291,11 @@ def assess_position_risk(
         score=signals.recommendation.score,
         reasons=reasons,
         signals=signals,
+        exit_urgency=exit_urgency,
+        exit_reasons=exit_reasons,
+        trade_plan=trade_plan,
+        r_multiple=r_multiple,
+        multi_timeframe=multi_timeframe,
     )
 
 
@@ -200,6 +305,9 @@ def _safe_assess_position_risk(
     benchmark_close: pd.Series | None,
     rs_rating: int | None,
     vix_close: pd.Series | None,
+    portfolio_id: int | None = None,
+    transactions: list[Transaction] | None = None,
+    trade_plan_repo: TradePlanRepositoryPort | None = None,
 ) -> PositionRisk | None:
     """`assess_position_risk`, isolated: one holding's GARCH optimizer failing
     to converge, a backtest edge case, or any other numerical hiccup must
@@ -207,7 +315,16 @@ def _safe_assess_position_risk(
     holding that fails to compute simply doesn't get a signal this round
     (rather than the whole request 500ing) and tries again next refresh."""
     try:
-        return assess_position_risk(ticker, df, benchmark_close, rs_rating=rs_rating, vix_close=vix_close)
+        return assess_position_risk(
+            ticker,
+            df,
+            benchmark_close,
+            rs_rating=rs_rating,
+            vix_close=vix_close,
+            portfolio_id=portfolio_id,
+            transactions=transactions,
+            trade_plan_repo=trade_plan_repo,
+        )
     except Exception:
         logger.exception("Portfolio risk: skipping %s after a compute failure", ticker)
         return None
@@ -217,13 +334,19 @@ def get_portfolio_positions_risk(
     tickers: list[str],
     market_data: MarketDataService,
     universe_snapshot: list[TickerSnapshot] | None = None,
+    portfolio_id: int | None = None,
+    transactions: list[Transaction] | None = None,
+    trade_plan_repo: TradePlanRepositoryPort | None = None,
 ) -> list[PositionRisk]:
     """Runs `assess_position_risk` for every ticker actually held, reusing the
     universe snapshot's RS Rating when a holding happens to be in a curated
     universe (most won't be - that's expected for a personal portfolio).
     `universe_snapshot` may combine both regions (US + Europe) - a personal
     portfolio isn't confined to one market, and each holding is benchmarked
-    against whichever region it actually belongs to (see `benchmark_for_ticker`)."""
+    against whichever region it actually belongs to (see `benchmark_for_ticker`).
+    `portfolio_id`/`transactions`/`trade_plan_repo` enable the exit engine
+    (see `assess_position_risk`) - omit them for a bare technical read with
+    no portfolio context (e.g. a caller that only needs the legacy signal)."""
     if not tickers:
         return []
 
@@ -247,7 +370,14 @@ def get_portfolio_positions_risk(
         benchmark_df = ohlcv_by_ticker.get(benchmark_by_ticker[ticker])
         benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
         risk = _safe_assess_position_risk(
-            ticker, df, benchmark_close, rs_by_ticker.get(ticker), vix_close
+            ticker,
+            df,
+            benchmark_close,
+            rs_by_ticker.get(ticker),
+            vix_close,
+            portfolio_id=portfolio_id,
+            transactions=transactions,
+            trade_plan_repo=trade_plan_repo,
         )
         if risk is not None:
             results.append(risk)
@@ -256,13 +386,19 @@ def get_portfolio_positions_risk(
 
 class PortfolioRiskService:
     """Production-facing wrapper around `get_portfolio_positions_risk`: caches
-    each ticker's `PositionRisk` for `CACHE_TTL` so the full quant suite is
-    only recomputed once per ticker per TTL window, not on every dashboard
-    reload. Registered as a singleton in `deps.py` so the cache is actually
-    shared across requests, same as MarketScreenerService."""
+    each (portfolio, ticker)'s `PositionRisk` for `CACHE_TTL` so the full
+    quant suite is only recomputed once per TTL window, not on every
+    dashboard reload. Registered as a singleton in `deps.py` so the cache is
+    actually shared across requests, same as MarketScreenerService.
+
+    Cached by (portfolio_id, ticker), not just ticker: once a position's
+    trade plan (its own stop/target/entry) participates in the read, the
+    *same* ticker held in two different portfolios can legitimately produce
+    two different results - caching by ticker alone would leak one
+    portfolio's trade plan into another's response."""
 
     def __init__(self) -> None:
-        self._cache: dict[str, tuple[datetime, PositionRisk]] = {}
+        self._cache: dict[tuple[int | None, str], tuple[datetime, PositionRisk]] = {}
 
     def get_positions_risk(
         self,
@@ -270,6 +406,9 @@ class PortfolioRiskService:
         market_data: MarketDataService,
         universe_snapshot: list[TickerSnapshot] | None = None,
         force_refresh: bool = False,
+        portfolio_id: int | None = None,
+        transactions: list[Transaction] | None = None,
+        trade_plan_repo: TradePlanRepositoryPort | None = None,
     ) -> list[PositionRisk]:
         if not tickers:
             return []
@@ -278,7 +417,7 @@ class PortfolioRiskService:
         fresh_by_ticker: dict[str, PositionRisk] = {}
         to_compute: list[str] = []
         for ticker in tickers:
-            cached = None if force_refresh else self._cache.get(ticker)
+            cached = None if force_refresh else self._cache.get((portfolio_id, ticker))
             if cached is not None and now - cached[0] < CACHE_TTL:
                 fresh_by_ticker[ticker] = cached[1]
             else:
@@ -301,10 +440,17 @@ class PortfolioRiskService:
                 benchmark_df = ohlcv_by_ticker.get(benchmark_by_ticker[ticker])
                 benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
                 risk = _safe_assess_position_risk(
-                    ticker, df, benchmark_close, rs_by_ticker.get(ticker), vix_close
+                    ticker,
+                    df,
+                    benchmark_close,
+                    rs_by_ticker.get(ticker),
+                    vix_close,
+                    portfolio_id=portfolio_id,
+                    transactions=transactions,
+                    trade_plan_repo=trade_plan_repo,
                 )
                 if risk is not None:
                     fresh_by_ticker[ticker] = risk
-                    self._cache[ticker] = (now, risk)
+                    self._cache[(portfolio_id, ticker)] = (now, risk)
 
         return [fresh_by_ticker[ticker] for ticker in tickers if ticker in fresh_by_ticker]

@@ -13,20 +13,25 @@ from app.api.deps import (
     get_portfolio_risk_service,
     get_portfolio_service,
     get_premium_watchlist_service,
+    get_trade_plan_repository,
 )
 from app.domain.models.asset import AssetClass
+from app.domain.models.trade_plan import TradePlan
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
+from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.schemas.market import (
     PortfolioRiskResponse,
     PositionRiskResponse,
     PriceLevelResponse,
     SwapSuggestionResponse,
+    TradePlanResponse,
 )
 from app.schemas.portfolio import PortfolioCreate, PortfolioRead, PortfolioSummary, PositionRead
-from app.schemas.quant_analysis import CoreSignalsResponse
+from app.schemas.quant_analysis import CoreSignalsResponse, MultiTimeframeResponse, TimeframeReadResponse
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services import durable_cache
+from app.services import multi_timeframe as mtf
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.opportunity_cost import find_swap_suggestions
@@ -50,6 +55,37 @@ def _core_signals_to_response(signals: CoreTickerSignals) -> CoreSignalsResponse
     data["stage"] = signals.stage.value if signals.stage else None
     data["market_trend"] = signals.market_trend.value if signals.market_trend else None
     return CoreSignalsResponse(**data)
+
+
+def _timeframe_read_to_response(read: mtf.TimeframeRead) -> TimeframeReadResponse:
+    data = asdict(read)
+    data["trend"] = read.trend.value
+    data["stage"] = read.stage.value if read.stage else None
+    return TimeframeReadResponse(**data)
+
+
+def _multi_timeframe_to_response(read: mtf.MultiTimeframeRead) -> MultiTimeframeResponse:
+    return MultiTimeframeResponse(
+        weekly=_timeframe_read_to_response(read.weekly) if read.weekly else None,
+        daily=_timeframe_read_to_response(read.daily),
+        intraday=_timeframe_read_to_response(read.intraday) if read.intraday else None,
+        alignment=read.alignment,
+        alignment_score=read.alignment_score,
+        conflicts=read.conflicts,
+    )
+
+
+def _trade_plan_to_response(plan: TradePlan) -> TradePlanResponse:
+    return TradePlanResponse(
+        entry_price=plan.entry_price,
+        entry_date=plan.entry_date,
+        initial_stop=plan.initial_stop,
+        initial_target=plan.initial_target,
+        current_stop=plan.current_stop,
+        highest_close_since_entry=plan.highest_close_since_entry,
+        thesis=plan.thesis,
+        engine_version=plan.engine_version,
+    )
 
 
 @router.post("", response_model=PortfolioRead, status_code=status.HTTP_201_CREATED)
@@ -191,6 +227,7 @@ def get_portfolio_risk(
     screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
     risk_service: Annotated[PortfolioRiskService, Depends(get_portfolio_risk_service)],
     premium_service: Annotated[PremiumWatchlistService, Depends(get_premium_watchlist_service)],
+    trade_plan_repo: Annotated[TradePlanRepository, Depends(get_trade_plan_repository)],
     db: DbSession,
     refresh: bool = False,
 ) -> PortfolioRiskResponse:
@@ -220,13 +257,25 @@ def get_portfolio_risk(
         if cached is not None:
             return cached
 
-    tickers = sorted({tx.ticker for tx in repository.get_transactions(portfolio_id) if tx.ticker is not None})
+    transactions = repository.get_transactions(portfolio_id)
+    tickers = sorted({tx.ticker for tx in transactions if tx.ticker is not None})
     # A personal portfolio isn't confined to one market - combine both curated
     # universes so a European holding's RS Rating is found too, not just US ones.
     universe_snapshot = screener.get_universe_snapshot("us", db=db) + screener.get_universe_snapshot(
         "europe", db=db
     )
-    positions = risk_service.get_positions_risk(tickers, market_data, universe_snapshot, force_refresh=refresh)
+    # portfolio_id/transactions/trade_plan_repo enable the independent exit
+    # engine (see exit_engine.py, portfolio_risk_service.assess_position_risk)
+    # - each holding's own stop/target plan, not just its bare technical read.
+    positions = risk_service.get_positions_risk(
+        tickers,
+        market_data,
+        universe_snapshot,
+        force_refresh=refresh,
+        portfolio_id=portfolio_id,
+        transactions=transactions,
+        trade_plan_repo=trade_plan_repo,
+    )
 
     # Same two curated universes as the RS lookup above - a premium candidate
     # from either region is a fair comparison against any held position.
@@ -253,6 +302,11 @@ def get_portfolio_risk(
                 score=p.score,
                 reasons=p.reasons,
                 signals=_core_signals_to_response(p.signals),
+                exit_urgency=p.exit_urgency,
+                exit_reasons=p.exit_reasons,
+                trade_plan=_trade_plan_to_response(p.trade_plan) if p.trade_plan else None,
+                r_multiple=p.r_multiple,
+                multi_timeframe=_multi_timeframe_to_response(p.multi_timeframe) if p.multi_timeframe else None,
             )
             for p in positions
         ],

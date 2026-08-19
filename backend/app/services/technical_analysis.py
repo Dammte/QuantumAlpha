@@ -138,6 +138,23 @@ def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     return (direction * volume).cumsum()
 
 
+def consecutive_closes_below(closes: pd.Series, level: pd.Series) -> int:
+    """How many of the most recent bars have closed below `level` (e.g. a
+    moving average), counting back from the latest bar until the first one
+    that doesn't - 0 if the latest close is already at or above it. Used by
+    `exit_engine.py`'s "N confirmed closes below the SMA50" hard trigger,
+    where a single bad print shouldn't read the same as a genuinely
+    confirmed breakdown."""
+    diff = (closes - level).dropna()
+    count = 0
+    for value in reversed(diff.tolist()):
+        if value < 0:
+            count += 1
+        else:
+            break
+    return count
+
+
 def rolling_position_in_range(series: pd.Series, window: int) -> pd.Series:
     """Where the latest value sits within its own trailing `window`-bar
     min-max range, as a 0 (at the low) to 1 (at the high) fraction. Vectorized

@@ -166,6 +166,25 @@ def test_detect_cross_with_quality_works_without_optional_series():
     assert result.volume_confirmation is None
 
 
+def test_consecutive_closes_below_counts_back_from_the_latest_bar():
+    closes = pd.Series([100.0, 99.0, 98.0, 97.0, 96.0])
+    level = pd.Series([98.5] * 5)  # last 3 closes (98, 97, 96) are below 98.5
+    assert ta.consecutive_closes_below(closes, level) == 3
+
+
+def test_consecutive_closes_below_stops_at_the_first_bar_at_or_above():
+    closes = pd.Series([90.0, 105.0, 96.0, 97.0])
+    level = pd.Series([100.0] * 4)
+    # latest two (96, 97) are below; the 105 two bars back breaks the streak
+    assert ta.consecutive_closes_below(closes, level) == 2
+
+
+def test_consecutive_closes_below_zero_when_latest_close_is_above():
+    closes = pd.Series([90.0, 91.0, 105.0])
+    level = pd.Series([100.0] * 3)
+    assert ta.consecutive_closes_below(closes, level) == 0
+
+
 def test_sma_basic():
     series = pd.Series([1, 2, 3, 4, 5])
     result = ta.sma(series, 3)

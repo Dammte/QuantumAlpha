@@ -264,7 +264,7 @@ def test_get_portfolio_positions_risk_isolates_a_ticker_whose_compute_raises(mon
             close = 100 + np.arange(260) * 0.4
             return {t: _ohlc(close) for t in tickers}
 
-    def flaky_assess(ticker, df, benchmark_close=None, rs_rating=None, vix_close=None):
+    def flaky_assess(ticker, df, benchmark_close=None, rs_rating=None, vix_close=None, **kwargs):
         if ticker == "BAD":
             raise ValueError("simulated GARCH/backtest numerical failure")
         return prs.PositionRisk(
@@ -369,7 +369,7 @@ def test_service_isolates_a_ticker_whose_compute_raises(monkeypatch):
     module-level function's, since it recomputes independently per ticker)."""
     market_data = _CountingMarketData()
 
-    def flaky_assess(ticker, df, benchmark_close=None, rs_rating=None, vix_close=None):
+    def flaky_assess(ticker, df, benchmark_close=None, rs_rating=None, vix_close=None, **kwargs):
         if ticker == "BAD":
             raise ValueError("simulated numerical failure")
         return prs.PositionRisk(

@@ -280,6 +280,41 @@ def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
         assert suggestion["candidate_score"] - suggestion["held_score"] >= 4.0
 
 
+def test_portfolio_risk_includes_exit_engine_and_trade_plan_fields(client: TestClient) -> None:
+    """The Paso C wiring (see exit_engine.py/trade_plan_service.py): a held
+    position's risk read now also carries an independent exit_urgency,
+    backed by a persisted/reconstructed trade plan, and a multi-timeframe
+    alignment read - all additive to the legacy signal/score/reasons
+    contract asserted above (test_portfolio_risk_assesses_every_held_ticker),
+    never replacing it."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/risk")
+    assert response.status_code == 200
+    position = response.json()["positions"][0]
+
+    assert position["exit_urgency"] in {"exit_now", "reduce", "tighten_stop", "watch", "hold"}
+    assert isinstance(position["exit_reasons"], list)
+    assert position["r_multiple"] is None or isinstance(position["r_multiple"], float)
+
+    # No trade plan existed before this buy - assess_position_risk reconstructs
+    # one lazily on first read (trade_plan_service.ensure_trade_plan), anchored
+    # to this exact BUY transaction's own price.
+    plan = position["trade_plan"]
+    assert plan is not None
+    assert plan["entry_price"] == pytest.approx(100.0)
+    assert plan["thesis"]  # reconstructed - see trade_plan_service.RECONSTRUCTED_THESIS
+
+    multi_timeframe = position["multi_timeframe"]
+    assert multi_timeframe is not None
+    assert multi_timeframe["daily"] is not None
+    assert multi_timeframe["alignment"] in {"bullish_aligned", "bearish_aligned", "conflicted", "transitioning"}
+
+
 def test_portfolio_risk_response_carries_computed_at(client: TestClient) -> None:
     portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
     client.post(

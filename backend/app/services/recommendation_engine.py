@@ -120,6 +120,68 @@ class Recommendation:
     risk_reward: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class StopAndTarget:
+    stop_loss: float | None
+    take_profit: float | None
+    take_profit_method: str | None
+    risk_reward: float | None
+
+
+def compute_stop_and_target(
+    price: float,
+    atr14: float | None,
+    nearest_support: PriceLevel | None,
+    nearest_resistance: PriceLevel | None,
+) -> StopAndTarget:
+    """The mechanical stop/target math, isolated from the buy/wait/avoid
+    checklist below so it's independently reusable: place the stop just below
+    the nearest support (a real technical level), but never let the risk
+    exceed `ATR_STOP_MULTIPLE` x ATR (a volatility-aware ceiling) even if
+    support is unusually far away; target the nearest resistance only if it
+    still clears a minimum reward:risk, otherwise fall back to a fixed
+    `REWARD_RISK_RATIO`:1 objective.
+
+    Used by `build_recommendation` below (only when the verdict is
+    "comprar" - a stop/target is only ever offered for a fresh buy signal),
+    and independently by `trade_plan_service.py`, which runs this exact same
+    math against a ticker's point-in-time history to reconstruct what a
+    position's stop would have been at its actual entry date - regardless of
+    what today's checklist verdict happens to say, since a stop already in
+    force doesn't retroactively stop existing just because the setup no
+    longer scores as a fresh "comprar" today."""
+    if not atr14:
+        return StopAndTarget(None, None, None, None)
+
+    candidate_stops = [price - ATR_STOP_MULTIPLE * atr14]
+    if nearest_support is not None:
+        candidate_stops.append(nearest_support.price * 0.99)
+    stop_loss = max(candidate_stops)  # the tighter of the two - never risk more than the ATR ceiling
+
+    risk = price - stop_loss
+    if risk <= 0:
+        return StopAndTarget(stop_loss, None, None, None)
+
+    resistance_target = None
+    if nearest_resistance is not None and 0 < nearest_resistance.distance_pct <= MAX_RESISTANCE_TARGET_DISTANCE:
+        resistance_target = nearest_resistance.price
+
+    # Only use the nearby resistance as the target if it still clears a
+    # minimum reward:risk - a resistance sitting right on top of the entry
+    # makes for a bad trade even when the technical setup itself is strong,
+    # so fall back to the fixed 2:1 objective instead of proposing a buy
+    # with unfavorable asymmetry.
+    if resistance_target is not None and (resistance_target - price) / risk >= 1.0:
+        take_profit = resistance_target
+        take_profit_method = "resistencia más cercana"
+    else:
+        take_profit = price + REWARD_RISK_RATIO * risk
+        take_profit_method = f"objetivo {REWARD_RISK_RATIO:.0f}:1 sobre el riesgo"
+    risk_reward = (take_profit - price) / risk
+
+    return StopAndTarget(stop_loss, take_profit, take_profit_method, risk_reward)
+
+
 def build_recommendation(
     price: float,
     trend: TrendState,
@@ -286,38 +348,13 @@ def build_recommendation(
     else:
         verdict = "esperar"
 
-    stop_loss = None
-    take_profit = None
-    take_profit_method = None
-    risk_reward = None
-
-    if verdict == "comprar" and atr14:
-        candidate_stops = [price - ATR_STOP_MULTIPLE * atr14]
-        if nearest_support is not None:
-            candidate_stops.append(nearest_support.price * 0.99)
-        stop_loss = max(candidate_stops)  # the tighter of the two - never risk more than the ATR ceiling
-
-        risk = price - stop_loss
-        if risk > 0:
-            resistance_target = None
-            if (
-                nearest_resistance is not None
-                and 0 < nearest_resistance.distance_pct <= MAX_RESISTANCE_TARGET_DISTANCE
-            ):
-                resistance_target = nearest_resistance.price
-
-            # Only use the nearby resistance as the target if it still clears a
-            # minimum reward:risk - a resistance sitting right on top of the entry
-            # makes for a bad trade even when the technical setup itself is strong,
-            # so fall back to the fixed 2:1 objective instead of proposing a buy
-            # with unfavorable asymmetry.
-            if resistance_target is not None and (resistance_target - price) / risk >= 1.0:
-                take_profit = resistance_target
-                take_profit_method = "resistencia más cercana"
-            else:
-                take_profit = price + REWARD_RISK_RATIO * risk
-                take_profit_method = f"objetivo {REWARD_RISK_RATIO:.0f}:1 sobre el riesgo"
-            risk_reward = (take_profit - price) / risk
+    stop_loss = take_profit = take_profit_method = risk_reward = None
+    if verdict == "comprar":
+        stop_target = compute_stop_and_target(price, atr14, nearest_support, nearest_resistance)
+        stop_loss = stop_target.stop_loss
+        take_profit = stop_target.take_profit
+        take_profit_method = stop_target.take_profit_method
+        risk_reward = stop_target.risk_reward
 
     return Recommendation(
         verdict=verdict,

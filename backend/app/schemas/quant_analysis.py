@@ -138,6 +138,54 @@ class ImminentCrossResponse(BaseModel):
     r_squared: float
 
 
+class CrossQualityResponse(BaseModel):
+    """See `technical_analysis.detect_cross_with_quality`."""
+
+    direction: str  # "golden" | "death"
+    bars_since: int
+    separation_atr: float | None
+    fast_slope: float
+    slow_slope: float
+    volume_confirmation: float | None
+    quality: str  # "strong" | "weak" | "noise"
+
+
+class TimeframeReadResponse(BaseModel):
+    """See `multi_timeframe.TimeframeRead` - one timeframe's full technical
+    read, off closed bars only."""
+
+    timeframe: str  # "weekly" | "daily" | "intraday_1h"
+    trend: str
+    stage: str | None
+    ma_cross_50_200: str | None
+    ma_cross_20_50: str | None
+    cross_quality_20_50: CrossQualityResponse | None
+    imminent_cross_50_200: ImminentCrossResponse | None
+    imminent_cross_20_50: ImminentCrossResponse | None
+    macd_cross: str | None
+    macd_histogram_turning: str | None
+    rsi14: float | None
+    adx14: float | None
+    di_bias: str | None
+    price_vs_sma20: str | None
+    price_vs_sma50: str | None
+    price_vs_sma200: str | None
+    bars_since_cross: int | None
+
+
+class MultiTimeframeResponse(BaseModel):
+    """See `multi_timeframe.MultiTimeframeRead` - the weekly-bias/daily-
+    execution top-down read, the semáforo multi-timeframe the frontend shows
+    per position."""
+
+    weekly: TimeframeReadResponse | None
+    daily: TimeframeReadResponse
+    intraday: TimeframeReadResponse | None
+    alignment: str  # "bullish_aligned" | "bearish_aligned" | "conflicted" | "transitioning"
+    alignment_score: float
+    conflicts: list[str]
+
+
 class CoreSignalsResponse(BaseModel):
     """Everything the recommendation engine and its supporting quant models
     produce for one ticker at one point in time - the same bundle `TickerAnalysisService.analyze()`

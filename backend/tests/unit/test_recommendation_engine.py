@@ -39,6 +39,55 @@ def _garch(regime: str) -> GarchResult:
     )
 
 
+# compute_stop_and_target is exercised indirectly by the build_recommendation
+# tests below (only ever called there when verdict == "comprar"), and
+# directly here - it's reused standalone by trade_plan_service.py to
+# reconstruct a position's stop/target from its point-in-time entry data,
+# independent of what today's checklist verdict says.
+
+
+def test_compute_stop_and_target_none_without_atr():
+    result = re.compute_stop_and_target(price=100.0, atr14=None, nearest_support=None, nearest_resistance=None)
+    assert result == re.StopAndTarget(None, None, None, None)
+
+
+def test_compute_stop_and_target_uses_atr_ceiling_without_a_nearby_support():
+    result = re.compute_stop_and_target(price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=None)
+    assert result.stop_loss == pytest.approx(100.0 - re.ATR_STOP_MULTIPLE * 2.0)
+    assert result.take_profit is not None
+    assert result.take_profit_method == f"objetivo {re.REWARD_RISK_RATIO:.0f}:1 sobre el riesgo"
+
+
+def test_compute_stop_and_target_prefers_the_tighter_of_support_and_atr_ceiling():
+    # Support (99*0.99=98.01) is tighter (higher) than the ATR ceiling
+    # (100-2.5*2=95.0) - the tighter one wins, never risking more than
+    # necessary just because the ATR ceiling would allow it.
+    support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
+    result = re.compute_stop_and_target(price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None)
+    assert result.stop_loss == pytest.approx(99.0 * 0.99)
+
+
+def test_compute_stop_and_target_targets_resistance_when_reward_risk_clears_the_bar():
+    support = PriceLevel(price=97.0, kind="support", strength=2, distance_pct=-0.03)
+    resistance = PriceLevel(price=110.0, kind="resistance", strength=1, distance_pct=0.10)
+    result = re.compute_stop_and_target(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=resistance
+    )
+    assert result.take_profit == pytest.approx(110.0)
+    assert result.take_profit_method == "resistencia más cercana"
+
+
+def test_compute_stop_and_target_none_take_profit_when_stop_is_at_or_above_price():
+    # A support level *above* the entry price (e.g. a fast-moving entry that
+    # already cleared it) makes the "tighter of the two" stop land at or
+    # above price itself - no valid risk to size a target against.
+    support = PriceLevel(price=102.0, kind="support", strength=1, distance_pct=0.02)
+    result = re.compute_stop_and_target(price=100.0, atr14=0.001, nearest_support=support, nearest_resistance=None)
+    assert result.stop_loss is not None
+    assert result.take_profit is None
+    assert result.risk_reward is None
+
+
 def test_strong_bullish_setup_recommends_buy_with_stop_and_target():
     support = PriceLevel(price=97.0, kind="support", strength=2, distance_pct=-0.03)
     resistance = PriceLevel(price=110.0, kind="resistance", strength=1, distance_pct=0.10)

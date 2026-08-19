@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 
-from sqlalchemy import JSON, ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, Index, Numeric, String, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -87,6 +87,41 @@ class RecommendationSnapshotORM(Base):
     # factor breakdown behind the score, not just the final number, so a
     # later reviewer can see *why*, not only *what*.
     factors: Mapped[list] = mapped_column(JSON)
+
+
+class TradePlanORM(Base):
+    """Persists what `recommendation_engine.compute_stop_and_target` proposed
+    at (or reconstructed for, point-in-time, if the position predates this
+    table) a position's entry - the exit engine's reference for judging that
+    position, independent of today's buy-side checklist score. See
+    `TradePlan` (domain) and `trade_plan_service.py`.
+
+    Deliberately no unique constraint on (portfolio_id, ticker): a ticker can
+    be bought, fully sold, and bought again, and each such lot gets its own
+    row (`closed_at` marks a lot as done) rather than overwriting history -
+    this doubles as a real trade log for the signal-performance work later.
+    The *open* plan for a ticker is always the one row with `closed_at IS
+    NULL` (`TradePlanRepository.get_open`), which a plain index on
+    (portfolio_id, ticker) makes cheap to find without needing a DB-level
+    uniqueness guarantee.
+    """
+
+    __tablename__ = "trade_plans"
+    __table_args__ = (Index("ix_trade_plans_portfolio_ticker", "portfolio_id", "ticker"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
+    ticker: Mapped[str] = mapped_column(String(20))
+    entry_price: Mapped[float] = mapped_column(Numeric(20, 8))
+    entry_date: Mapped[date]
+    initial_stop: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
+    initial_target: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
+    current_stop: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
+    highest_close_since_entry: Mapped[float] = mapped_column(Numeric(20, 8))
+    thesis: Mapped[str] = mapped_column(String(500), default="")
+    engine_version: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    closed_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class ComputationCacheORM(Base):
