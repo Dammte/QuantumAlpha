@@ -269,6 +269,18 @@ class TradePlanResponse(BaseModel):
     engine_version: str
 
 
+class ScaledExitPlanResponse(BaseModel):
+    """See `trade_manager.ScaledExitPlan` - a suggested (never automatically
+    executed) partial exit at the +1R/+2R milestones, in concrete share
+    quantities."""
+
+    action: str  # "none" | "sell_at_1r" | "sell_at_2r"
+    shares_to_sell: float
+    shares_remaining_after: float
+    suggested_new_stop: float | None
+    description: str
+
+
 class PositionRiskResponse(BaseModel):
     ticker: str
     currency: str
@@ -291,6 +303,7 @@ class PositionRiskResponse(BaseModel):
     trade_plan: TradePlanResponse | None
     r_multiple: float | None
     multi_timeframe: MultiTimeframeResponse | None
+    scaled_exit: ScaledExitPlanResponse | None
 
 
 class SwapSuggestionResponse(BaseModel):

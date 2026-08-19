@@ -24,6 +24,20 @@ from app.services.premium_watchlist_service import PremiumWatchlistItem
 # material difference, not noise-level scoring gaps between two decent setups.
 SWAP_SCORE_MARGIN = 4.0
 
+# A swap costs something real (commission + spread, and tax impact if the
+# held position has an unrealized gain) that a pure score-margin comparison
+# ignores entirely - rotating for a score edge that doesn't clear the actual
+# cost of making the trade isn't worth it even when SWAP_SCORE_MARGIN alone
+# is cleared. This project doesn't have a calibrated points-to-% conversion
+# yet (that needs the same kind of measured evidence - Information
+# Coefficient, regression against forward returns - the rest of the system
+# insists on before trusting a number, see docs/quant_methodology.md), so
+# this is kept as an explicit, conservative *extra* points buffer on top of
+# SWAP_SCORE_MARGIN, not a real expected-return-after-costs estimate: an
+# assumption to configure and revisit once that calibration exists, not a
+# measured fact presented as one.
+MIN_EXPECTED_EDGE_AFTER_COSTS = 1.0
+
 
 @dataclass(frozen=True, slots=True)
 class SwapSuggestion:
@@ -70,7 +84,7 @@ def find_swap_suggestions(
     for position in positions_risk:
         if position.signal == ADD_CANDIDATE:
             continue
-        if best.raw_score - position.score < SWAP_SCORE_MARGIN:
+        if best.raw_score - position.score < SWAP_SCORE_MARGIN + MIN_EXPECTED_EDGE_AFTER_COSTS:
             continue
         suggestions.append(
             SwapSuggestion(

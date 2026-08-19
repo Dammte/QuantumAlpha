@@ -61,6 +61,23 @@ def test_no_suggestion_when_margin_not_cleared() -> None:
     assert find_swap_suggestions(positions, candidates) == []
 
 
+def test_no_suggestion_when_margin_cleared_but_not_the_cost_buffer() -> None:
+    # Gap is exactly SWAP_SCORE_MARGIN (4.0) - clears the raw margin check on
+    # its own, but MIN_EXPECTED_EDGE_AFTER_COSTS (1.0) requires more: a swap
+    # costs something real (commission/spread/tax), and a 4-point edge that
+    # doesn't clear that extra bar isn't worth rotating for.
+    positions = [_position("AAPL", WATCH, 6)]
+    candidates = [_candidate("NVDA", 10.0)]
+    assert find_swap_suggestions(positions, candidates) == []
+
+
+def test_suggestion_fires_once_it_clears_margin_plus_the_cost_buffer() -> None:
+    positions = [_position("AAPL", WATCH, 6)]
+    candidates = [_candidate("NVDA", 11.0)]  # gap = 5.0 = SWAP_SCORE_MARGIN + MIN_EXPECTED_EDGE_AFTER_COSTS
+    suggestions = find_swap_suggestions(positions, candidates)
+    assert len(suggestions) == 1
+
+
 def test_suggestion_fires_when_margin_cleared() -> None:
     positions = [_position("AAPL", WATCH, 2)]
     candidates = [_candidate("NVDA", 14.0)]

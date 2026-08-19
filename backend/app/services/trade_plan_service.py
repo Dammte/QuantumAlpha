@@ -15,8 +15,9 @@ a reconstructed plan says so honestly (`RECONSTRUCTED_THESIS`) rather than
 inventing one.
 
 Trailing-stop updates (Chandelier Exit) and scaled exits are `trade_manager.py`'s
-job (a later phase) - this module only ever sets `current_stop` once, equal
-to `initial_stop`, at creation.
+job - this module only ever sets `current_stop` once, equal to `initial_stop`,
+at creation; `trade_manager.py` computes what it should trail to afterward
+and persists it via `TradePlanRepositoryPort.update_trailing`.
 """
 
 from datetime import date
@@ -57,6 +58,25 @@ def find_current_lot_entry(transactions: list[Transaction], ticker: str) -> Tran
         else:
             quantity -= tx.quantity
     return entry if quantity > 1e-9 else None
+
+
+def current_held_quantity(transactions: list[Transaction], ticker: str) -> float:
+    """Net shares currently held for `ticker` - BUY quantity minus SELL
+    quantity across every transaction ever recorded (not just the current
+    lot), so it agrees with what the portfolio summary shows as held. Same
+    algorithm as `PortfolioRepository._currently_held_quantity`, duplicated
+    here rather than imported: that one lives in the DB-coupled
+    infrastructure layer, this is a pure function of the same domain
+    `Transaction` list `services/` is allowed to depend on directly."""
+    quantity = 0.0
+    for tx in transactions:
+        if tx.ticker != ticker:
+            continue
+        if tx.transaction_type == TransactionType.BUY:
+            quantity += tx.quantity
+        elif tx.transaction_type == TransactionType.SELL:
+            quantity -= tx.quantity
+    return quantity
 
 
 def reconstruct_stop_and_target(entry_price: float, ohlcv_as_of_entry: pd.DataFrame) -> StopAndTarget:
@@ -103,6 +123,11 @@ def ensure_trade_plan(
         return None
 
     stop_target = reconstruct_stop_and_target(entry_tx.price, as_of_entry)
+    # The quantity held *right now*, not just entry_tx's own quantity - a
+    # DCA'd position (bought more after the initial entry, before this plan
+    # was ever created) should start scaled-exit tracking from what's
+    # actually held today, not just the first buy's size.
+    initial_quantity = current_held_quantity(transactions, ticker)
     return repo.create(
         portfolio_id=portfolio_id,
         ticker=ticker,
@@ -110,6 +135,7 @@ def ensure_trade_plan(
         entry_date=entry_date,
         initial_stop=stop_target.stop_loss,
         initial_target=stop_target.take_profit,
+        initial_quantity=initial_quantity,
         thesis=RECONSTRUCTED_THESIS,
         engine_version=ENGINE_VERSION,
     )

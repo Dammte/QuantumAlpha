@@ -28,6 +28,7 @@ class TradePlanRepositoryPort(ABC):
         entry_date: date,
         initial_stop: float | None,
         initial_target: float | None,
+        initial_quantity: float,
         thesis: str,
         engine_version: str,
     ) -> TradePlan:

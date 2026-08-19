@@ -21,6 +21,12 @@ class TradePlan:
     initial_target: float | None
     current_stop: float | None  # trailing stop currently in force - starts equal to initial_stop
     highest_close_since_entry: float
+    # How many shares were held the moment this plan was created - the
+    # baseline `trade_manager.py`'s scaled-exit tracking compares the
+    # *currently* held quantity against, so "has the +1R scale-out already
+    # happened" is read directly off what's actually still held, never a
+    # separate flag that could drift from reality.
+    initial_quantity: float
     thesis: str
     engine_version: str
     updated_at: datetime

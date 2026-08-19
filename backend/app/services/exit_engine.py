@@ -50,6 +50,13 @@ ADX_FALLING_ENTRY = 25.0  # ADX had to have been at least this high recently...
 ADX_FALLING_EXIT = 20.0  # ...to count as "falling" once it drops below this
 EXTENDED_ATR_MULTIPLE = 4.0
 PROFIT_TIGHTEN_R = 1.5
+# A position that's gone this many closed daily bars without reaching +1R
+# (and hasn't already stopped out) is tying up capital that isn't working -
+# a real, if easy-to-miss, cost (Fase 3's "stop temporal"). 20 sessions is
+# ~1 trading month, matched to a portfolio managed on a scale of weeks, not
+# months.
+MAX_BARS_WITHOUT_PROGRESS = 20
+STALLED_PROGRESS_R = 1.0
 
 
 class ExitUrgency(str, Enum):
@@ -209,6 +216,22 @@ def evaluate_exit(
     if atr_multiple is not None and atr_multiple > EXTENDED_ATR_MULTIPLE and in_profit:
         reasons_by_tier[ExitUrgency.REDUCE].append(
             f"Extensión parabólica ({atr_multiple:.1f} ATR sobre la SMA50) en una posición ya en beneficio."
+        )
+
+    # Stalled position ("stop temporal", Fase 3): capital sitting in a trade
+    # that's neither worked out nor stopped out yet has a real, easy-to-miss
+    # opportunity cost. Only fires once there's actually an R multiple to
+    # judge progress by (no initial_stop means no R-multiple denominator -
+    # nothing to call "stalled" against).
+    stalled = (
+        position.r_multiple is not None
+        and position.r_multiple < STALLED_PROGRESS_R
+        and position.bars_held >= MAX_BARS_WITHOUT_PROGRESS
+        and (position.current_stop is None or price >= position.current_stop)
+    )
+    if stalled:
+        reasons_by_tier[ExitUrgency.REDUCE].append(
+            f"Posición sin progreso tras {position.bars_held} sesiones sin alcanzar +1R - capital inmovilizado."
         )
 
     # --- TIGHTEN_STOP: subir el stop, mantener --------------------------

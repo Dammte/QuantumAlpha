@@ -24,6 +24,7 @@ from app.schemas.market import (
     PortfolioRiskResponse,
     PositionRiskResponse,
     PriceLevelResponse,
+    ScaledExitPlanResponse,
     SwapSuggestionResponse,
     TradePlanResponse,
 )
@@ -32,6 +33,7 @@ from app.schemas.quant_analysis import CoreSignalsResponse, MultiTimeframeRespon
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services import durable_cache
 from app.services import multi_timeframe as mtf
+from app.services import trade_manager as tm
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.opportunity_cost import find_swap_suggestions
@@ -72,6 +74,16 @@ def _multi_timeframe_to_response(read: mtf.MultiTimeframeRead) -> MultiTimeframe
         alignment=read.alignment,
         alignment_score=read.alignment_score,
         conflicts=read.conflicts,
+    )
+
+
+def _scaled_exit_to_response(plan: tm.ScaledExitPlan) -> ScaledExitPlanResponse:
+    return ScaledExitPlanResponse(
+        action=plan.action.value,
+        shares_to_sell=plan.shares_to_sell,
+        shares_remaining_after=plan.shares_remaining_after,
+        suggested_new_stop=plan.suggested_new_stop,
+        description=plan.description,
     )
 
 
@@ -307,6 +319,7 @@ def get_portfolio_risk(
                 trade_plan=_trade_plan_to_response(p.trade_plan) if p.trade_plan else None,
                 r_multiple=p.r_multiple,
                 multi_timeframe=_multi_timeframe_to_response(p.multi_timeframe) if p.multi_timeframe else None,
+                scaled_exit=_scaled_exit_to_response(p.scaled_exit) if p.scaled_exit else None,
             )
             for p in positions
         ],

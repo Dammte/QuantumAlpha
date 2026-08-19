@@ -19,6 +19,7 @@ def _to_domain(orm: TradePlanORM) -> TradePlan:
         initial_target=float(orm.initial_target) if orm.initial_target is not None else None,
         current_stop=float(orm.current_stop) if orm.current_stop is not None else None,
         highest_close_since_entry=float(orm.highest_close_since_entry),
+        initial_quantity=float(orm.initial_quantity),
         thesis=orm.thesis,
         engine_version=orm.engine_version,
         updated_at=orm.updated_at,
@@ -56,6 +57,7 @@ class TradePlanRepository(TradePlanRepositoryPort):
         entry_date: date,
         initial_stop: float | None,
         initial_target: float | None,
+        initial_quantity: float,
         thesis: str,
         engine_version: str,
     ) -> TradePlan:
@@ -68,6 +70,7 @@ class TradePlanRepository(TradePlanRepositoryPort):
             initial_target=initial_target,
             current_stop=initial_stop,  # trailing starts equal to the initial stop
             highest_close_since_entry=entry_price,
+            initial_quantity=initial_quantity,
             thesis=thesis,
             engine_version=engine_version,
         )

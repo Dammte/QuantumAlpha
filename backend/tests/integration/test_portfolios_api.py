@@ -315,6 +315,33 @@ def test_portfolio_risk_includes_exit_engine_and_trade_plan_fields(client: TestC
     assert multi_timeframe["alignment"] in {"bullish_aligned", "bearish_aligned", "conflicted", "transitioning"}
 
 
+def test_portfolio_risk_trailing_stop_persists_and_never_moves_down(client: TestClient) -> None:
+    """Paso E (trade_manager.py): the Chandelier trailing stop persisted in
+    trade_plans must round-trip through the real DB and never move down
+    across evaluations, even when force-refreshed twice back to back (the
+    fake provider's OHLCV is deterministic, so the stop should at worst stay
+    exactly equal - the real invariant this locks in is that persistence
+    and re-read never silently produce a *lower* value)."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+
+    first = client.get(f"/api/v1/portfolios/{portfolio_id}/risk").json()
+    first_plan = first["positions"][0]["trade_plan"]
+
+    second = client.get(f"/api/v1/portfolios/{portfolio_id}/risk", params={"refresh": True}).json()
+    second_plan = second["positions"][0]["trade_plan"]
+
+    if first_plan["current_stop"] is not None and second_plan["current_stop"] is not None:
+        assert second_plan["current_stop"] >= first_plan["current_stop"]
+
+    scaled_exit = second["positions"][0]["scaled_exit"]
+    assert scaled_exit is not None
+    assert scaled_exit["action"] in {"none", "sell_at_1r", "sell_at_2r"}
+
+
 def test_portfolio_risk_response_carries_computed_at(client: TestClient) -> None:
     portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
     client.post(

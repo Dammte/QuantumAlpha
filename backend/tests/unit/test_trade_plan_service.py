@@ -93,6 +93,34 @@ def test_find_current_lot_entry_ignores_other_tickers_and_cash_movements():
     assert entry.executed_at == datetime(2024, 1, 5)
 
 
+# --- current_held_quantity ----------------------------------------------------
+
+
+def test_current_held_quantity_nets_buys_and_sells():
+    txs = [
+        _tx("AAPL", TransactionType.BUY, 10, executed_at=datetime(2024, 1, 5)),
+        _tx("AAPL", TransactionType.BUY, 5, executed_at=datetime(2024, 2, 1)),
+        _tx("AAPL", TransactionType.SELL, 3, executed_at=datetime(2024, 3, 1)),
+    ]
+    assert tps.current_held_quantity(txs, "AAPL") == pytest.approx(12.0)
+
+
+def test_current_held_quantity_ignores_other_tickers():
+    txs = [
+        _tx("AAPL", TransactionType.BUY, 10, executed_at=datetime(2024, 1, 5)),
+        _tx("MSFT", TransactionType.BUY, 100, executed_at=datetime(2024, 1, 6)),
+    ]
+    assert tps.current_held_quantity(txs, "AAPL") == pytest.approx(10.0)
+
+
+def test_current_held_quantity_zero_when_fully_sold():
+    txs = [
+        _tx("AAPL", TransactionType.BUY, 10, executed_at=datetime(2024, 1, 5)),
+        _tx("AAPL", TransactionType.SELL, 10, executed_at=datetime(2024, 2, 1)),
+    ]
+    assert tps.current_held_quantity(txs, "AAPL") == pytest.approx(0.0)
+
+
 # --- reconstruct_stop_and_target ---------------------------------------------
 
 
@@ -133,6 +161,7 @@ def _plan(
     initial_target: float | None = 120.0,
     entry_price: float = 100.0,
     highest_close_since_entry: float = 105.0,
+    initial_quantity: float = 10.0,
 ) -> TradePlan:
     return TradePlan(
         id=1,
@@ -144,6 +173,7 @@ def _plan(
         initial_target=initial_target,
         current_stop=current_stop,
         highest_close_since_entry=highest_close_since_entry,
+        initial_quantity=initial_quantity,
         thesis="",
         engine_version="v1",
         updated_at=datetime(2024, 1, 5),

@@ -15,7 +15,7 @@ so scoring N holdings is one network round-trip, not N.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
@@ -27,6 +27,7 @@ from app.domain.models.transaction import Transaction
 from app.services import exit_engine as ee
 from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
+from app.services import trade_manager as tm
 from app.services import trade_plan_service as tps
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, currency_of
@@ -90,6 +91,10 @@ class PositionRisk:
     trade_plan: TradePlan | None = None
     r_multiple: float | None = None
     multi_timeframe: mtf.MultiTimeframeRead | None = None
+    # trade_manager.py's scaled-exit read (Fase 3) - None under the same
+    # conditions as the fields above (no portfolio context supplied, or no
+    # open trade plan for this ticker).
+    scaled_exit: tm.ScaledExitPlan | None = None
 
 
 def _recent_max(series: pd.Series, lookback: int = RECENT_LOOKBACK) -> float | None:
@@ -220,6 +225,7 @@ def assess_position_risk(
     trade_plan: TradePlan | None = None
     r_multiple: float | None = None
     multi_timeframe: mtf.MultiTimeframeRead | None = None
+    scaled_exit: tm.ScaledExitPlan | None = None
 
     if portfolio_id is not None and trade_plan_repo is not None and transactions is not None:
         multi_timeframe = mtf.analyze_multi_timeframe(df)
@@ -228,18 +234,19 @@ def assess_position_risk(
         if plan is not None and not closed.empty:
             trade_plan = plan
             exit_price = float(closed["close"].iloc[-1])
+            held_quantity = tps.current_held_quantity(transactions, ticker)
             consecutive_below_sma50 = ta.consecutive_closes_below(closed["close"], ta.sma(closed["close"], 50))
             rsi_recent_max = _recent_max(ta.rsi(closed["close"]))
             adx_recent_max = _recent_max(ta.adx(closed["high"], closed["low"], closed["close"]))
             bars_held = tps.bars_held_since(closed, plan.entry_date)
-            # average_cost defaults to this lot's own entry price (a DCA'd
-            # position's true blended cost isn't threaded through here yet -
-            # exit_engine.evaluate_exit doesn't actually read average_cost or
-            # quantity today, only current_stop/initial_target/r_multiple, so
-            # this doesn't affect the urgency verdict; it's a known
-            # simplification for the position-sizing work in a later phase).
+            # average_cost defaults to this lot's own entry price - a DCA'd
+            # position's true blended cost isn't threaded through here yet
+            # (that needs Portfolio.positions, which this call chain doesn't
+            # fetch today - see portfolios.py's /risk endpoint). Doesn't
+            # affect the urgency verdict either way: evaluate_exit never
+            # reads average_cost, only current_stop/initial_target/r_multiple.
             position_context = tps.build_position_context(
-                plan, exit_price, quantity=0.0, average_cost=plan.entry_price, bars_held=bars_held
+                plan, exit_price, quantity=held_quantity, average_cost=plan.entry_price, bars_held=bars_held
             )
             assessment = ee.evaluate_exit(
                 price=exit_price,
@@ -260,6 +267,32 @@ def assess_position_risk(
             exit_urgency = assessment.urgency.value
             exit_reasons = assessment.reasons
             r_multiple = position_context.r_multiple
+            scaled_exit = tm.compute_scaled_exit_plan(
+                r_multiple=r_multiple,
+                quantity_held=held_quantity,
+                initial_quantity=plan.initial_quantity,
+                entry_price=plan.entry_price,
+            )
+
+            # Trailing-stop update (trade_manager.py, Chandelier Exit) -
+            # computed and persisted *after* evaluate_exit ran, deliberately:
+            # the stop-breach check above must judge today's close against
+            # the stop that was already in force coming into today, never
+            # one just widened/raised using today's own bar - otherwise a
+            # stop "breach" could be an artifact of raising the stop, not a
+            # real adverse move.
+            vol_regime = signals.garch.regime if signals.garch is not None else None
+            trailing = tm.compute_trailing_stop(
+                closed["high"], ta.atr(closed["high"], closed["low"], closed["close"]),
+                current_stop=plan.current_stop, r_multiple=r_multiple, vol_regime=vol_regime,
+            )
+            if trailing.stop is not None and plan.id is not None:
+                trade_plan_repo.update_trailing(plan.id, trailing.stop, position_context.highest_close_since_entry)
+                trade_plan = replace(
+                    plan,
+                    current_stop=trailing.stop,
+                    highest_close_since_entry=position_context.highest_close_since_entry,
+                )
 
             # The exit engine's read outranks a "comprar" verdict for the
             # tiers that mean real trouble (protecting capital already on
@@ -296,6 +329,7 @@ def assess_position_risk(
         trade_plan=trade_plan,
         r_multiple=r_multiple,
         multi_timeframe=multi_timeframe,
+        scaled_exit=scaled_exit,
     )
 
 
