@@ -288,3 +288,91 @@ Con el script ya reescrito y validado sintéticamente en la Fase 5 (§8.4), se e
 - **`minervini_range_position`/`rsi_overbought_outside_strong_trend`/`obv_bullish`/`obv_bearish`**: sin señal independiente significativa en ninguna dirección una vez controlada la colinealidad (o, en el caso de `rsi_overbought_outside_strong_trend`, muestra demasiado pequeña - 45-134 casos - para sacar ninguna conclusión). Sin cambios.
 
 **`ENGINE_VERSION` no se ha movido en este paso** - no cambió ningún peso, así que no hay nada nuevo que atribuir a una versión distinta de la puntuación.
+
+## 13. Segunda auditoría independiente — Bloque 1: bugs que producían decisiones falsas (agosto 2026, `ENGINE_VERSION` → v4)
+
+Una auditoría independiente sobre el trabajo de las Fases 0-7 encontró ocho bugs concretos, todos
+verificados línea a línea contra el código antes de tocar nada (ninguno estaba mal diagnosticado).
+Los ocho se corrigieron el mismo día, cada uno con su test de regresión:
+
+1. **`ADD_CANDIDATE` nunca se degradaba por `TIGHTEN_STOP`/`WATCH`, solo por `EXIT_NOW`/`REDUCE`
+   o desde `HOLD`.** El resto vivo del bug original (D2/D3): un veredicto "comprar" con deterioro
+   técnico real (p. ej. un cruce de medias proyectado con confianza suficiente) seguía mostrando
+   "Añadir" en el badge. `portfolio_risk_service.py` ahora degrada a `WATCH` desde cualquier
+   `signal` que no sea ya `EXIT_WARNING`, para `TIGHTEN_STOP` y `WATCH` por igual - `EXIT_NOW`/
+   `REDUCE` siguen siendo los únicos que fuerzan `EXIT_WARNING`.
+2. **El Chandelier Exit podía usar un máximo anterior a la entrada de la posición.**
+   `trade_manager.chandelier_stop` tomaba el máximo de una ventana fija de 22 barras *del histórico
+   completo que se le pasara* - si una posición se abrió tras un retroceso desde un máximo más alto
+   anterior a la compra, ese máximo pre-entrada seguía dentro de la ventana. Combinado con que el
+   stop solo puede subir nunca bajar, esto podía dejar el stop permanentemente por encima del precio
+   vigente (`EXIT_NOW` irreversible). Dos cambios: `chandelier_stop` ya no exige una ventana
+   completa de `window` barras (usa lo que haya disponible, igual que `detect_recent_cross`'s
+   propio recorte de lookback) - `portfolio_risk_service.py` le pasa el `high` ya acotado a
+   `>= plan.entry_date`, nunca el histórico completo; y `compute_trailing_stop` ahora recibe el
+   precio vigente y descarta cualquier candidato que quede en o por encima de él, sea cual sea su
+   origen.
+3. **`TradePlanRepositoryPort.close()` estaba bien implementado y nunca se llamaba.** Una venta que
+   llevaba la posición a 0 no cerraba el plan - una recompra posterior heredaba el `current_stop` ya
+   traileado del lote muerto, a un precio de entrada completamente distinto. `add_transaction` ahora
+   llama a `close()` cuando una venta deja la cantidad neta en 0 (o por debajo, margen de
+   redondeo), y `ensure_trade_plan` añade un segundo guardarraíl independiente: si el plan abierto
+   que devuelve `get_open` tiene un `entry_date` que no coincide con la entrada real del lote actual
+   (`find_current_lot_entry`, ya existente), lo trata como obsoleto, lo cierra explícitamente, y
+   reconstruye uno nuevo.
+4. **Rotura de soporte con bases de precio mezcladas.** `nearest_support`/`nearest_resistance` que
+   llegaban a `exit_engine.py` se calculaban sobre el precio **vivo** (`compute_core_signals` corre
+   sobre el `df` crudo), mientras que el `price` que `evaluate_exit` compara es el cierre **cerrado**.
+   Un hueco alcista de un día para otro podía dejar el soporte (calculado relativo al precio de hoy,
+   más alto) por encima del cierre de ayer usado en la comparación, disparando "Vender ya" por el
+   hueco, no por una rotura real. `portfolio_risk_service.py` ahora recalcula
+   `support_resistance_levels` específicamente para el motor de salida usando los mismos datos
+   **cerrados** que `exit_price` - misma base en ambos lados de la comparación, siempre.
+5. **`detect_cross_with_quality` leía volumen de la barra equivocada.** `diff = (fast - slow).dropna()`
+   elimina el warmup NaN de la media lenta (49 barras para 21/50, 199 para 50/200), así que la
+   posición del cruce dentro de `diff` ya no coincide con su posición en `volume` (nunca truncado
+   igual). El código reutilizaba esa posición desalineada para cortar `volume`, leyendo casi siempre
+   el principio de la serie en vez del entorno real del cruce. Corregido a `.loc` por la fecha real
+   de la barra del cruce, no `.iloc` por una posición reciclada de otra serie. Test nuevo con NaN de
+   warmup real (200 barras) - los tests anteriores usaban series constantes sin NaN y no podían
+   detectar esto.
+6. **La regla de posición estancada no tenía techo.** Cualquier posición de años sin alcanzar +1R (y
+   sin saltar el stop) disparaba `REDUCE` en cada evaluación, para siempre - "stop temporal" se
+   pensó para capital atascado en una operación de corto plazo, no para recomendar recortar
+   indefinidamente una posición de varios años cerca de breakeven. `STALLED_CEILING_BARS = 60`
+   acota la regla.
+7. **`signal_performance_service.py` sin deduplicar, y `hit_rate` con el signo equivocado para las
+   etiquetas bajistas.** Cada evaluación fresca (cada recarga que cayera en un cache-miss, cada
+   "Actualizar ahora") añadía otra observación para el mismo ticker/día - `n` medía la frecuencia de
+   recarga, no el número de llamadas distintas del sistema. Deduplicado ahora por
+   `(ticker, fecha calendario)`, quedándose con la más reciente de cada día, antes de agregar en
+   `compute_verdict_outcomes`/`compute_signal_outcomes`/`find_false_negatives`. Y `hit_rate` para
+   `evitar`/`exit_warning` (una llamada a evitar o vender) ahora cuenta un retorno **negativo** como
+   acierto - la decisión de la ronda anterior de mantener una única lectura "neutra" (fracción
+   positiva) para toda etiqueta era defendible en abstracto pero engañosa en la práctica: un 65% de
+   `hit_rate` en "evitar" bajo esa definición significaba que el activo subió el 65% de las veces,
+   justo lo contrario de una llamada acertada. `mean_return`/`median_return` siguen sin signo
+   invertido - solo cambia qué lado de cero cuenta como acierto.
+8. **`multi_timeframe._is_bullish`/`_is_bearish` y el `weekly_not_bullish` de `exit_engine.py`
+   median "semanal alcista" con dos definiciones distintas que podían discrepar** - la primera
+   (usada por `combine_timeframes`, lo que ve la UI como `alignment`) cuenta Fase 2 de Weinstein
+   como alcista aunque `trend` por sí solo sea lateral; la segunda (el disparador EXIT_NOW más duro
+   de `exit_engine.py`) solo miraba `trend`, más estricta - un mismo activo podía leer
+   "bullish_aligned" en pantalla y a la vez armar el disparador más severo por debajo. Unificado en
+   `multi_timeframe.timeframe_bias()`, una sola función que ambos importan, con un cuarto estado
+   explícito - `"unknown"` (`price_vs_sma200 is None`, menos de ~200 barras semanales, ~3,85 años de
+   historia) - que ya no cuenta silenciosamente como "no alcista" para ningún disparador que exija
+   "semanal confirmado bajista": un ticker con poca historia semanal pierde ese disparador concreto
+   en vez de heredar una lectura bajista que nadie confirmó.
+
+**`ENGINE_VERSION` → `"2026-08-audit-v4"`.** Ningún peso de `recommendation_engine.py` cambió; se
+bumpea porque el conjunto de disparadores de `exit_engine.py` sí cambió materialmente (puntos 6 y 8),
+y esta constante traza también la lógica de salida, no solo la de compra (ver §10).
+
+**Criterios de aceptación verificados en este bloque**: test de veredicto "comprar" forzado +
+deterioro técnico (urgencia `tighten_stop`/`watch`) → `signal` nunca `add_candidate`; test de
+Chandelier con un máximo pre-entrada que nunca deja el stop por encima del precio; test de venta
+total + recompra que crea un plan con `entry_price`/`entry_date` nuevos y cierra el plan viejo
+explícitamente; test de `detect_cross_with_quality` con warmup NaN real que lee la barra correcta.
+(El de `label_triple_barrier` con hueco es del Bloque 2, todavía por hacer.) 666 tests en verde
+(subieron de 640), `ruff check app tests` limpio.

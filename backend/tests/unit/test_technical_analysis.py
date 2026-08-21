@@ -178,6 +178,38 @@ def test_detect_cross_with_quality_none_when_no_cross_happened():
     assert ta.detect_cross_with_quality(fast, slow) is None
 
 
+def test_detect_cross_with_quality_reads_the_cross_bars_volume_despite_real_warmup_nan():
+    # Real SMA50/SMA200-style warmup, unlike every other test in this file
+    # (which hand off already-full, NaN-free series): the first 199 bars are
+    # NaN, matching this function's actual live inputs (`fast`/`slow` are
+    # always `ta.sma(close, N)`, never raw data). `diff = (fast-slow).dropna()`
+    # drops those 199 NaN rows, so diff's own internal position 0 sits at
+    # calendar position 199 - exactly the offset a naive `.iloc` reuse into
+    # `volume` (never truncated the same way) would silently miss, reading
+    # volume from near the very start of the series instead of around the
+    # actual cross.
+    n_nan = 199
+    dates = pd.bdate_range("2024-01-01", periods=n_nan + 8)
+    nan_prefix = [np.nan] * n_nan
+    slow = pd.Series(nan_prefix + [100.0] * 8, index=dates)
+    # Crosses from below (-1) to above (+1) at calendar position n_nan + 4.
+    fast = pd.Series(nan_prefix + [95.0, 96.0, 98.0, 99.0, 101.0, 104.0, 108.0, 112.0], index=dates)
+    close = fast
+    high, low = close + 1, close - 1
+    volume = pd.Series([1000.0] * (n_nan + 8), index=dates)
+    volume.iloc[n_nan + 4] = 5000.0  # spike exactly on the cross bar
+
+    result = ta.detect_cross_with_quality(fast, slow, high, low, close, volume)
+
+    assert result is not None
+    assert result.direction == "golden"
+    # Would read ~1.0 (no spike) under the old `.iloc[:cross_position + 1]`
+    # bug, which lands near calendar position 4 - the NaN warmup region -
+    # instead of the real cross bar at calendar position n_nan + 4.
+    assert result.volume_confirmation is not None
+    assert result.volume_confirmation > ta.CROSS_STRONG_RELATIVE_VOLUME
+
+
 def test_detect_cross_with_quality_works_without_optional_series():
     # high/low/close/volume are all optional - separation_atr and
     # volume_confirmation degrade to None rather than raising.

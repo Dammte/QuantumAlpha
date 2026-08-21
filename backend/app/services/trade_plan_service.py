@@ -109,15 +109,24 @@ def ensure_trade_plan(
     this table existed and one opened after but never separately captured.
     Returns `None` only when there's no currently-open lot at all (nothing to
     plan for) or the entry date falls outside the `ohlcv` history provided."""
-    existing = repo.get_open(portfolio_id, ticker)
-    if existing is not None:
-        return existing
-
     entry_tx = find_current_lot_entry(transactions, ticker)
     if entry_tx is None:
         return None
-
     entry_date = entry_tx.executed_at.date()
+
+    existing = repo.get_open(portfolio_id, ticker)
+    # Defensive staleness guard, independent of whether a SELL-to-zero ever
+    # called `repo.close()` on the way here (see the transactions endpoint,
+    # which now does): if the open plan's own entry_date doesn't match the
+    # *current* lot's real entry, it belongs to a fully-closed prior lot -
+    # a full sell-and-rebuy cycle must never inherit a dead lot's already-
+    # trailed current_stop, which could easily sit above the new lot's own
+    # entry price. Closed explicitly (not just ignored) so it doesn't sit
+    # around as a second, orphaned "open" row.
+    if existing is not None:
+        if existing.entry_date == entry_date:
+            return existing
+        repo.close(portfolio_id, ticker)
     as_of_entry = ohlcv[ohlcv.index.date <= entry_date]
     if as_of_entry.empty:
         return None

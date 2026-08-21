@@ -176,12 +176,32 @@ def _read_timeframe(
     )
 
 
-def _is_bullish(read: TimeframeRead) -> bool:
-    return read.trend == ta.TrendState.UPTREND or read.stage == ta.Stage.STAGE_2
+def timeframe_bias(read: TimeframeRead | None) -> str:
+    """"bullish" | "bearish" | "neutral" | "unknown" - the one shared
+    definition of "which way is this timeframe leaning", for both weekly and
+    daily reads. Before this existed, `combine_timeframes` below (drives
+    `alignment`, shown in the UI) and `exit_engine.py`'s own
+    `weekly_not_bullish` computed this independently and could disagree: this
+    function already counts a Weinstein Stage 2 read as bullish even when
+    `trend` alone reads SIDEWAYS, while `exit_engine.py`'s old check only
+    ever looked at `trend` - stricter than what the UI showed for the exact
+    same data, so a position could read "bullish_aligned" on screen while
+    simultaneously arming the hardest EXIT_NOW trigger underneath it.
 
-
-def _is_bearish(read: TimeframeRead) -> bool:
-    return read.trend == ta.TrendState.DOWNTREND or read.stage == ta.Stage.STAGE_4
+    "unknown" - not "neutral", and deliberately never folded into "bearish"
+    - when `read is None` or `read.price_vs_sma200 is None`: fewer than
+    ~200 bars of *this timeframe's own* history (~3.85 years on weekly bars)
+    isn't enough for a real SMA200-based trend read yet. A hard trigger that
+    needs "confirmed not bullish" to arm must never treat "we genuinely
+    don't know" the same as "we know it's not bullish" - see
+    `exit_engine.py`'s own use of this distinction."""
+    if read is None or read.price_vs_sma200 is None:
+        return "unknown"
+    if read.trend == ta.TrendState.UPTREND or read.stage == ta.Stage.STAGE_2:
+        return "bullish"
+    if read.trend == ta.TrendState.DOWNTREND or read.stage == ta.Stage.STAGE_4:
+        return "bearish"
+    return "neutral"
 
 
 def _empty_daily_read() -> TimeframeRead:
@@ -228,22 +248,29 @@ def combine_timeframes(weekly: TimeframeRead | None, daily: TimeframeRead) -> tu
       bias: weekly-bearish-over-daily-bullish scores negative (a bounce
       inside a bigger downtrend, per Faber/Weinstein-style top-down analysis)
       even though the daily read alone would look constructive.
-    - neither timeframe shows a clear trend, or there isn't a weekly read yet
-      (not enough history) -> "transitioning" / the daily-only read, neutral.
+    - neither timeframe shows a clear trend, or the weekly read isn't
+      confirmed yet (no weekly bars at all, or fewer than ~200 of them -
+      ~3.85 years - for a real SMA200-based read; see `timeframe_bias`) ->
+      "transitioning" / the daily-only read, neutral - never guessed from an
+      unconfirmed weekly read.
     """
     conflicts: list[str] = []
-    if weekly is None:
-        # Not enough history for even a minimal weekly read - the daily read
-        # stands alone, honestly labeled as such rather than guessing a bias
-        # from too little weekly data.
-        if _is_bullish(daily):
+    weekly_bias_read = timeframe_bias(weekly)
+    if weekly_bias_read == "unknown":
+        # No weekly read at all, or one that exists but isn't confirmed yet -
+        # the daily read stands alone, honestly labeled as such rather than
+        # guessing a bias from too little (or no) weekly data.
+        daily_bias = timeframe_bias(daily)
+        if daily_bias == "bullish":
             return "bullish_aligned", 1.0, conflicts
-        if _is_bearish(daily):
+        if daily_bias == "bearish":
             return "bearish_aligned", -1.0, conflicts
         return "transitioning", 0.0, conflicts
 
-    weekly_bullish, weekly_bearish = _is_bullish(weekly), _is_bearish(weekly)
-    daily_bullish, daily_bearish = _is_bullish(daily), _is_bearish(daily)
+    # weekly_bias_read != "unknown" guarantees weekly is not None from here on.
+    daily_bias_read = timeframe_bias(daily)
+    weekly_bullish, weekly_bearish = weekly_bias_read == "bullish", weekly_bias_read == "bearish"
+    daily_bullish, daily_bearish = daily_bias_read == "bullish", daily_bias_read == "bearish"
 
     if weekly_bearish and daily_bearish:
         alignment, alignment_score = "bearish_aligned", -1.0

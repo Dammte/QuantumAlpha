@@ -348,6 +348,67 @@ def test_portfolio_risk_trailing_stop_persists_and_never_moves_down(client: Test
     assert scaled_exit["action"] in {"none", "sell_at_1r", "sell_at_2r"}
 
 
+def test_selling_a_position_to_zero_and_rebuying_creates_a_fresh_trade_plan(client: TestClient) -> None:
+    """Segunda auditoría, Bloque 1: before `TradePlanRepositoryPort.close()`
+    was wired up (see `add_transaction`) and `ensure_trade_plan`'s defensive
+    entry_date check existed, a full sell-and-rebuy inherited the dead lot's
+    own entry_price/entry_date/already-trailed current_stop - a fresh
+    position could start life with a stop from a completely different
+    trade, at a completely different price level, with no relationship to
+    the new lot at all. Without either fix, this test's second plan would be
+    byte-for-byte identical to the first."""
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+
+    # A ticker not reused by any other test in this file: PortfolioRiskService
+    # is a real in-process singleton (`@lru_cache` in deps.py, never reset
+    # between test functions the way the per-test DB is) - reusing a ticker
+    # another test already cached under this same (reused, DB-reset)
+    # portfolio_id would read that other test's stale entry instead of a
+    # real computation. `refresh=True` on both reads removes any doubt.
+    ticker = "TPZERO"
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={
+            "ticker": ticker, "transaction_type": "buy", "quantity": 10, "price": 200,
+            "executed_at": "2020-06-01T00:00:00Z",
+        },
+    )
+    first = client.get(f"/api/v1/portfolios/{portfolio_id}/risk", params={"refresh": True}).json()
+    first_plan = first["positions"][0]["trade_plan"]
+    assert first_plan["entry_price"] == pytest.approx(200.0)
+
+    sell_response = client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={
+            "ticker": ticker, "transaction_type": "sell", "quantity": 10, "price": 210,
+            "executed_at": "2020-07-01T00:00:00Z",
+        },
+    )
+    assert sell_response.status_code == 201
+
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={
+            "ticker": ticker, "transaction_type": "buy", "quantity": 5, "price": 50,
+            "executed_at": "2020-08-01T00:00:00Z",
+        },
+    )
+
+    second = client.get(f"/api/v1/portfolios/{portfolio_id}/risk", params={"refresh": True}).json()
+    second_plan = second["positions"][0]["trade_plan"]
+
+    # The core of the fix: before it, `ensure_trade_plan` returned the dead
+    # lot's plan untouched (`repo.get_open` still found it, never closed) -
+    # entry_price/entry_date would still read 200.0/2020-06-01 here, not the
+    # new lot's own. (The trailing-stop *level* itself isn't asserted here -
+    # the fake provider's synthetic OHLCV can legitimately put the same
+    # support level in scope for both entry dates; that's covered precisely,
+    # with a controlled fake repo, by test_ensure_trade_plan_rebuilds_a_fresh_
+    # plan_when_the_open_ones_entry_date_is_stale in test_trade_plan_service.py.)
+    assert second_plan["entry_price"] == pytest.approx(50.0)
+    assert second_plan["entry_date"] != first_plan["entry_date"]
+
+
 def test_portfolio_risk_response_carries_computed_at(client: TestClient) -> None:
     portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
     client.post(

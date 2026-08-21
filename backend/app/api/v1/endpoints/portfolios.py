@@ -18,6 +18,7 @@ from app.api.deps import (
 )
 from app.domain.models.asset import AssetClass
 from app.domain.models.trade_plan import TradePlan
+from app.domain.models.transaction import TransactionType
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
 from app.infrastructure.db.repositories.position_signal_snapshot_repository import (
@@ -38,6 +39,7 @@ from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services import durable_cache
 from app.services import multi_timeframe as mtf
 from app.services import trade_manager as tm
+from app.services import trade_plan_service as tps
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.opportunity_cost import find_swap_suggestions
@@ -193,6 +195,7 @@ def add_transaction(
     payload: TransactionCreate,
     repository: Annotated[PortfolioRepository, Depends(get_portfolio_repository)],
     asset_repository: Annotated[AssetRepository, Depends(get_asset_repository)],
+    trade_plan_repo: Annotated[TradePlanRepository, Depends(get_trade_plan_repository)],
     db: DbSession,
 ) -> TransactionRead:
     if repository.get(portfolio_id) is None:
@@ -213,6 +216,20 @@ def add_transaction(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # A SELL that brings the held quantity back to (or below, in case of a
+    # rounding-fee edge) 0 closes this lot's trade_plan - see
+    # `TradePlanRepositoryPort.close`'s own docstring for exactly why: a
+    # future re-buy must start a fresh plan/lot, never inherit the dead
+    # lot's already-trailed current_stop (see D-something in
+    # docs/quant_methodology.md's second audit). Cheap either way - only a
+    # SELL with a ticker even attempts it, and closing an already-closed (or
+    # never-existing) plan is a no-op.
+    if payload.ticker is not None and transaction.transaction_type == TransactionType.SELL:
+        remaining = tps.current_held_quantity(repository.get_transactions(portfolio_id), payload.ticker)
+        if remaining <= 1e-9:
+            trade_plan_repo.close(portfolio_id, payload.ticker)
+
     return TransactionRead(**asdict(transaction))
 
 

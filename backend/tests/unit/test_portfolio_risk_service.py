@@ -1,8 +1,13 @@
+from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 
+from app.domain.models.trade_plan import TradePlan
+from app.domain.models.transaction import Transaction, TransactionType
+from app.services import exit_engine as ee
 from app.services import portfolio_risk_service as prs
 from app.services import recommendation_engine as re
 from app.services import technical_analysis as ta
@@ -22,11 +27,25 @@ def _ohlc(close: np.ndarray, wiggle: float = 1.0) -> pd.DataFrame:
 
 
 def _stub_signals(
-    verdict="esperar", score=0, imminent_cross=None, imminent_cross_short_term=None, candlestick_pattern=None
+    verdict="esperar",
+    score=0,
+    imminent_cross=None,
+    imminent_cross_short_term=None,
+    candlestick_pattern=None,
+    garch=None,
+    obv_divergence=None,
+    relative_volume=None,
+    rsi14=None,
+    adx14=None,
+    atr_multiple=None,
 ):
     """A minimal stand-in for CoreTickerSignals carrying only what
     assess_position_risk actually reads - used to test its signal/reasons
-    logic in isolation from the real indicator pipeline."""
+    logic in isolation from the real indicator pipeline. The exit-engine-only
+    fields (garch/obv_divergence/relative_volume/rsi14/adx14/atr_multiple)
+    default to None/unset, same "only what's needed" philosophy - they're
+    only read at all when a test supplies portfolio_id/transactions/
+    trade_plan_repo to exercise that branch."""
     return SimpleNamespace(
         price=105.0,
         trend=ta.TrendState.SIDEWAYS,
@@ -39,7 +58,60 @@ def _stub_signals(
         imminent_cross=imminent_cross,
         imminent_cross_short_term=imminent_cross_short_term,
         candlestick_pattern=candlestick_pattern,
+        garch=garch,
+        obv_divergence=obv_divergence,
+        relative_volume=relative_volume,
+        rsi14=rsi14,
+        adx14=adx14,
+        atr_multiple=atr_multiple,
     )
+
+
+class _FakeTradePlanRepo:
+    """Minimal in-memory TradePlanRepositoryPort - enough to exercise
+    assess_position_risk's exit-engine branch (portfolio_id/transactions/
+    trade_plan_repo supplied) without a real database."""
+
+    def __init__(self) -> None:
+        self._plans: dict[tuple[int, str], TradePlan] = {}
+        self._next_id = 1
+
+    def get_open(self, portfolio_id: int, ticker: str) -> TradePlan | None:
+        return self._plans.get((portfolio_id, ticker))
+
+    def create(
+        self, portfolio_id, ticker, entry_price, entry_date, initial_stop, initial_target, initial_quantity,
+        thesis, engine_version,
+    ) -> TradePlan:
+        plan = TradePlan(
+            id=self._next_id,
+            portfolio_id=portfolio_id,
+            ticker=ticker,
+            entry_price=entry_price,
+            entry_date=entry_date,
+            initial_stop=initial_stop,
+            initial_target=initial_target,
+            current_stop=initial_stop,
+            highest_close_since_entry=entry_price,
+            initial_quantity=initial_quantity,
+            thesis=thesis,
+            engine_version=engine_version,
+            updated_at=datetime.now(UTC),
+            closed_at=None,
+        )
+        self._next_id += 1
+        self._plans[(portfolio_id, ticker)] = plan
+        return plan
+
+    def update_trailing(self, plan_id: int, current_stop: float, highest_close_since_entry: float) -> None:
+        for key, plan in self._plans.items():
+            if plan.id == plan_id:
+                self._plans[key] = replace(
+                    plan, current_stop=current_stop, highest_close_since_entry=highest_close_since_entry
+                )
+
+    def close(self, portfolio_id: int, ticker: str) -> None:
+        self._plans.pop((portfolio_id, ticker), None)
 
 
 def test_none_when_not_enough_bars():
@@ -129,11 +201,130 @@ def test_signal_is_consistent_with_recommendation_engine_thresholds():
     assert add_result.signal == prs.ADD_CANDIDATE
 
 
+def _ohlc_dated(n: int, start: float = 100.0, slope: float = 0.0, wiggle: float = 1.0) -> pd.DataFrame:
+    """Same shape as `_ohlc`, but with a real business-day DatetimeIndex - the
+    exit-engine branch of assess_position_risk (portfolio_id/transactions/
+    trade_plan_repo supplied) needs one (ta.closed_bars, bars_held_since,
+    etc. all key off `.index.date`), unlike the buy-side-only tests above."""
+    dates = pd.bdate_range("2020-01-01", periods=n)
+    close = pd.Series(start + np.arange(n) * slope, index=dates)
+    return pd.DataFrame(
+        {"open": close, "close": close, "high": close + wiggle, "low": close - wiggle, "volume": 1_000_000.0}
+    )
+
+
+# --- exit-engine wiring: ADD_CANDIDATE must not survive TIGHTEN_STOP/WATCH ---
+# (the live D2/D3 bug a second audit found: only EXIT_NOW/REDUCE used to be
+# able to override a "comprar" verdict's ADD_CANDIDATE badge). `ee.evaluate_exit`
+# is stubbed directly to a fixed urgency - this is exactly the "hand-built,
+# obviously correct scenario" philosophy test_exit_engine.py already uses for
+# the trigger logic itself; what's being tested here is portfolio_risk_service's
+# own degradation wiring, not whether some real price series reaches a given
+# urgency (already covered, thoroughly, in test_exit_engine.py).
+
+
+def _setup_exit_engine_context(monkeypatch, urgency: ee.ExitUrgency, verdict: str = "comprar"):
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(verdict=verdict, score=8))
+    monkeypatch.setattr(
+        prs.ee, "evaluate_exit", lambda **kwargs: ee.ExitAssessment(urgency=urgency, reasons=["motivo de prueba"])
+    )
+    df = _ohlc_dated(300)
+    transactions = [
+        Transaction(
+            id=1, portfolio_id=1, ticker="XYZ", transaction_type=TransactionType.BUY,
+            quantity=10.0, price=100.0, fees=0.0, executed_at=datetime(2020, 6, 1, tzinfo=UTC),
+        )
+    ]
+    return df, transactions
+
+
+def test_tighten_stop_degrades_a_comprar_verdict_away_from_add_candidate(monkeypatch):
+    df, transactions = _setup_exit_engine_context(monkeypatch, ee.ExitUrgency.TIGHTEN_STOP)
+    result = prs.assess_position_risk(
+        "XYZ", df, portfolio_id=1, transactions=transactions, trade_plan_repo=_FakeTradePlanRepo()
+    )
+    assert result.exit_urgency == "tighten_stop"
+    assert result.signal != prs.ADD_CANDIDATE
+    assert result.signal == prs.WATCH
+
+
+def test_watch_degrades_a_comprar_verdict_away_from_add_candidate(monkeypatch):
+    df, transactions = _setup_exit_engine_context(monkeypatch, ee.ExitUrgency.WATCH)
+    result = prs.assess_position_risk(
+        "XYZ", df, portfolio_id=1, transactions=transactions, trade_plan_repo=_FakeTradePlanRepo()
+    )
+    assert result.exit_urgency == "watch"
+    assert result.signal != prs.ADD_CANDIDATE
+    assert result.signal == prs.WATCH
+
+
+def test_reduce_still_forces_exit_warning_over_a_comprar_verdict(monkeypatch):
+    # Unchanged behavior (already correct before this fix) - kept alongside
+    # the two above so the whole precedence ladder is visible in one place.
+    df, transactions = _setup_exit_engine_context(monkeypatch, ee.ExitUrgency.REDUCE)
+    result = prs.assess_position_risk(
+        "XYZ", df, portfolio_id=1, transactions=transactions, trade_plan_repo=_FakeTradePlanRepo()
+    )
+    assert result.signal == prs.EXIT_WARNING
+
+
+def test_hold_urgency_never_downgrades_an_add_candidate(monkeypatch):
+    # Baseline: nothing wrong technically -> ADD_CANDIDATE stands unchanged,
+    # exactly as before this fix - only TIGHTEN_STOP/WATCH/REDUCE/EXIT_NOW
+    # ever touch it.
+    df, transactions = _setup_exit_engine_context(monkeypatch, ee.ExitUrgency.HOLD)
+    result = prs.assess_position_risk(
+        "XYZ", df, portfolio_id=1, transactions=transactions, trade_plan_repo=_FakeTradePlanRepo()
+    )
+    assert result.exit_urgency == "hold"
+    assert result.signal == prs.ADD_CANDIDATE
+
+
 def test_rs_rating_is_passed_through_unchanged():
     close = 100 + np.arange(260) * 0.4
     df = _ohlc(close)
     result = prs.assess_position_risk("XYZ", df, rs_rating=88)
     assert result.rs_rating == 88
+
+
+def test_trailing_stop_never_uses_a_pre_entry_high(monkeypatch):
+    """Segunda auditoría, Bloque 1: the Chandelier trail must only ever
+    consider highs the position actually lived through. A spike to 300
+    happens well *before* entry (index 9); the position opens afterward
+    (index 15, price ~92) and has been held 10 sessions by "today" (index
+    24). trade_manager.chandelier_stop's old fixed 22-bar window would have
+    reached back to index 3 - including the pre-entry spike - and produced
+    a stop far above the current price. Bounded to entry (this fix), the
+    highest high it can see is whatever happened since index 15, nowhere
+    near 300."""
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(verdict="esperar", score=0))
+    n = 25
+    dates = pd.bdate_range("2024-01-01", periods=n)
+    post_entry = [92.0, 93.0, 94.0, 95.0, 96.0, 97.0, 96.0, 95.0, 96.0, 95.0]
+    close = np.array([100.0] * 9 + [300.0] + [95.0] * 5 + post_entry)
+    assert len(close) == n
+    close_s = pd.Series(close, index=dates)
+    df = pd.DataFrame(
+        {"open": close_s, "close": close_s, "high": close_s + 1.0, "low": close_s - 1.0, "volume": 1_000_000.0}
+    )
+    entry_date = dates[15]
+    transactions = [
+        Transaction(
+            id=1, portfolio_id=1, ticker="XYZ", transaction_type=TransactionType.BUY,
+            quantity=10.0, price=float(close[15]), fees=0.0,
+            executed_at=datetime.combine(entry_date.date(), datetime.min.time(), tzinfo=UTC),
+        )
+    ]
+
+    result = prs.assess_position_risk(
+        "XYZ", df, portfolio_id=1, transactions=transactions, trade_plan_repo=_FakeTradePlanRepo()
+    )
+
+    assert result.trade_plan is not None
+    assert result.bars_held == 10
+    current_price = float(close[-1])
+    if result.trade_plan.current_stop is not None:
+        assert result.trade_plan.current_stop < current_price
 
 
 def test_hold_escalates_to_watch_when_death_cross_is_imminent(monkeypatch):

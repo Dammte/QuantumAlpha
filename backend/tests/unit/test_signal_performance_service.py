@@ -92,6 +92,68 @@ def test_verdict_outcomes_skips_tickers_with_no_price_data():
     assert outcomes == []
 
 
+def test_verdict_outcomes_deduplicates_same_ticker_and_day():
+    # Segunda auditoría, Bloque 1: two snapshots on the same calendar day for
+    # the same ticker (e.g. two dashboard reloads that both landed on a
+    # cache miss) must count once, not twice - n measures how many genuinely
+    # distinct calls the system made, not how often the page was reloaded.
+    close = _close_series("2024-01-01", [100.0] * 21 + [110.0] * 19)
+    same_day = close.index[0].date()
+    snapshots = [
+        _rec_snapshot("AAPL", "comprar", datetime.combine(same_day, datetime.min.time())),
+        _rec_snapshot("AAPL", "comprar", datetime.combine(same_day, datetime.min.time().replace(hour=14))),
+    ]
+    outcomes = sps.compute_verdict_outcomes(snapshots, {"AAPL": close})
+    at_21 = next(o for o in outcomes if o.horizon_days == 21)
+    assert at_21.n == 1
+
+
+def test_verdict_outcomes_keeps_snapshots_on_different_days_for_the_same_ticker():
+    close = _close_series("2024-01-01", [100.0] * 40)
+    snapshots = [
+        _rec_snapshot("AAPL", "comprar", datetime.combine(close.index[0].date(), datetime.min.time())),
+        _rec_snapshot("AAPL", "comprar", datetime.combine(close.index[1].date(), datetime.min.time())),
+    ]
+    outcomes = sps.compute_verdict_outcomes(snapshots, {"AAPL": close})
+    at_5 = next(o for o in outcomes if o.horizon_days == 5)
+    assert at_5.n == 2
+
+
+def test_verdict_outcomes_hit_rate_is_flipped_for_evitar():
+    # "evitar" is a call to avoid the ticker - a *negative* subsequent
+    # return is what vindicates it, the opposite of "comprar"'s reading.
+    dates = pd.bdate_range("2024-01-01", periods=40)
+    fell = pd.Series([100.0] * 21 + [90.0] * 19, index=dates)  # -10%: the avoid call was right
+    rose = pd.Series([100.0] * 21 + [110.0] * 19, index=dates)  # +10%: the avoid call missed out
+    snapshots = [
+        _rec_snapshot("FELL", "evitar", datetime.combine(dates[0].date(), datetime.min.time())),
+        _rec_snapshot("ROSE", "evitar", datetime.combine(dates[0].date(), datetime.min.time())),
+    ]
+    outcomes = sps.compute_verdict_outcomes(snapshots, {"FELL": fell, "ROSE": rose})
+    at_21 = next(o for o in outcomes if o.horizon_days == 21)
+    assert at_21.hit_rate == pytest.approx(0.5)  # 1 of 2 "evitar" calls was actually vindicated
+    # mean_return itself stays raw/unsigned - only which side counts as "hit" changed.
+    assert at_21.mean_return == pytest.approx(0.0, abs=1e-9)
+
+
+def test_verdict_outcomes_hit_rate_not_flipped_for_comprar():
+    # Asymmetric on purpose (2 of 3 rise) so a flipped criterion would be
+    # caught: under "comprar", the rising tickers are the hits -> 2/3, not 1/3.
+    dates = pd.bdate_range("2024-01-01", periods=40)
+    fell = pd.Series([100.0] * 21 + [90.0] * 19, index=dates)
+    rose = pd.Series([100.0] * 21 + [110.0] * 19, index=dates)
+    snapshots = [
+        _rec_snapshot("FELL", "comprar", datetime.combine(dates[0].date(), datetime.min.time())),
+        _rec_snapshot("ROSE1", "comprar", datetime.combine(dates[0].date(), datetime.min.time())),
+        _rec_snapshot("ROSE2", "comprar", datetime.combine(dates[0].date(), datetime.min.time())),
+    ]
+    outcomes = sps.compute_verdict_outcomes(
+        snapshots, {"FELL": fell, "ROSE1": rose, "ROSE2": rose}
+    )
+    at_21 = next(o for o in outcomes if o.horizon_days == 21)
+    assert at_21.hit_rate == pytest.approx(2 / 3)
+
+
 def test_verdict_outcomes_hit_rate_and_mean_return_are_correct():
     # Two "comprar" snapshots at bar 0: one ticker rises +10% by bar 21, the
     # other falls -10% - hit_rate at horizon=21 should read exactly 0.5 and
@@ -120,6 +182,32 @@ def test_signal_outcomes_groups_by_signal_not_verdict():
     outcomes = sps.compute_signal_outcomes(snapshots, {"AAPL": close})
     assert all(o.label == "hold" for o in outcomes)
     assert any(o.n == 1 for o in outcomes)
+
+
+def test_signal_outcomes_hit_rate_is_flipped_for_exit_warning():
+    # exit_warning is a sell call - a subsequent drop vindicates it.
+    dates = pd.bdate_range("2024-01-01", periods=40)
+    fell = pd.Series([100.0] * 21 + [90.0] * 19, index=dates)
+    rose = pd.Series([100.0] * 21 + [110.0] * 19, index=dates)
+    snapshots = [
+        _pos_snapshot("FELL", "exit_warning", datetime.combine(dates[0].date(), datetime.min.time())),
+        _pos_snapshot("ROSE", "exit_warning", datetime.combine(dates[0].date(), datetime.min.time())),
+    ]
+    outcomes = sps.compute_signal_outcomes(snapshots, {"FELL": fell, "ROSE": rose})
+    at_21 = next(o for o in outcomes if o.horizon_days == 21)
+    assert at_21.hit_rate == pytest.approx(0.5)  # the falling one was the actual hit
+
+
+def test_signal_outcomes_deduplicates_same_ticker_and_day():
+    close = _close_series("2024-01-01", [100.0] * 40)
+    same_day = close.index[0].date()
+    snapshots = [
+        _pos_snapshot("AAPL", "watch", datetime.combine(same_day, datetime.min.time())),
+        _pos_snapshot("AAPL", "watch", datetime.combine(same_day, datetime.min.time().replace(hour=18))),
+    ]
+    outcomes = sps.compute_signal_outcomes(snapshots, {"AAPL": close})
+    at_5 = next(o for o in outcomes if o.horizon_days == 5)
+    assert at_5.n == 1
 
 
 # --- find_false_negatives -------------------------------------------------------
@@ -155,6 +243,18 @@ def test_false_negative_price_after_matches_the_actual_forward_price():
     negatives = sps.find_false_negatives([snap], {"AAPL": close})
     assert negatives[0].price_after == pytest.approx(90.0)
     assert negatives[0].return_pct == pytest.approx(-0.10)
+
+
+def test_false_negative_deduplicates_same_ticker_and_day():
+    close = _close_series("2024-01-01", [100.0] * 10 + [90.0] * 20)
+    same_day = close.index[0].date()
+    later = datetime.combine(same_day, datetime.min.time().replace(hour=15))
+    snapshots = [
+        _pos_snapshot("AAPL", "hold", datetime.combine(same_day, datetime.min.time()), price=100.0),
+        _pos_snapshot("AAPL", "hold", later, price=100.0),
+    ]
+    negatives = sps.find_false_negatives(snapshots, {"AAPL": close})
+    assert len(negatives) == 1
 
 
 # --- build_signal_performance_report (orchestration) ----------------------------

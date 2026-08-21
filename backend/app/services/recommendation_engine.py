@@ -89,9 +89,11 @@ from app.services.volatility_model import GarchResult
 # produced it, not just "some earlier version of the app". Also stamped onto
 # TradePlan/PositionSignalSnapshot (see trade_plan_service.py), so this
 # tracks the exit engine's own trigger set too, not only this file's score -
-# bumped for v3 even though no buy-side factor/weight changed, because
-# exit_engine.py's triggers did (see docs/quant_methodology.md §9.1).
-ENGINE_VERSION = "2026-08-audit-v3"
+# bumped again for v4 even though no buy-side factor/weight changed, because
+# exit_engine.py's trigger set changed materially again (see
+# docs/quant_methodology.md §13: stalled-position ceiling, unified weekly
+# bias with an explicit "unknown" state).
+ENGINE_VERSION = "2026-08-audit-v4"
 
 BUY_THRESHOLD = 5
 AVOID_THRESHOLD = -3

@@ -26,7 +26,13 @@ def _timeframe_read(
     macd_cross: str | None = None,
     price_vs_sma20: str | None = None,
     price_vs_sma50: str | None = None,
+    price_vs_sma200: str | None = "above",
 ) -> mtf.TimeframeRead:
+    # price_vs_sma200 defaults to "above" (a known read), not None - None
+    # means mtf.timeframe_bias reads this as "unknown" (insufficient
+    # history), which is exactly what test_weekly_bias_unknown_never_arms_*
+    # below exercises deliberately, not something every other test should
+    # trip into by accident.
     return mtf.TimeframeRead(
         timeframe=timeframe,
         trend=trend,
@@ -43,7 +49,7 @@ def _timeframe_read(
         di_bias=None,
         price_vs_sma20=price_vs_sma20,
         price_vs_sma50=price_vs_sma50,
-        price_vs_sma200=None,
+        price_vs_sma200=price_vs_sma200,
         bars_since_cross=None,
     )
 
@@ -155,6 +161,21 @@ def test_no_exit_now_from_sma50_break_when_weekly_is_bullish():
     # Same daily break, but the weekly is still clearly bullish - the rule
     # requires "cuando la tendencia semanal ya no es alcista".
     weekly = _timeframe_read("weekly", trend=ta.TrendState.UPTREND)
+    result = _evaluate(
+        multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
+        consecutive_closes_below_daily_sma50=2,
+    )
+    assert not any("SMA50 diaria" in r for r in result.reasons)
+
+
+def test_no_exit_now_from_sma50_break_when_weekly_bias_is_unknown():
+    # A young ticker: weekly exists but fewer than ~200 weekly bars means no
+    # real price_vs_sma200 read yet - mtf.timeframe_bias reads this as
+    # "unknown", not "confirmed not bullish". This specific hard trigger
+    # must not treat "we don't know the weekly picture" the same as "we know
+    # it's bearish" - same daily break that fires EXIT_NOW with a genuinely
+    # bearish weekly (see the sibling test above) must not fire here.
+    weekly = _timeframe_read("weekly", trend=ta.TrendState.DOWNTREND, price_vs_sma200=None)
     result = _evaluate(
         multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
         consecutive_closes_below_daily_sma50=2,
@@ -305,6 +326,25 @@ def test_no_stalled_reduce_without_a_resolvable_r_multiple():
     # No initial_stop -> no r_multiple denominator -> nothing to call "stalled".
     result = _evaluate(price=101.0, position=_position(current_stop=None, r_multiple=None, bars_held=25))
     assert not any("sin progreso" in r for r in result.reasons)
+
+
+def test_no_stalled_reduce_past_the_ceiling():
+    # A years-old holding near breakeven must not fire this every single
+    # evaluation forever - past STALLED_CEILING_BARS, the rule stops
+    # applying (the position needed a human decision long before this).
+    result = _evaluate(
+        price=101.0,
+        position=_position(current_stop=95.0, r_multiple=0.2, bars_held=ee.STALLED_CEILING_BARS + 1),
+    )
+    assert not any("sin progreso" in r for r in result.reasons)
+
+
+def test_stalled_reduce_still_fires_right_at_the_ceiling():
+    result = _evaluate(
+        price=101.0, position=_position(current_stop=95.0, r_multiple=0.2, bars_held=ee.STALLED_CEILING_BARS)
+    )
+    assert result.urgency == ee.ExitUrgency.REDUCE
+    assert any("sin progreso" in r for r in result.reasons)
 
 
 def test_reduce_on_a_fresh_confirmed_break_below_the_fast_daily_sma():

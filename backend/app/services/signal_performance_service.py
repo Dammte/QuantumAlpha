@@ -93,19 +93,51 @@ def forward_return(close: pd.Series, snapshot_date: date, horizon_days: int) -> 
     return end_price / start_price - 1
 
 
-def _stats_for(returns: list[float]) -> tuple[int, float | None, float | None, float | None]:
+# Labels that are themselves a call to *avoid or exit* a ticker - "hit" for
+# these means the market went the other way (a negative subsequent return
+# vindicates the call), the mirror of every other label. Segunda auditoría,
+# Bloque 1: the original "always fraction-positive" definition was picked
+# deliberately, as one single, uniform reading meant to stay neutral rather
+# than flip criteria per category - but a bearish label with a 65% hit_rate
+# under that definition means the stock rose 65% of the time anyway, the
+# *opposite* of vindication, and nothing in the UI distinguished the two
+# readings. `mean_return`/`median_return` stay raw, unsigned either way -
+# only which side of zero counts as "hit" changes.
+BEARISH_VERDICT_LABELS = frozenset({"evitar"})
+BEARISH_SIGNAL_LABELS = frozenset({"exit_warning"})
+
+
+def _stats_for(
+    returns: list[float], bearish: bool = False
+) -> tuple[int, float | None, float | None, float | None]:
     n = len(returns)
     if n == 0:
         return 0, None, None, None
-    hit_rate = sum(1 for r in returns if r > 0) / n
+    hit_rate = sum(1 for r in returns if (r < 0 if bearish else r > 0)) / n
     return n, hit_rate, float(np.mean(returns)), float(np.median(returns))
+
+
+def _deduplicate_latest_per_ticker_and_day(snapshots: list) -> list:
+    """One snapshot per (ticker, calendar day) - the most recent of that
+    day's - before anything gets aggregated. Without this, every dashboard
+    reload or manual "Actualizar ahora" that lands on a cache miss appends
+    another observation for the exact same ticker/day, so `n` measures how
+    often the page got reloaded, not how many genuinely distinct calls the
+    system made."""
+    latest_by_key: dict[tuple[str, object], object] = {}
+    for snap in snapshots:
+        key = (snap.ticker, snap.created_at.date())
+        existing = latest_by_key.get(key)
+        if existing is None or snap.created_at > existing.created_at:
+            latest_by_key[key] = snap
+    return list(latest_by_key.values())
 
 
 def compute_verdict_outcomes(
     snapshots: list[RecommendationSnapshot], price_by_ticker: dict[str, pd.Series]
 ) -> list[OutcomeStats]:
     by_key: dict[tuple[str, int], list[float]] = defaultdict(list)
-    for snap in snapshots:
+    for snap in _deduplicate_latest_per_ticker_and_day(snapshots):
         close = price_by_ticker.get(snap.ticker)
         if close is None:
             continue
@@ -117,7 +149,7 @@ def compute_verdict_outcomes(
 
     outcomes = []
     for (verdict, horizon), returns in sorted(by_key.items()):
-        n, hit_rate, mean_r, median_r = _stats_for(returns)
+        n, hit_rate, mean_r, median_r = _stats_for(returns, bearish=verdict in BEARISH_VERDICT_LABELS)
         outcomes.append(
             OutcomeStats(label=verdict, horizon_days=horizon, n=n, hit_rate=hit_rate, mean_return=mean_r,
                          median_return=median_r)
@@ -129,7 +161,7 @@ def compute_signal_outcomes(
     snapshots: list[PositionSignalSnapshot], price_by_ticker: dict[str, pd.Series]
 ) -> list[OutcomeStats]:
     by_key: dict[tuple[str, int], list[float]] = defaultdict(list)
-    for snap in snapshots:
+    for snap in _deduplicate_latest_per_ticker_and_day(snapshots):
         close = price_by_ticker.get(snap.ticker)
         if close is None:
             continue
@@ -141,7 +173,7 @@ def compute_signal_outcomes(
 
     outcomes = []
     for (signal, horizon), returns in sorted(by_key.items()):
-        n, hit_rate, mean_r, median_r = _stats_for(returns)
+        n, hit_rate, mean_r, median_r = _stats_for(returns, bearish=signal in BEARISH_SIGNAL_LABELS)
         outcomes.append(
             OutcomeStats(label=signal, horizon_days=horizon, n=n, hit_rate=hit_rate, mean_return=mean_r,
                          median_return=median_r)
@@ -156,7 +188,7 @@ def find_false_negatives(
     sessions - listed by ticker and date, not just counted, so each one can
     actually be looked at."""
     results = []
-    for snap in snapshots:
+    for snap in _deduplicate_latest_per_ticker_and_day(snapshots):
         if snap.signal != FALSE_NEGATIVE_SIGNAL:
             continue
         close = price_by_ticker.get(snap.ticker)

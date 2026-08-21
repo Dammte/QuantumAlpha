@@ -13,11 +13,15 @@ def _read(
     stage: ta.Stage | None = None,
     ma_cross_50_200: str | None = None,
     macd_cross: str | None = None,
+    price_vs_sma200: str | None = "above",
 ) -> mtf.TimeframeRead:
     """Builds a TimeframeRead with every field neutral/None except the ones a
     test cares about - combine_timeframes only looks at trend/stage (via
-    _is_bullish/_is_bearish) and the two cross fields, so those are the only
-    ones worth parameterizing here."""
+    timeframe_bias) and the two cross fields, so those are the only ones
+    worth parameterizing here. `price_vs_sma200` defaults to "above" (i.e.
+    "we have a real, known read") rather than None, since None means
+    `timeframe_bias` reads this as "unknown" (insufficient history) - tests
+    of that specific case pass `price_vs_sma200=None` explicitly."""
     return mtf.TimeframeRead(
         timeframe=timeframe,
         trend=trend,
@@ -34,7 +38,7 @@ def _read(
         di_bias=None,
         price_vs_sma20=None,
         price_vs_sma50=None,
-        price_vs_sma200=None,
+        price_vs_sma200=price_vs_sma200,
         bars_since_cross=None,
     )
 
@@ -136,6 +140,38 @@ def test_daily_only_fallback_is_transitioning_when_weekly_is_unavailable():
     alignment, score, _ = mtf.combine_timeframes(None, daily)
     assert alignment == "transitioning"
     assert score == 0.0
+
+
+# --- "unknown" weekly (present, but not enough history for a real SMA200
+# read - see timeframe_bias) must fall back to the daily-only read, exactly
+# like weekly being None - never guessed as bullish/bearish/neutral. ---
+
+
+def test_daily_only_fallback_when_weekly_exists_but_is_not_confirmed_yet():
+    # A young ticker: some weekly bars exist (weekly is not None), but fewer
+    # than ~200 - price_vs_sma200 is still None. Even with a crystal-clear
+    # weekly DOWNTREND label attached (as if it were confirmed), the missing
+    # price_vs_sma200 alone must be enough to treat it as unconfirmed.
+    weekly = _read("weekly", trend=ta.TrendState.DOWNTREND, price_vs_sma200=None)
+    daily = _read("daily", trend=ta.TrendState.UPTREND)
+    alignment, score, conflicts = mtf.combine_timeframes(weekly, daily)
+    assert alignment == "bullish_aligned"  # daily-only fallback, weekly's DOWNTREND label ignored
+    assert score == 1.0
+    assert conflicts == []
+
+
+def test_timeframe_bias_unknown_when_price_vs_sma200_is_none():
+    read = _read("weekly", trend=ta.TrendState.DOWNTREND, stage=ta.Stage.STAGE_4, price_vs_sma200=None)
+    assert mtf.timeframe_bias(read) == "unknown"
+
+
+def test_timeframe_bias_unknown_when_read_is_none():
+    assert mtf.timeframe_bias(None) == "unknown"
+
+
+def test_timeframe_bias_neutral_when_confirmed_but_no_clear_direction():
+    read = _read("weekly", trend=ta.TrendState.SIDEWAYS, stage=None, price_vs_sma200="above")
+    assert mtf.timeframe_bias(read) == "neutral"
 
 
 # --- analyze_multi_timeframe: end-to-end plumbing (resample -> closed_bars ->

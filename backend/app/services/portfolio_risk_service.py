@@ -252,6 +252,24 @@ def assess_position_risk(
             rsi_recent_max = _recent_max(ta.rsi(closed["close"]))
             adx_recent_max = _recent_max(ta.adx(closed["high"], closed["low"], closed["close"]))
             bars_held = tps.bars_held_since(closed, plan.entry_date)
+            # Recomputed here on the *closed* bar, not reused from `signals`
+            # (computed by compute_core_signals on the live/raw `df`) - the
+            # exit engine's own `price` argument below is `exit_price`, the
+            # same closed close. Reusing the live-based nearest_support would
+            # mix bases: on a bullish overnight gap, a support level found
+            # relative to today's (higher) live price can sit *above*
+            # yesterday's (lower) closed price used in the comparison,
+            # producing a false "rotura de soporte" purely from the gap, not
+            # a real break.
+            closed_levels = ta.support_resistance_levels(closed["high"], closed["low"], closed["close"])
+            nearest_support_closed = min(
+                (lv for lv in closed_levels if lv.kind == "support"), key=lambda lv: abs(lv.distance_pct),
+                default=None,
+            )
+            nearest_resistance_closed = min(
+                (lv for lv in closed_levels if lv.kind == "resistance"), key=lambda lv: abs(lv.distance_pct),
+                default=None,
+            )
             # average_cost defaults to this lot's own entry price - a DCA'd
             # position's true blended cost isn't threaded through here yet
             # (that needs Portfolio.positions, which this call chain doesn't
@@ -267,8 +285,8 @@ def assess_position_risk(
                 multi_timeframe=multi_timeframe,
                 consecutive_closes_below_daily_sma50=consecutive_below_sma50,
                 consecutive_closes_below_daily_sma_fast=consecutive_below_fast_sma,
-                nearest_support=signals.nearest_support,
-                nearest_resistance=signals.nearest_resistance,
+                nearest_support=nearest_support_closed,
+                nearest_resistance=nearest_resistance_closed,
                 obv_divergence=signals.obv_divergence,
                 relative_volume=signals.relative_volume,
                 rsi14=signals.rsi14,
@@ -296,9 +314,16 @@ def assess_position_risk(
             # stop "breach" could be an artifact of raising the stop, not a
             # real adverse move.
             vol_regime = signals.garch.regime if signals.garch is not None else None
+            # Bounded to bars on/after entry - the highest high the Chandelier
+            # trail should ever consider is one this trade actually lived
+            # through. `closed["high"]` unfiltered can reach years before
+            # entry; a position opened after a pullback from an even higher
+            # pre-entry high would otherwise trail against that pre-entry
+            # high, not the trade's own price action.
+            high_since_entry = closed["high"][closed["high"].index.date >= plan.entry_date]
             trailing = tm.compute_trailing_stop(
-                closed["high"], ta.atr(closed["high"], closed["low"], closed["close"]),
-                current_stop=plan.current_stop, r_multiple=r_multiple, vol_regime=vol_regime,
+                high_since_entry, ta.atr(closed["high"], closed["low"], closed["close"]),
+                current_stop=plan.current_stop, r_multiple=r_multiple, vol_regime=vol_regime, price=exit_price,
             )
             if trailing.stop is not None and plan.id is not None:
                 trade_plan_repo.update_trailing(plan.id, trailing.stop, position_context.highest_close_since_entry)
@@ -313,15 +338,18 @@ def assess_position_risk(
             # the table matters more than "would this still be a fresh
             # buy") - this is the actual D2/D3 fix: previously nothing could
             # ever override ADD_CANDIDATE/HOLD except the buy-side score
-            # itself. TIGHTEN_STOP deliberately does *not* override
-            # ADD_CANDIDATE (same precedent as the imminent-cross case
-            # above - still worth surfacing, not urgent enough to relabel
-            # the badge).
+            # itself. EXIT_NOW/REDUCE still own the strongest badge
+            # (EXIT_WARNING). TIGHTEN_STOP/WATCH now also degrade an
+            # ADD_CANDIDATE, not only HOLD - a "comprar" verdict (RS Rating,
+            # fundamentals) that the exit engine has already flagged for
+            # active monitoring must not keep reading "Añadir" as if nothing
+            # had changed technically. Never the other way around: a
+            # genuine EXIT_WARNING is never *downgraded* back to WATCH by a
+            # softer tier.
+            softer_tiers = (ee.ExitUrgency.TIGHTEN_STOP, ee.ExitUrgency.WATCH)
             if assessment.urgency in (ee.ExitUrgency.EXIT_NOW, ee.ExitUrgency.REDUCE):
                 signal = EXIT_WARNING
-            elif assessment.urgency == ee.ExitUrgency.TIGHTEN_STOP and signal not in (EXIT_WARNING, ADD_CANDIDATE):
-                signal = WATCH
-            elif assessment.urgency == ee.ExitUrgency.WATCH and signal == HOLD:
+            elif assessment.urgency in softer_tiers and signal != EXIT_WARNING:
                 signal = WATCH
 
         # Fase 0 instrumentation: one row per genuinely fresh evaluation (this

@@ -160,15 +160,17 @@ def _plan(
     current_stop: float | None = 92.0,
     initial_target: float | None = 120.0,
     entry_price: float = 100.0,
+    entry_date: date = date(2024, 1, 5),
     highest_close_since_entry: float = 105.0,
     initial_quantity: float = 10.0,
+    plan_id: int = 1,
 ) -> TradePlan:
     return TradePlan(
-        id=1,
+        id=plan_id,
         portfolio_id=1,
         ticker="AAPL",
         entry_price=entry_price,
-        entry_date=date(2024, 1, 5),
+        entry_date=entry_date,
         initial_stop=initial_stop,
         initial_target=initial_target,
         current_stop=current_stop,
@@ -222,3 +224,76 @@ def test_bars_held_since_counts_bars_on_or_after_entry():
 def test_bars_held_since_empty_df_is_zero():
     empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     assert tps.bars_held_since(empty, date(2024, 1, 1)) == 0
+
+
+# --- ensure_trade_plan: a fully-closed lot's plan must never be inherited ----
+
+
+class _FakeRepo:
+    """Minimal in-memory TradePlanRepositoryPort - just enough to observe
+    whether ensure_trade_plan calls create()/close() and with what."""
+
+    def __init__(self, existing: TradePlan | None = None) -> None:
+        self.plan = existing
+        self.closed = False
+        self.created_with: dict | None = None
+
+    def get_open(self, portfolio_id: int, ticker: str) -> TradePlan | None:
+        return self.plan
+
+    def create(
+        self, portfolio_id, ticker, entry_price, entry_date, initial_stop, initial_target, initial_quantity,
+        thesis, engine_version,
+    ) -> TradePlan:
+        self.created_with = {"entry_price": entry_price, "entry_date": entry_date}
+        self.plan = TradePlan(
+            id=2, portfolio_id=portfolio_id, ticker=ticker, entry_price=entry_price, entry_date=entry_date,
+            initial_stop=initial_stop, initial_target=initial_target, current_stop=initial_stop,
+            highest_close_since_entry=entry_price, initial_quantity=initial_quantity, thesis=thesis,
+            engine_version=engine_version, updated_at=datetime(2024, 1, 1), closed_at=None,
+        )
+        return self.plan
+
+    def update_trailing(self, plan_id: int, current_stop: float, highest_close_since_entry: float) -> None:
+        raise AssertionError("not exercised by these tests")
+
+    def close(self, portfolio_id: int, ticker: str) -> None:
+        self.closed = True
+
+
+def test_ensure_trade_plan_reuses_the_open_plan_when_entry_date_matches():
+    plan = _plan(entry_date=date(2024, 1, 5), plan_id=1)
+    repo = _FakeRepo(existing=plan)
+    txs = [_tx("AAPL", TransactionType.BUY, 10, price=100.0, executed_at=datetime(2024, 1, 5))]
+    df = _ohlcv_df(60, 100 + np.arange(60) * 0.1)
+
+    result = tps.ensure_trade_plan(repo, portfolio_id=1, ticker="AAPL", transactions=txs, ohlcv=df)
+
+    assert result is plan
+    assert repo.closed is False
+    assert repo.created_with is None
+
+
+def test_ensure_trade_plan_rebuilds_a_fresh_plan_when_the_open_ones_entry_date_is_stale():
+    # The exact bug: a full sell-and-rebuy cycle. The *open* plan on file
+    # (repo.get_open still returns it - nothing closed it) belongs to a lot
+    # that opened 2024-01-05; the transactions show the position was fully
+    # sold and rebought on 2024-03-01. Before this fix, `existing is not
+    # None` alone was enough to return the dead lot's plan untouched.
+    stale_plan = _plan(entry_price=100.0, entry_date=date(2024, 1, 5), current_stop=98.0, plan_id=1)
+    repo = _FakeRepo(existing=stale_plan)
+    txs = [
+        _tx("AAPL", TransactionType.BUY, 10, price=100.0, executed_at=datetime(2024, 1, 5), tx_id=1),
+        _tx("AAPL", TransactionType.SELL, 10, price=105.0, executed_at=datetime(2024, 2, 1), tx_id=2),
+        _tx("AAPL", TransactionType.BUY, 5, price=50.0, executed_at=datetime(2024, 3, 1), tx_id=3),
+    ]
+    df = _ohlcv_df(90, 100 + np.sin(np.arange(90) / 3) * 5)
+
+    result = tps.ensure_trade_plan(repo, portfolio_id=1, ticker="AAPL", transactions=txs, ohlcv=df)
+
+    assert repo.closed is True  # the stale lot's plan was explicitly closed, not just ignored
+    assert result is not None
+    assert result.entry_price == pytest.approx(50.0)  # the new lot's own entry, not the dead lot's 100.0
+    assert result.entry_date == date(2024, 3, 1)
+    assert repo.created_with is not None
+    assert repo.created_with["entry_price"] == pytest.approx(50.0)

@@ -57,6 +57,17 @@ PROFIT_TIGHTEN_R = 1.5
 # months.
 MAX_BARS_WITHOUT_PROGRESS = 20
 STALLED_PROGRESS_R = 1.0
+# Upper bound on the stalled-position rule: without one, a holding of years
+# that never quite reaches +1R (and never quite hits its stop either) fires
+# REDUCE forever, every single evaluation - "stop temporal" was meant to
+# flag capital tied up in a stalled *short*-term trade (matched to a
+# portfolio managed on a scale of weeks), not to permanently recommend
+# trimming a multi-year position that happens to sit near breakeven. Past
+# this many bars, a position that's neither worked out nor stopped out is a
+# different situation entirely - one the propietario has already had ample
+# opportunity to review by hand, not something this rule should keep
+# repeating an answer about.
+STALLED_CEILING_BARS = 60
 
 
 class ExitUrgency(str, Enum):
@@ -143,7 +154,14 @@ def evaluate_exit(
     reasons_by_tier: dict[ExitUrgency, list[str]] = {tier: [] for tier in _URGENCY_SEVERITY}
     daily = multi_timeframe.daily
     weekly = multi_timeframe.weekly
-    weekly_not_bullish = weekly is None or weekly.trend != ta.TrendState.UPTREND
+    # Shared with `combine_timeframes`/`alignment` (see mtf.timeframe_bias) -
+    # a weekly read that's genuinely bearish or genuinely neutral counts as
+    # "not bullish" here (no confirmed weekly backing for the daily setup),
+    # but "unknown" (insufficient weekly history, ~3.85 years) deliberately
+    # does not - a hard trigger gated on this should never treat "we don't
+    # know" as "we know it's not bullish".
+    weekly_bias = mtf.timeframe_bias(weekly)
+    weekly_not_bullish = weekly_bias in ("bearish", "neutral")
 
     # --- EXIT_NOW: hard, non-negotiable triggers -----------------------
 
@@ -226,11 +244,14 @@ def evaluate_exit(
     # that's neither worked out nor stopped out yet has a real, easy-to-miss
     # opportunity cost. Only fires once there's actually an R multiple to
     # judge progress by (no initial_stop means no R-multiple denominator -
-    # nothing to call "stalled" against).
+    # nothing to call "stalled" against), and only up to STALLED_CEILING_BARS
+    # - without that ceiling, a years-old holding near breakeven fires this
+    # every single evaluation, forever, which is a different problem than
+    # the one this rule exists to catch.
     stalled = (
         position.r_multiple is not None
         and position.r_multiple < STALLED_PROGRESS_R
-        and position.bars_held >= MAX_BARS_WITHOUT_PROGRESS
+        and MAX_BARS_WITHOUT_PROGRESS <= position.bars_held <= STALLED_CEILING_BARS
         and (position.current_stop is None or price >= position.current_stop)
     )
     if stalled:

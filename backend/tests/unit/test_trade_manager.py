@@ -13,9 +13,23 @@ def test_chandelier_stop_basic():
     assert result == pytest.approx(105.0 - 3 * 2.0)
 
 
-def test_chandelier_stop_none_with_insufficient_bars():
+def test_chandelier_stop_uses_all_available_bars_when_younger_than_the_window():
+    # A position younger than `window` bars (e.g. just opened, or entry-
+    # bounded `high` from a young trade_plan) still gets a real read from
+    # whatever history it has - it no longer demands a full window-bar
+    # history before answering (see the function's own docstring for why: a
+    # fixed-window read applied to history reaching before the position's
+    # own entry is exactly what let a young position's stop sit above a
+    # pre-entry high).
     high = pd.Series([100.0, 102.0])
     atr14 = pd.Series([2.0] * 2)
+    result = tm.chandelier_stop(high, atr14, multiplier=3.0, window=5)
+    assert result == pytest.approx(102.0 - 3 * 2.0)
+
+
+def test_chandelier_stop_none_when_high_is_empty():
+    high = pd.Series(dtype=float)
+    atr14 = pd.Series([2.0] * 5)
     assert tm.chandelier_stop(high, atr14, multiplier=3.0, window=5) is None
 
 
@@ -102,6 +116,35 @@ def test_compute_trailing_stop_uses_the_tighter_profit_lock_multiplier_beyond_2r
     # multiplier locked at 2.0 despite "alta" regime -> candidate = 140 - 2*2 = 136.0
     assert result.multiplier == pytest.approx(tm.CHANDELIER_MULTIPLIER_PROFIT_LOCK)
     assert result.stop == pytest.approx(136.0)
+
+
+def test_compute_trailing_stop_never_places_the_stop_at_or_above_the_current_price():
+    # A high reached before the position's own entry (e.g. the caller failed
+    # to bound `high` to the entry date) can produce a candidate above where
+    # the position is trading right now - a stop a long position has
+    # already been "stopped out of" by construction is never valid, and
+    # since a stop only ever moves up, an unguarded bad candidate would be
+    # permanent. `price` is the one number that catches it regardless of how
+    # `high` was sliced upstream.
+    high = pd.Series([130.0, 102.0, 101.0])  # a pre-entry high of 130, then the real (lower) trade
+    atr14 = pd.Series([2.0] * 3)
+    result = tm.compute_trailing_stop(
+        high, atr14, current_stop=95.0, r_multiple=0.3, vol_regime="normal", price=101.0
+    )
+    # Unguarded candidate would be 130 - 3*2 = 124.0, above the 101.0 price -
+    # discarded, current_stop (95.0, itself already below price) stands.
+    assert result.stop == pytest.approx(95.0)
+
+
+def test_compute_trailing_stop_price_guard_does_not_block_a_valid_candidate_below_price():
+    high = pd.Series([100.0] * 17 + [140.0, 138.0, 136.0, 134.0, 132.0])
+    atr14 = pd.Series([2.0] * 22)
+    result = tm.compute_trailing_stop(
+        high, atr14, current_stop=125.0, r_multiple=0.5, vol_regime="normal", price=140.0
+    )
+    # candidate = 140 - 3*2 = 134.0, safely below the 140.0 price -> raises
+    # normally, same result as the pre-existing no-guard "raises" test.
+    assert result.stop == pytest.approx(134.0)
 
 
 # --- max_shares_for_position_risk -------------------------------------------

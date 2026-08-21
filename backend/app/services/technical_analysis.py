@@ -595,7 +595,8 @@ def detect_cross_with_quality(
     # The most recent matching transition's position in the *full* diff
     # series (not just the lookback window) gives an exact bars-since count
     # even when lookback is small.
-    cross_position = diff.index.get_loc(matching_changes.index[-1])
+    cross_date = matching_changes.index[-1]
+    cross_position = diff.index.get_loc(cross_date)
     bars_since = len(diff) - 1 - cross_position
 
     separation_atr = None
@@ -615,7 +616,13 @@ def detect_cross_with_quality(
 
     volume_confirmation = None
     if volume is not None:
-        volume_confirmation = relative_volume(volume.iloc[: cross_position + 1])
+        # `.loc` by the cross bar's own label, not `.iloc` by `cross_position`
+        # (that position is only meaningful *within* `diff`, which `.dropna()`
+        # already shifted by the slow MA's own warmup - 49 bars short for a
+        # 21/50 pair, 199 for 50/200. Reusing it as a position into `volume`
+        # - which was never truncated - read volume from near the start of
+        # the whole series instead of around the actual cross.
+        volume_confirmation = relative_volume(volume.loc[:cross_date])
 
     if separation_atr is not None and separation_atr < CROSS_NOISE_SEPARATION_ATR:
         quality = "noise"

@@ -69,11 +69,21 @@ def chandelier_stop(
     """The raw Chandelier Exit level for a long position: highest high over
     the trailing `window` bars, minus `multiplier` x the latest ATR(`window`
     is *not* necessarily the ATR window - `atr14` is whatever ATR series the
-    caller already computed, typically the standard 14-bar one). Returns
-    `None` when there isn't enough history for a real `window`-bar high."""
-    if len(high) < window or atr14.empty:
+    caller already computed, typically the standard 14-bar one).
+
+    `high` is expected to already be bounded to whatever history is actually
+    relevant (see `portfolio_risk_service.py`, which slices it to bars on or
+    after the position's own entry date) - this function itself no longer
+    demands a full `window`-bar history before answering: a position younger
+    than `window` bars uses everything it has instead of returning `None`,
+    same idiom as `detect_recent_cross`'s own lookback-window slicing. A
+    fixed `window`-bar requirement, applied to a `high` series that reached
+    back before the position even opened, is exactly what let the trailing
+    stop use a pre-entry high on a young position after a pullback - `None`
+    is still correct when there's no data at all."""
+    if high.empty or atr14.empty:
         return None
-    highest = high.iloc[-window:].max()
+    highest = high.iloc[-window:].max() if len(high) > window else high.max()
     latest_atr = atr14.iloc[-1]
     if pd.isna(highest) or pd.isna(latest_atr):
         return None
@@ -106,15 +116,25 @@ def compute_trailing_stop(
     current_stop: float | None,
     r_multiple: float | None,
     vol_regime: str | None,
+    price: float | None = None,
     window: int = CHANDELIER_WINDOW,
 ) -> ChandelierResult:
     """The full trailing-stop update for one evaluation: picks the right
     multiplier for where the trade stands, computes the Chandelier candidate,
     and folds it into the current stop (never lowering it). This is what
     `portfolio_risk_service.py` persists via `TradePlanRepositoryPort.update_trailing`
-    each fresh evaluation."""
+    each fresh evaluation.
+
+    `price` (the latest closed price) is an extra sanity guard: a stop at or
+    above the current price is never valid for a long position - discard
+    that candidate outright (same as if none had been computed) rather than
+    ever raising the stop past where the position actually sits. `None`
+    (the default) skips the guard, matching every existing caller that
+    hasn't been updated to pass it yet."""
     multiplier = chandelier_multiplier(vol_regime, r_multiple)
     candidate = chandelier_stop(high, atr14, multiplier, window)
+    if candidate is not None and price is not None and candidate >= price:
+        candidate = None
     return ChandelierResult(stop=update_trailing_stop(current_stop, candidate), multiplier=multiplier)
 
 
