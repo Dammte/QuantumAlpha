@@ -73,7 +73,7 @@ function PortfolioWatch() {
       ) : !risk || risk.positions.length === 0 ? (
         <p className="empty-state">Esta cartera todavía no tiene posiciones.</p>
       ) : (
-        <div className="table-scroll">
+        <div className="table-scroll table-scroll--capped">
           <table className="positions-table">
             <thead>
               <tr>
@@ -153,7 +153,7 @@ function ProximityScreener({ region }) {
       ) : matches.length === 0 ? (
         <p className="empty-state">Ningún activo del universo está cerca de un nivel ahora mismo.</p>
       ) : (
-        <div className="table-scroll">
+        <div className="table-scroll table-scroll--capped">
           <table className="positions-table">
             <thead>
               <tr>

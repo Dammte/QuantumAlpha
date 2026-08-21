@@ -387,7 +387,7 @@ function App() {
           </section>
 
           <section className="panel">
-            <h2>Transacciones</h2>
+            <h2>Transacciones ({transactions.length})</h2>
             <TransactionForm
               onSubmit={handleAddTransaction}
               submitting={submittingTx}

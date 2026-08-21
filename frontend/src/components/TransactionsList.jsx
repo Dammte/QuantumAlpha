@@ -24,17 +24,27 @@ function TransactionsList({ transactions, currency, currencyByTicker, onDelete }
 
   const sorted = [...transactions].sort((a, b) => new Date(b.executed_at) - new Date(a.executed_at))
 
-  const handleDelete = async (id) => {
-    setDeletingId(id)
+  const handleDelete = async (tx) => {
+    // Deleting a transaction is permanent and there's no undo - a single
+    // misclick on a densely-packed row's icon button shouldn't be enough to
+    // lose a real financial record.
+    const label = tx.transaction_type === 'deposit' || tx.transaction_type === 'withdrawal'
+      ? TYPE_LABELS[tx.transaction_type]
+      : `${TYPE_LABELS[tx.transaction_type] ?? tx.transaction_type} de ${tx.quantity} ${tx.ticker}`
+    const date = new Date(tx.executed_at).toLocaleDateString('es-ES')
+    if (!window.confirm(`¿Eliminar esta transacción? ${label} (${date}). Esta acción no se puede deshacer.`)) {
+      return
+    }
+    setDeletingId(tx.id)
     try {
-      await onDelete(id)
+      await onDelete(tx.id)
     } finally {
       setDeletingId(null)
     }
   }
 
   return (
-    <div className="table-scroll">
+    <div className="table-scroll table-scroll--capped">
       <table className="positions-table">
         <thead>
           <tr>
@@ -75,7 +85,7 @@ function TransactionsList({ transactions, currency, currencyByTicker, onDelete }
                     className="icon-button"
                     aria-label={`Eliminar transacción de ${tx.ticker}`}
                     disabled={deletingId === tx.id}
-                    onClick={() => handleDelete(tx.id)}
+                    onClick={() => handleDelete(tx)}
                   >
                     {deletingId === tx.id ? '…' : '✕'}
                   </button>

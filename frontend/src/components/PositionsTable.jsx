@@ -43,7 +43,7 @@ function PositionsTable({ positions, colorScale, totalMarketValue, riskByTicker,
   const columnCount = BASE_COLUMN_COUNT + (showRiskColumn ? RISK_COLUMN_COUNT : 0)
 
   return (
-    <div className="table-scroll">
+    <div className="table-scroll table-scroll--capped">
       <table className="positions-table">
         <thead>
           <tr>
