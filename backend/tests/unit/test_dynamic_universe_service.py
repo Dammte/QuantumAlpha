@@ -46,6 +46,31 @@ def test_parse_stoxx600_constituents_picks_the_table_with_ticker_and_country_col
     assert len(result) == 2
 
 
+_STOXX_HTML_WITH_DUPLICATE = """
+<table>
+<tr><th>Ticker</th><th>Company</th><th>ICB Sector</th><th>Country</th><th>Headquarters</th></tr>
+<tr><td>SHEL</td><td>Shell</td><td>Energy</td><td>United Kingdom</td><td>London</td></tr>
+<tr><td>SHEL</td><td>Shell</td><td>Energy</td><td>United Kingdom</td><td>London</td></tr>
+</table>
+"""
+
+
+def test_fetch_live_constituents_dedupes_a_duplicate_row_on_the_source_page(monkeypatch):
+    # Real production bug found running scripts/refresh_universe_membership.py
+    # for real: "SHEL.L" appears twice on the actual STOXX 600 Wikipedia
+    # page, which violated universe_memberships' own uniqueness constraint at
+    # save time before this fix.
+    monkeypatch.setattr(dus, "_fetch_html", lambda url: _STOXX_HTML_WITH_DUPLICATE)
+    result = dus.fetch_live_constituents("europe")
+    assert [c.ticker for c in result] == ["SHEL.L"]
+
+
+def test_fetch_live_constituents_dedupes_us_overlap_between_sp500_and_sp400(monkeypatch):
+    monkeypatch.setattr(dus, "_fetch_html", lambda url: _SP500_HTML)  # same fixture for both S&P 500 and S&P 400
+    result = dus.fetch_live_constituents("us")
+    assert sorted(c.ticker for c in result) == ["BRK-B", "MMM"]
+
+
 def _ohlc_df(n: int, close: float, volume: float) -> pd.DataFrame:
     dates = pd.bdate_range(end=date.today() - timedelta(days=1), periods=n)
     closes = pd.Series([close] * n, index=dates)

@@ -150,6 +150,15 @@ def parse_stoxx600_constituents(html: str) -> list[RawConstituent]:
     return out
 
 
+def _dedupe(constituents: list[RawConstituent]) -> list[RawConstituent]:
+    """Last write wins (same shape either way) - a ticker appearing twice in
+    a source table (a real S&P 500/400 overlap, or a genuine duplicate row
+    on the STOXX 600 page - confirmed live: "SHEL.L" appears twice there)
+    would otherwise violate `universe_memberships`'s own
+    (region, ticker, as_of_date) uniqueness constraint at save time."""
+    return list({c.ticker: c for c in constituents}.values())
+
+
 def fetch_live_constituents(region: str) -> list[RawConstituent] | None:
     """Best-effort live fetch for one region - `None` (not an empty list, so
     the caller can tell "the fetch itself failed" apart from "the fetch
@@ -159,10 +168,9 @@ def fetch_live_constituents(region: str) -> list[RawConstituent] | None:
         if region == "us":
             sp500 = parse_us_constituents(_fetch_html(SP500_WIKI_URL))
             sp400 = parse_us_constituents(_fetch_html(SP400_WIKI_URL))
-            by_ticker = {c.ticker: c for c in [*sp500, *sp400]}  # dedupe, last write wins (same shape either way)
-            return list(by_ticker.values())
+            return _dedupe([*sp500, *sp400])
         if region == "europe":
-            return parse_stoxx600_constituents(_fetch_html(STOXX600_WIKI_URL))
+            return _dedupe(parse_stoxx600_constituents(_fetch_html(STOXX600_WIKI_URL)))
         return None
     except Exception:
         logger.exception("Dynamic universe: live constituent fetch failed for region=%s", region)
