@@ -273,6 +273,7 @@ class CoreSignalsResponse(BaseModel):
     vix_regime: str | None
     is_intraday_snapshot: bool
     recommendation: RecommendationResponse
+    sign_contradicted_factors: list[str] = []
     entry_timing: EntryTimingResponse | None
     markov: MarkovChainResponse | None
     garch: GarchResponse | None

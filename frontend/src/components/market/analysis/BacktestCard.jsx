@@ -23,6 +23,12 @@ function BacktestCard({ backtest }) {
 
   return (
     <div>
+      <p className="backtest-card__legacy-warning">
+        <strong>Backtest legacy (walk-forward):</strong> compra-y-mantiene a horizonte fijo desde cada señal pasada -
+        <strong> ignora el stop-loss y el objetivo</strong> que el sistema propondría de verdad, y no descuenta
+        costes de operar. Ver más abajo el backtest de triple-barrera (con stop/objetivo/trailing real, neto de
+        costes) para la lectura honesta.
+      </p>
       <p className={`backtest-card__interpretation backtest-card__interpretation--${tone}`}>
         {backtest.interpretation}
       </p>

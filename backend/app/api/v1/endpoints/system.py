@@ -1,7 +1,7 @@
 from dataclasses import asdict
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import (
     get_market_data_service,
@@ -10,7 +10,8 @@ from app.api.deps import (
 )
 from app.infrastructure.db.repositories.position_signal_snapshot_repository import PositionSignalSnapshotRepository
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
-from app.schemas.system import SignalPerformanceResponse
+from app.schemas.system import FactorAblationReportResponse, SignalPerformanceResponse
+from app.services import ablation_report_service as ars
 from app.services import signal_performance_service as sps
 from app.services.market_data_service import MarketDataService
 
@@ -46,4 +47,25 @@ def get_signal_performance(
         signal_outcomes=[asdict(o) for o in report.signal_outcomes],
         false_negatives=[asdict(f) for f in report.false_negatives],
         as_of=report.as_of,
+    )
+
+
+@router.get("/factor-ablation", response_model=FactorAblationReportResponse)
+def get_factor_ablation_report(
+    horizon_days: Annotated[
+        int, Query(description="Horizonte en sesiones - ver ablation_report_service.AVAILABLE_HORIZONS_DAYS")
+    ] = 21,
+) -> FactorAblationReportResponse:
+    """Peso actual vs. efecto medido (signo, IC, significancia) por factor de
+    `recommendation_engine.py`, a un horizonte dado - lee directamente el CSV
+    que `scripts/factor_ablation_study.py` ya guardó (docs/quant_methodology.md
+    §12), nunca recalcula nada. `directionally_consistent = False` en un
+    factor significa que el signo medido contradice el peso que tiene hoy -
+    se muestra la contradicción, nunca se corrige el peso en silencio (ver
+    docs/quant_methodology.md §1 y §6.1)."""
+    results = ars.load_ablation_report(horizon_days)
+    return FactorAblationReportResponse(
+        horizon_days=horizon_days,
+        available_horizons_days=list(ars.AVAILABLE_HORIZONS_DAYS),
+        results=[asdict(r) for r in results],
     )

@@ -33,3 +33,28 @@ class SignalPerformanceResponse(BaseModel):
     signal_outcomes: list[OutcomeStatsResponse]
     false_negatives: list[FalseNegativeResponse]
     as_of: datetime
+
+
+class FactorAblationResultResponse(BaseModel):
+    """See `ablation_report_service.FactorAblationResult` - one factor's
+    measured effect (from `scripts/factor_ablation_study.py`'s own saved
+    output) against its current `recommendation_engine.py` weight, at one
+    horizon. `directionally_consistent = False` means the measured sign
+    contradicts the weight's sign - flag it, never silently correct it."""
+
+    factor: str
+    current_points: int
+    mean_difference_pct: float
+    directionally_consistent: bool
+    significant_at_1pct_bh: bool
+    mean_ic: float | None
+    ic_ir: float | None
+    n_ic_buckets: int
+    multivariate_coef_pct: float | None
+    multivariate_p_value: float | None
+
+
+class FactorAblationReportResponse(BaseModel):
+    horizon_days: int
+    available_horizons_days: list[int]
+    results: list[FactorAblationResultResponse]

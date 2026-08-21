@@ -17,6 +17,7 @@ import MarkovChainCard from './MarkovChainCard'
 import VolatilityCard from './VolatilityCard'
 import MonteCarloChart from './MonteCarloChart'
 import BacktestCard from './BacktestCard'
+import TripleBarrierBacktestCard from './TripleBarrierBacktestCard'
 import PositionSizingCard from './PositionSizingCard'
 
 const REGIME_LABELS = {
@@ -210,6 +211,7 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
                   imminentCrossShortTerm={analysis.imminent_cross_short_term}
                   candlestickPattern={analysis.candlestick_pattern}
                   currency={analysis.currency ?? 'USD'}
+                  signContradictedFactors={analysis.sign_contradicted_factors}
                 />
                 <PositionSizingCard
                   sizing={analysis.position_sizing}
@@ -222,6 +224,11 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
               <section className="panel panel--nested">
                 <h3>Validación histórica del sistema (backtest walk-forward)</h3>
                 <BacktestCard backtest={analysis.backtest} />
+              </section>
+
+              <section className="panel panel--nested">
+                <h3>Backtest de triple-barrera (stop/objetivo/trailing real, neto de costes)</h3>
+                <TripleBarrierBacktestCard backtest={analysis.triple_barrier_backtest} />
               </section>
             </>
           )}

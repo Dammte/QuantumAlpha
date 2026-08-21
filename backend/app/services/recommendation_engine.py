@@ -232,20 +232,25 @@ def build_recommendation(
     # even when individual pieces overlap), not a second full vote for the
     # same underlying "clean uptrend" fact. See module docstring.
     add("Cumple el Trend Template de Minervini (8/8)", 1, minervini_pass)
-    # Scored *independently* of the 8/8 AND-gate above, and weighted higher:
-    # scripts/factor_ablation_study.py, run cross-sectionally over ~217
-    # tickers x 10 years (2026-08), found this specific criterion - price 25%+
-    # above its 52-week low AND within 25% of its 52-week high, i.e. a
-    # confirmed move, neither a dead-cat bounce off the low nor one already
-    # fully extended off it - to be the single most robustly validated factor
-    # in the entire checklist: significant (p<0.01, permutation test) and
-    # correctly-signed at BOTH a 3-month (+1.04pp) and 6-month (+2.67pp)
-    # forward-return horizon, the only factor to clear that bar at either
-    # horizon. Gating it behind Minervini's other 7 criteria (as the 8/8
-    # bonus above does) would silently zero out this validated edge for any
-    # stock that fails just one unrelated criterion (e.g. RS Rating 65 vs the
-    # required 70) - seeing this file? recompute this study before trusting
-    # this weight blindly on a materially different universe/period.
+    # Scored *independently* of the 8/8 AND-gate above: gating it behind
+    # Minervini's other 7 criteria would zero this out for any stock that
+    # fails just one unrelated criterion (e.g. RS Rating 65 vs the required
+    # 70).
+    #
+    # CORRECTION (Segunda auditoría, Bloque 4, 2026-08) to what this comment
+    # used to claim: the ORIGINAL factor_ablation_study.py run (pre-Fase 5)
+    # found this "the single most robustly validated factor in the entire
+    # checklist... correctly-signed at BOTH 3-month (+1.04pp) and 6-month
+    # (+2.67pp)". The rewritten v2 study (triple-barrier labeling, demeaned,
+    # Fase 5) - the one docs/quant_methodology.md §17 now actually surfaces
+    # in the UI - measures the OPPOSITE sign for `minervini_range_position`
+    # at both of those same horizons (-0.11pp @63d, not BH-significant;
+    # -0.51pp @126d, significant at raw p<0.01 but not after BH correction).
+    # This weight (+2) has NOT been changed - that needs the owner's explicit
+    # sign-off (CLAUDE.md), not a silent fix here - but the claim this
+    # comment used to make is stale and was citing a study Fase 5 already
+    # superseded. See docs/quant_methodology.md §17 for the full comparison
+    # across all four measured horizons before trusting this weight.
     add(
         "Movimiento confirmado: precio 25%+ sobre su mínimo anual y dentro del 25% de su máximo anual",
         2,

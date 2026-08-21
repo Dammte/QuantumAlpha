@@ -166,6 +166,7 @@ class TickerAnalysisResponse(BaseModel):
     is_intraday_snapshot: bool
     multi_timeframe: MultiTimeframeResponse
     confirmed_recommendation: RecommendationResponse | None
+    sign_contradicted_factors: list[str]
     price_history: list[PricePointResponse]
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None

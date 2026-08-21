@@ -59,9 +59,11 @@ function RecommendationCard({
   imminentCrossShortTerm,
   candlestickPattern,
   currency,
+  signContradictedFactors,
 }) {
   const meta = VERDICT_META[recommendation.verdict] ?? { label: recommendation.verdict, tone: 'neutral' }
   const triggered = recommendation.factors.filter((f) => f.triggered)
+  const mismatched = new Set(signContradictedFactors ?? [])
 
   return (
     <div className={`recommendation-card recommendation-card--${meta.tone}`}>
@@ -97,11 +99,19 @@ function RecommendationCard({
         </div>
       )}
 
+      {mismatched.size > 0 && (
+        <div className="recommendation-card__sign-warning">
+          <strong>⚠️ Este veredicto se apoya, en parte, en factores cuyo signo medido por el estudio de
+          ablación es el contrario al peso que tienen hoy</strong> - no se ha corregido el peso, solo se
+          muestra la contradicción. Marcados con ⚠️ abajo. Ver Metodología §16.
+        </div>
+      )}
+
       <ul className="recommendation-card__factors">
         {triggered.map((f) => (
           <li key={f.label} className={f.points >= 0 ? 'delta-up' : 'delta-down'}>
             <span>{f.points >= 0 ? '▲' : '▼'}</span> {f.label} ({f.points >= 0 ? '+' : ''}
-            {f.points})
+            {f.points}){mismatched.has(f.label) && <span className="system-performance__mismatch-tag"> ⚠️ signo contrario medido</span>}
           </li>
         ))}
         {triggered.length === 0 && <li className="empty-state">Sin factores técnicos destacables ahora mismo.</li>}

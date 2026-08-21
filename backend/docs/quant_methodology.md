@@ -671,3 +671,51 @@ semanas distinto del de 200 sesiones, tendencia de volumen relativo subiendo/baj
 reescrito (22 tests - bonus del percentil de setup, `TierDiscardStats`, el nuevo
 `get_premium_watchlist_with_stats`); test de integración nuevo confirmando `discard_stats` y `setup`
 de punta a punta contra la API real. 643 tests unitarios en verde, `ruff check app tests` limpio.
+
+## 17. Segunda auditoría independiente — Bloque 4: decir la verdad en la interfaz (agosto 2026)
+
+**Hallazgo real, encontrado al conectar esto por primera vez - no un ajuste de mi código, un dato que
+esta misma auditoría existe para exponer**: `minervini_range_position` (el criterio de precio 25%+
+sobre el mínimo anual y dentro del 25% del máximo) es, según el comentario propio de
+`recommendation_engine.py` (líneas 236-248), *"el factor más robustamente validado de todo el
+checklist... significativo (p<0.01) y con el signo correcto TANTO a 3 meses (+1,04pp) COMO a 6 meses
+(+2,67pp)"* - una referencia al estudio de ablación **original** (pre-Fase 5). El estudio v2
+reescrito (barrera triple, demeaned, Fase 5 - el que ahora lee este mismo bloque) mide, para ese
+mismo factor: **signo contrario** a 63 sesiones (`mean_difference_pct=-0,112`, no significativo tras
+corrección BH) y **signo contrario** a 126 sesiones (`mean_difference_pct=-0,51`, significativo en
+crudo pero no tras corrección BH). El propio comentario del motor que justifica el peso de este
+factor está citando un estudio que la Fase 5 ya reemplazó, y nadie lo había verificado hasta conectar
+esto. No se ha tocado el peso - eso es exactamente lo que este documento (y CLAUDE.md) prohíben sin
+decisión explícita del propietario - pero el comentario en `recommendation_engine.py` necesita una
+revisión honesta antes de la próxima vez que alguien confíe en él, y **esto se deja anotado aquí para
+que el propietario lo vea**, no corregido en silencio en este mismo commit. De los 15 factores con
+clave de ablación, entre 7 (a 126 sesiones) y 11 (a 21 sesiones) miden signo contrario a su peso
+actual - ver el propio endpoint/vista para el detalle completo por horizonte.
+
+1. **"Rendimiento del sistema" ahora muestra peso vs. efecto medido por factor** - nuevo
+   `ablation_report_service.py`: lee directamente los CSV que `scripts/factor_ablation_study.py` ya
+   guardó (`docs/factor_ablation_report_v2_h{5,21,63,126}.csv`), nunca recalcula nada. Nuevo endpoint
+   `GET /api/v1/system/factor-ablation?horizon_days=N`. Nueva sección en `SystemPerformanceView.jsx`
+   con selector de horizonte y fila marcada ⚠️ cuando `directionally_consistent = False`.
+2. **Aviso en la ficha del ticker cuando el veredicto se apoya en factores de signo contradicho** -
+   `ablation_report_service.triggered_factors_with_contradicted_sign` cruza los factores
+   *disparados* de la recomendación actual (por su etiqueta legible, vía un mapeo mantenido a mano
+   `FACTOR_LABEL_TO_ABLATION_KEY` - un factor sin entrada ahí simplemente nunca se marca, nunca se
+   asume consistente) contra el conjunto de claves con signo contrario al horizonte de referencia
+   (21 sesiones, el horizonte real de esta cartera - igual que `TRIPLE_BARRIER_HORIZON_DAYS`). Nuevo
+   campo `sign_contradicted_factors` en `CoreTickerSignals`/`TickerAnalysis`, mostrado como aviso en
+   `RecommendationCard.jsx` y marcado factor por factor en la propia lista - nunca cambia la
+   puntuación, solo la revela.
+3. **Backtest etiquetado por lo que realmente es**: `BacktestCard.jsx` (el walk-forward legacy) ahora
+   dice explícitamente que ignora el stop/objetivo y no descuenta costes. Nuevo
+   `TripleBarrierBacktestCard.jsx` muestra el backtest de barrera triple ya conectado en el Bloque 2
+   (`triple_barrier_backtest`) - expectativa/factor de beneficio/drawdown netos de costes, MAE/MFE
+   brutos a propósito, las cuatro estrategias (fija/trailing real/comprar-y-mantener/aleatoria) una
+   junto a la otra.
+
+**Tests**: `test_ablation_report_service.py` (9 tests - parseo, archivo ausente, archivo corrupto,
+mapeo de factores disparados a claves de ablación, un factor sin mapeo nunca se marca); tests nuevos
+en `test_ticker_analysis_service.py`/`test_ticker_analysis_api.py` (el segundo contra los CSV reales
+del repositorio, no una fábrica de datos) confirmando que `sign_contradicted_factors` es siempre un
+subconjunto de los factores realmente disparados. 654 tests unitarios en verde, `ruff check app tests`
+limpio.

@@ -88,6 +88,7 @@ class TickerAnalysis:
     is_intraday_snapshot: bool
     multi_timeframe: MultiTimeframeRead
     confirmed_recommendation: Recommendation | None
+    sign_contradicted_factors: list[str]
     price_history: list[PricePoint]
     news: list[NewsArticle]
     fundamentals: TickerInfo | None

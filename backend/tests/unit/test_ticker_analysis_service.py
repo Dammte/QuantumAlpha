@@ -132,6 +132,28 @@ def test_triple_barrier_backtest_is_skipped_by_default():
     assert signals.triple_barrier_backtest is None
 
 
+def test_sign_contradicted_factors_flags_a_triggered_mismatched_factor(monkeypatch):
+    close, high, low, volume, open_ = _series(100 + np.arange(260) * 0.4)
+    monkeypatch.setattr(
+        tas.ars,
+        "triggered_factors_with_contradicted_sign",
+        lambda factors, horizon: ["Tendencia alcista (MA20 > MA50 > MA200)"],
+    )
+    signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
+    assert signals is not None
+    assert signals.sign_contradicted_factors == ["Tendencia alcista (MA20 > MA50 > MA200)"]
+
+
+def test_sign_contradicted_factors_is_always_a_list():
+    # Real content depends on whatever docs/factor_ablation_report_v2_h21.csv
+    # currently says - only the shape is asserted here (see
+    # test_ablation_report_service.py for the actual logic's own tests).
+    close, high, low, volume, open_ = _series(100 + np.arange(260) * 0.4)
+    signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
+    assert signals is not None
+    assert isinstance(signals.sign_contradicted_factors, list)
+
+
 def test_52_week_range_factor_never_fires_with_only_60_bars():
     # D11: rolling_extreme_price/distance_to_rolling_extreme now require the
     # full 252-bar window by default - a ticker with only 60 bars (the

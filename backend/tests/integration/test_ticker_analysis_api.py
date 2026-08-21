@@ -71,6 +71,19 @@ def test_ticker_analysis_includes_multi_timeframe_and_triple_barrier_backtest(cl
         assert "n_trades" in tbb[bucket]
 
 
+def test_ticker_analysis_includes_sign_contradicted_factors(client: TestClient) -> None:
+    """Segunda auditoría, Bloque 4: which of the verdict's own triggered
+    factors the ablation study measured with a sign opposite their current
+    weight - real data from docs/factor_ablation_report_v2_h21.csv, not a
+    fixture."""
+    response = client.get("/api/v1/market/tickers/AAPL/analysis")
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["sign_contradicted_factors"], list)
+    triggered_labels = {f["label"] for f in body["recommendation"]["factors"] if f["triggered"]}
+    assert set(body["sign_contradicted_factors"]) <= triggered_labels
+
+
 def test_ticker_analysis_position_sizing_present_only_for_buy_verdicts(client: TestClient) -> None:
     for ticker in ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL"]:
         body = client.get(f"/api/v1/market/tickers/{ticker}/analysis").json()

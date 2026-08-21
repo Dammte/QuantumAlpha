@@ -2096,6 +2096,16 @@
   font-style: italic;
 }
 
+.recommendation-card__sign-warning {
+  font-size: 12.5px;
+  color: var(--text-h);
+  background: rgba(208, 59, 59, 0.08);
+  border: 1px solid var(--series-critical);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 10px 0;
+}
+
 /* Fundamentals */
 
 .fundamentals-grid {
@@ -2397,6 +2407,15 @@
   color: var(--text);
   margin: 0;
   font-style: italic;
+}
+
+.backtest-card__legacy-warning {
+  font-size: 12.5px;
+  color: var(--text-h);
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 0 0 12px;
 }
 
 /* Kelly position sizing card */
@@ -2733,4 +2752,16 @@
   letter-spacing: 0.04em;
   color: var(--text);
   font-weight: 600;
+}
+
+/* Segunda auditoría, Bloque 4: peso vs. signo medido */
+
+.system-performance__row--mismatch {
+  background: rgba(208, 59, 59, 0.06);
+}
+
+.system-performance__mismatch-tag {
+  color: var(--series-critical);
+  font-weight: 600;
+  font-size: 12px;
 }

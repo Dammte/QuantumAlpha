@@ -35,6 +35,7 @@ from datetime import date, time, timedelta
 import pandas as pd
 
 from app.domain.models.ticker_analysis import PricePoint, TickerAnalysis
+from app.services import ablation_report_service as ars
 from app.services import analysis_tools as at
 from app.services import multi_timeframe as mtf
 from app.services import statistical_structure as stats_structure
@@ -75,6 +76,11 @@ DEFAULT_HORIZON = "3m"
 # preset the caller picked (1m/3m/6m -> 21/63/126 days) - 63/126 is outside
 # what run_triple_barrier_backtest was designed and documented against.
 TRIPLE_BARRIER_HORIZON_DAYS = VERTICAL_BARRIER_HORIZONS[1]  # 21
+
+# Segunda auditoría, Bloque 4: same reasoning as TRIPLE_BARRIER_HORIZON_DAYS -
+# this portfolio's actual holding horizon, fixed, never whichever Monte Carlo
+# preset the caller happened to pick.
+SIGN_CHECK_HORIZON_DAYS = VERTICAL_BARRIER_HORIZONS[1]  # 21
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +155,15 @@ class CoreTickerSignals:
     # are continuous statistical estimates, not discrete signals that
     # repaint the way a moving-average cross does.
     confirmed_recommendation: Recommendation | None
+    # Segunda auditoría, Bloque 4: which of `recommendation`'s own *triggered*
+    # factors map to a factor the ablation study (scripts/factor_ablation_study.py,
+    # already-saved CSVs - see ablation_report_service.py) measured with a
+    # sign opposite the weight it's currently scored with, at this portfolio's
+    # actual holding horizon (~21 sessions). Empty when nothing's flagged -
+    # either every triggered factor is directionally consistent, or none of
+    # them has an ablation entry at all. Never changes the score itself; the
+    # UI shows this as a disclosure, not a correction.
+    sign_contradicted_factors: list[str]
     entry_timing: EntryTiming | None  # see entry_timing.py - a timing read, not a second verdict
     markov: MarkovChainResult | None
     garch: GarchResult | None
@@ -459,6 +474,10 @@ def compute_core_signals(
             revenue_growth, profit_margins, debt_to_equity, cutoff=closed_bar_cutoff,
         )
 
+    sign_contradicted_factors = ars.triggered_factors_with_contradicted_sign(
+        recommendation.factors, SIGN_CHECK_HORIZON_DAYS
+    )
+
     entry_timing = assess_entry_timing(atr_multiple, nearest_support, trend)
 
     monte_carlo = simulate_and_analyze(
@@ -532,6 +551,7 @@ def compute_core_signals(
         recommendation=recommendation,
         multi_timeframe=multi_timeframe,
         confirmed_recommendation=confirmed_recommendation,
+        sign_contradicted_factors=sign_contradicted_factors,
         entry_timing=entry_timing,
         markov=markov,
         garch=garch,
@@ -703,6 +723,7 @@ class TickerAnalysisService:
             is_intraday_snapshot=core.is_intraday_snapshot,
             multi_timeframe=core.multi_timeframe,
             confirmed_recommendation=core.confirmed_recommendation,
+            sign_contradicted_factors=core.sign_contradicted_factors,
             price_history=price_history,
             news=news,
             fundamentals=info,
