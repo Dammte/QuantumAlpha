@@ -252,6 +252,29 @@ def test_premium_watchlist_returns_only_approved_tiered_candidates(client: TestC
         assert {"garch", "markov", "monte_carlo", "backtest", "position_sizing"} <= item["signals"].keys()
 
 
+def test_premium_watchlist_reports_discard_stats_and_setup_type(client: TestClient) -> None:
+    # Segunda auditoría, Bloque 3: MAX_CANDIDATES_PER_TIER used to truncate
+    # the cheap pre-filter's matches silently - this is "15 de 47 candidatos
+    # analizados" as a real, surfaced number.
+    response = client.get("/api/v1/market/watchlist/premium")
+    assert response.status_code == 200
+    body = response.json()
+    assert "discard_stats" in body
+    tiers_seen = {s["tier"] for s in body["discard_stats"]}
+    assert tiers_seen <= {"daily", "weekly", "monthly"}
+    for stats in body["discard_stats"]:
+        assert stats["analyzed"] <= stats["prefilter_matches"]
+        assert stats["approved"] <= stats["analyzed"]
+
+    for item in body["items"]:
+        if item["tier"] == "daily":
+            assert item["setup"] in {
+                "oversold_bounce", "breakout_volume", "trend_continuation", "pullback_to_support",
+            }
+        else:
+            assert item["setup"] is None
+
+
 def test_premium_watchlist_filters_by_tier(client: TestClient) -> None:
     response = client.get("/api/v1/market/watchlist/premium", params={"tier": "daily"})
     assert response.status_code == 200

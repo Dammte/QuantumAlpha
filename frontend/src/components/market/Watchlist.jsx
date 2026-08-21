@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
-import { formatCurrency, formatPercent } from '../../format'
+import { SETUP_LABELS, formatCurrency, formatPercent } from '../../format'
 import TrendBadge from './TrendBadge'
 import PremiumWatchlist from './PremiumWatchlist'
 import RefreshBar from '../RefreshBar'
@@ -45,6 +45,7 @@ function WatchlistCard({ item }) {
         </div>
         <span className="badge badge--buy">{HORIZON_LABELS[item.horizon]}</span>
       </div>
+      {item.setup && <span className="setup-badge">{SETUP_LABELS[item.setup] ?? item.setup}</span>}
       <div className="watchlist-card__stats">
         <span>{formatCurrency(item.snapshot.price, item.snapshot.currency)}</span>
         <span className={item.snapshot.change_1d >= 0 ? 'delta-up' : 'delta-down'}>

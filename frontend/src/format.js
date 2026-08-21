@@ -79,6 +79,15 @@ export const SIGNAL_LABELS = {
   hold: 'Mantener',
 }
 
+// Segunda auditoría, Bloque 3: los cuatro tipos de setup de corto plazo que
+// antes vivían mezclados en una sola regla - ver watchlist_service.py.
+export const SETUP_LABELS = {
+  oversold_bounce: 'Rebote desde sobreventa',
+  breakout_volume: 'Ruptura con volumen',
+  trend_continuation: 'Continuación de tendencia',
+  pullback_to_support: 'Retroceso a soporte',
+}
+
 export const GARCH_REGIME_LABELS = {
   baja: 'volatilidad baja',
   normal: 'volatilidad normal',

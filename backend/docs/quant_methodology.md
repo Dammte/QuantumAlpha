@@ -596,3 +596,78 @@ capitalización, sin datos; orquestación con fetch simulado en vivo y con fallb
 verificada con `alembic heads`/`alembic history` y con `Base.metadata.create_all` contra SQLite (las
 migraciones de este proyecto son Postgres-only por diseño - ver `tests/integration/conftest.py`, que
 ya evita alembic por completo). 623 tests unitarios en verde, `ruff check app tests` limpio.
+
+## 16. Segunda auditoría independiente — Bloque 3, puntos 2-6: setups, percentil, limpieza, diversificación (agosto 2026)
+
+Sigue pendiente el punto 7 (estadística por setup vía `backtest_engine` sobre el universo completo) -
+ver la nota al cierre de esta sección.
+
+1. **Separación de setups.** `watchlist_service._short_term_reasons` hacía OR de tres reglas
+   distintas en un solo cajón. Ahora son cuatro detectores independientes
+   (`oversold_bounce`/`breakout_volume`/`trend_continuation`/`pullback_to_support`), cada uno
+   produciendo su propio `WatchlistItem` - un ticker que cumple dos a la vez aparece dos veces, una
+   por setup, nunca mezclado. `pullback_to_support` es la única regla genuinamente nueva (las otras
+   tres ya existían, solo separadas): precio a 0-4% sobre una SMA50 que a su vez está por encima de
+   la SMA200 (tendencia intermedia confirmada), con RSI > 40 (para no solaparse con
+   `oversold_bounce`) - aproximado desde las medias móviles que cada snapshot ya trae, en vez de una
+   segunda pasada de niveles de soporte/resistencia sobre todo el universo.
+2. **Percentil transversal, específico de setup, reemplazando RS Rating como criterio de orden para
+   los tiers de corto plazo.** Nuevos campos en `TickerSnapshot` (calculados una vez, en
+   `market_screener_service._build_raw`, junto al resto de indicadores - sin pasada extra sobre el
+   universo): `atr_ratio_50d` (ATR14 actual vs. su propia media de 50 sesiones - contracción/
+   expansión), `atr_multiple_sma21` (`atr_multiple_from_sma` con `sma_window=21`, distinto del
+   campo ya existente a 50 sesiones), `range_position_20d` (`rolling_position_in_range` a 20
+   sesiones - ya existía como función, no como campo del snapshot), `mansfield_rs_4w` (ventana de
+   20 sesiones, no las 200 del campo ya existente) y `relative_volume_trend` (relative_volume de
+   hoy menos el de hace 5 sesiones). `watchlist_service.setup_percentile_scores` calcula, para
+   cada uno de esos seis campos, el percentil (0-100, empates con rango promedio vía
+   `pandas.Series.rank` - una implementación ingenua de "el primero en la lista gana el rango más
+   bajo" sesgaría el resultado por orden de entrada, no por valor real, y así fue como se descubrió
+   en el primer intento) dentro de **todo** el universo del día, no solo de quienes ya cumplen la
+   regla de disparo del setup - la regla decide quién califica, el percentil decide el orden entre
+   calificados. Ninguna dirección/peso por campo está validada por ablación todavía (a diferencia de
+   los factores de `recommendation_engine.py`), así que es un promedio sin ponderar, transparente -
+   la única inversión que se aplica es la que pide el encargo explícitamente: el retorno a 5 días
+   cuenta al revés para `oversold_bounce` (una caída más profunda prepara un rebote mayor). RS
+   Rating se queda como criterio de orden solo para el tier mensual.
+3. **Limpieza de `_approval_score`** (`premium_watchlist_service.py`): fuera `BACKTEST_EDGE_BONUS`
+   y `KELLY_SETUP_BONUS` (sin sustituto), fuera el rechazo `backtest_contradicts` (corría sobre el
+   backtest legacy - reintroducir solo con `backtest_engine` y ≥30 operaciones/bucket, todavía por
+   hacer), y `MONTE_CARLO_EDGE_WEIGHT` (`probability_target_before_stop × 2`, casi circular - la
+   propia simulación Monte Carlo se deriva de la misma recomendación que este score ya usa) se
+   reemplaza por `SETUP_PERCENTILE_BONUS_WEIGHT`, alimentado por el percentil del punto 2 - solo
+   presente para el tier diario (setups de corto plazo); semanal/mensual se quedan sin ese empujón,
+   no con uno inventado. El bonus de sector fuerte y la penalización de entrada extendida se
+   mantienen sin cambios (baratos, direccionalmente sólidos, mismo carácter que el nuevo bonus).
+4. **Log + exposición de candidatos descartados.** `MAX_CANDIDATES_PER_TIER=15` truncaba en
+   silencio. Nuevo `TierDiscardStats` (`prefilter_matches`/`analyzed`/`approved` por tier), devuelto
+   junto a los candidatos por `build_premium_watchlist` y cacheado junto a ellos
+   (`PremiumWatchlistService.get_premium_watchlist_with_stats`, para no recomputar dos veces por
+   petición). Expuesto en `GET /api/v1/market/watchlist/premium` (`discard_stats`) y en el panel
+   "Premium" del frontend ("X de Y candidatos analizados en detalle").
+5. **Diversificación (dedupe entre tiers, penalización por correlación, límite por sector)**: **no
+   implementada en este bloque** - decisión explícita de alcance, no un olvido. Requiere
+   `portfolio_construction_service.compute_correlation_matrix` sobre los propios candidatos de la
+   lista (no solo la cartera existente, su uso actual) y una regla de desempate entre tiers que
+   decida en cuál de sus horizontes calificados debe aparecer un ticker que califica en más de uno -
+   ninguna de las dos cosas existe todavía en la forma que esto necesita, y el tiempo disponible en
+   este bloque se agotó en los puntos 1-4 y 6. Candidato natural para la siguiente sesión sobre este
+   mismo bloque.
+
+**Por qué el punto 7 (estadística histórica por setup vía `backtest_engine` sobre el universo
+completo) queda fuera de este bloque**: es, en sí mismo, una operación de la escala del propio
+estudio de ablación (correr `backtest_engine` sobre cientos de tickers x 10 años x 4 tipos de setup),
+no una función más para añadir a una tarde de trabajo - la ejecución real del estudio de ablación (§12)
+ya documentó cuánto tarda ese tipo de cómputo. Se hará como parte del Bloque 5 (que de todos modos
+re-ejecuta el estudio de ablación), no duplicado aquí.
+
+**Tests**: `test_watchlist_service.py` ampliado (21 tests: los cuatro setups por separado, un ticker
+que dispara dos a la vez produce dos items, `setup`/`percentile_score` presentes solo en items de
+corto plazo, inversión del retorno a 5 días específica de `oversold_bounce`, empates con rango
+promedio); `test_market_screener_service.py` nuevo (8 tests - primero que existe para este archivo:
+contracción/expansión de ATR, posición en rango a 20 sesiones en máximos/mínimos, Mansfield RS a 4
+semanas distinto del de 200 sesiones, tendencia de volumen relativo subiendo/bajando,
+`atr_multiple_sma21` distinto del campo a 50 sesiones); `test_premium_watchlist_service.py`
+reescrito (22 tests - bonus del percentil de setup, `TierDiscardStats`, el nuevo
+`get_premium_watchlist_with_stats`); test de integración nuevo confirmando `discard_stats` y `setup`
+de punta a punta contra la API real. 643 tests unitarios en verde, `ruff check app tests` limpio.

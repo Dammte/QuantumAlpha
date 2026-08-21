@@ -32,6 +32,7 @@ from app.schemas.market import (
     SectorRotationResponse,
     SupportResistanceResponse,
     TickerSnapshotResponse,
+    TierDiscardStatsResponse,
     TrendBreadthResponse,
     TrendDetailResponse,
     UniverseResponse,
@@ -123,6 +124,7 @@ def _premium_item_to_response(item: PremiumWatchlistItem) -> PremiumWatchlistIte
         reasons=item.reasons,
         premium_score=item.premium_score,
         signals=_core_signals_to_response(item.signals),
+        setup=item.setup,
     )
 
 
@@ -309,6 +311,8 @@ def get_watchlist(
                 reasons=item.reasons,
                 snapshot=_to_response(item.snapshot),
                 sector_rs_rank=sector_rank_by_name.get(item.sector),
+                setup=item.setup,
+                percentile_score=item.percentile_score,
             )
             for item in items
         ],
@@ -348,10 +352,14 @@ def get_premium_watchlist(
         if cached is not None:
             return cached
 
-    items = service.get_premium_watchlist(region=region, tier=tier, force_refresh=refresh)
+    items, discard_stats = service.get_premium_watchlist_with_stats(
+        region=region, tier=tier, force_refresh=refresh
+    )
     computed_at = datetime.now(UTC)
     response = PremiumWatchlistResponse(
-        items=[_premium_item_to_response(i) for i in items], computed_at=computed_at
+        items=[_premium_item_to_response(i) for i in items],
+        computed_at=computed_at,
+        discard_stats=[TierDiscardStatsResponse(**asdict(s)) for s in discard_stats],
     )
     durable_cache.save(db, cache_key, response.model_dump(mode="json"), computed_at=computed_at)
     return response

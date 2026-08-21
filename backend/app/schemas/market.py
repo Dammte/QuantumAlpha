@@ -233,6 +233,11 @@ class WatchlistItemResponse(BaseModel):
     reasons: list[str]
     snapshot: TickerSnapshotResponse
     sector_rs_rank: int | None
+    # "oversold_bounce" | "breakout_volume" | "trend_continuation" |
+    # "pullback_to_support" for a short-term item, `None` for medium/long-term
+    # ones (not split into setup types) - see watchlist_service.py.
+    setup: str | None = None
+    percentile_score: float | None = None
 
 
 class PremiumWatchlistItemResponse(BaseModel):
@@ -251,6 +256,7 @@ class PremiumWatchlistItemResponse(BaseModel):
     reasons: list[str]
     premium_score: float
     signals: CoreSignalsResponse
+    setup: str | None = None
 
 
 class TradePlanResponse(BaseModel):
@@ -326,9 +332,19 @@ class PortfolioRiskResponse(BaseModel):
     computed_at: datetime  # when this was last actually computed - may be hours old, see durable_cache.py
 
 
+class TierDiscardStatsResponse(BaseModel):
+    """"15 de 47 candidatos analizados" - see premium_watchlist_service.TierDiscardStats."""
+
+    tier: str
+    prefilter_matches: int
+    analyzed: int
+    approved: int
+
+
 class PremiumWatchlistResponse(BaseModel):
     items: list[PremiumWatchlistItemResponse]
     computed_at: datetime  # oldest of the tier(s) shown - see durable_cache.py
+    discard_stats: list[TierDiscardStatsResponse] = []
 
 
 class WatchlistResponse(BaseModel):

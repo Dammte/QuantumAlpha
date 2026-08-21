@@ -37,6 +37,16 @@ class TickerSnapshot:
     minervini_pass: bool
     rs_rating: int | None = None  # filled in later - needs the whole universe to percentile-rank
     currency: str = "USD"  # yfinance's own currency code; GBp means pence, not pounds (LSE convention)
+    # Segunda auditoría, Bloque 3: inputs for the cross-sectional, setup-specific
+    # percentile score (watchlist_service.setup_percentile_score) that replaces
+    # RS Rating (12-month momentum) as the short-term tiers' ordering criterion -
+    # RS Rating stays the ordering criterion for the monthly tier only, where a
+    # 12-month momentum read is actually the right question to ask.
+    atr_ratio_50d: float | None = None  # current ATR(14) vs its own 50-day average - <1 contracting, >1 expanding
+    atr_multiple_sma21: float | None = None  # atr_multiple_from_sma(sma_window=21) - vs the 50-day one above
+    range_position_20d: float | None = None  # rolling_position_in_range(close, 20) - 0 (low) to 1 (high)
+    mansfield_rs_4w: float | None = None  # mansfield_rs(window=20, ~4 weeks) - vs the 200-day one above
+    relative_volume_trend: float | None = None  # today's relative_volume minus its value 5 sessions ago
 
 
 @dataclass(frozen=True, slots=True)

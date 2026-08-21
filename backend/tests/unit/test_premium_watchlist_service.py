@@ -8,32 +8,25 @@ from app.services import premium_watchlist_service as pws
 from app.services import technical_analysis as ta
 
 
-def _signals(
-    verdict="comprar",
-    score=6,
-    sig_tests=None,
-    mc_prob=None,
-    has_sizing=False,
-    has_backtest=True,
-    entry_timing=None,
-):
-    backtest = SimpleNamespace(significance_tests=sig_tests or []) if has_backtest else None
-    monte_carlo = SimpleNamespace(probability_target_before_stop=mc_prob) if mc_prob is not None else None
+def _signals(verdict="comprar", score=6, has_sizing=False, entry_timing=None):
     position_sizing = SimpleNamespace() if has_sizing else None
     return SimpleNamespace(
         recommendation=SimpleNamespace(verdict=verdict, score=score),
-        backtest=backtest,
-        monte_carlo=monte_carlo,
+        backtest=None,
+        monte_carlo=None,
         position_sizing=position_sizing,
         entry_timing=entry_timing,
     )
 
 
-def _sig_test(comparison="comprar vs evitar", significant=True, mean_difference=0.02):
-    return SimpleNamespace(comparison=comparison, significant_at_5pct=significant, mean_difference=mean_difference)
-
-
 # --- _approval_score: the objectivity gate ----------------------------------
+#
+# Segunda auditoría, Bloque 3: BACKTEST_EDGE_BONUS/KELLY_SETUP_BONUS and the
+# backtest_contradicts rejection are gone (see _approval_score's own
+# docstring for why) - MONTE_CARLO_EDGE_WEIGHT is replaced by
+# SETUP_PERCENTILE_BONUS_WEIGHT, driven by the candidate's cross-sectional
+# setup percentile (watchlist_service.setup_percentile_score), not Monte
+# Carlo's own (near-circular) stop/target simulation.
 
 
 def test_rejects_non_comprar_verdict():
@@ -41,44 +34,30 @@ def test_rejects_non_comprar_verdict():
     assert pws._approval_score(_signals(verdict="evitar")) is None
 
 
-def test_rejects_when_this_tickers_own_backtest_significantly_contradicts():
-    """The core objectivity guard: even a "comprar" verdict today is excluded if
-    THIS ticker's own walk-forward history says "evitar" has beaten "comprar"."""
-    signals = _signals(sig_tests=[_sig_test(significant=True, mean_difference=-0.03)])
-    assert pws._approval_score(signals) is None
-
-
-def test_tolerates_missing_backtest_data():
-    """A ticker with too little history to run the significance test at all
-    (backtest=None) is neither rejected nor bonused - just scored at face value."""
-    signals = _signals(score=6, has_backtest=False)
-    assert pws._approval_score(signals) == pytest.approx(6.0)
-
-
-def test_bonus_when_backtest_significantly_confirms_the_edge():
-    base = pws._approval_score(_signals(score=6, sig_tests=[]))
-    confirming_test = _sig_test(significant=True, mean_difference=0.02)
-    confirmed = pws._approval_score(_signals(score=6, sig_tests=[confirming_test]))
-    assert confirmed - base == pytest.approx(pws.BACKTEST_EDGE_BONUS)
-
-
-def test_no_bonus_when_backtest_is_inconclusive():
-    inconclusive = pws._approval_score(
-        _signals(score=6, sig_tests=[_sig_test(significant=False, mean_difference=0.02)])
-    )
-    assert inconclusive == pytest.approx(6.0)
-
-
-def test_monte_carlo_edge_adds_proportional_bonus():
+def test_setup_percentile_above_50_adds_a_positive_bonus():
     base = pws._approval_score(_signals(score=6))
-    boosted = pws._approval_score(_signals(score=6, mc_prob=0.8))
-    assert boosted - base == pytest.approx(0.8 * pws.MONTE_CARLO_EDGE_WEIGHT)
+    boosted = pws._approval_score(_signals(score=6), setup_percentile=100.0)
+    assert boosted - base == pytest.approx(pws.SETUP_PERCENTILE_BONUS_WEIGHT)
 
 
-def test_kelly_setup_adds_flat_bonus():
+def test_setup_percentile_below_50_adds_a_negative_bonus():
     base = pws._approval_score(_signals(score=6))
-    boosted = pws._approval_score(_signals(score=6, has_sizing=True))
-    assert boosted - base == pytest.approx(pws.KELLY_SETUP_BONUS)
+    penalized = pws._approval_score(_signals(score=6), setup_percentile=0.0)
+    assert base - penalized == pytest.approx(pws.SETUP_PERCENTILE_BONUS_WEIGHT)
+
+
+def test_setup_percentile_of_exactly_50_is_neutral():
+    base = pws._approval_score(_signals(score=6))
+    neutral = pws._approval_score(_signals(score=6), setup_percentile=50.0)
+    assert neutral == pytest.approx(base)
+
+
+def test_missing_setup_percentile_gets_no_bonus():
+    """The weekly/monthly tiers don't carry a setup percentile at all - see
+    build_watchlist - and get no substitute bonus, not a guessed one."""
+    base = pws._approval_score(_signals(score=6))
+    same = pws._approval_score(_signals(score=6), setup_percentile=None)
+    assert same == pytest.approx(base)
 
 
 def test_strong_sector_adds_flat_bonus():
@@ -189,12 +168,17 @@ def test_build_premium_watchlist_caps_candidates_and_approved_per_tier(monkeypat
     )
 
     # Every candidate approved (score always positive, verdict always "comprar")
-    results = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
+    results, discard_stats = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
 
     assert len(results) <= pws.MAX_APPROVED_PER_TIER
     assert all(r.tier == pws.DAILY for r in results)
     # Highest-score-first
     assert [r.premium_score for r in results] == sorted((r.premium_score for r in results), reverse=True)
+
+    stats = discard_stats[pws.DAILY]
+    assert stats.prefilter_matches == 20
+    assert stats.analyzed == pws.MAX_CANDIDATES_PER_TIER
+    assert stats.approved == len(results)
 
 
 def test_build_premium_watchlist_skips_tickers_missing_from_ohlcv(monkeypatch):
@@ -208,13 +192,15 @@ def test_build_premium_watchlist_skips_tickers_missing_from_ohlcv(monkeypatch):
         _signals(score=10),
     )
 
-    results = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
+    results, _ = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
     assert [r.ticker for r in results] == ["HASDATA"]
 
 
 def test_build_premium_watchlist_empty_universe_returns_empty(monkeypatch):
     market_data = _StubMarketData(set())
-    assert pws.build_premium_watchlist([], market_data) == []
+    results, discard_stats = pws.build_premium_watchlist([], market_data)
+    assert results == []
+    assert all(s.prefilter_matches == 0 and s.analyzed == 0 and s.approved == 0 for s in discard_stats.values())
 
 
 def test_build_premium_watchlist_isolates_a_candidate_whose_compute_raises(monkeypatch):
@@ -235,7 +221,7 @@ def test_build_premium_watchlist_isolates_a_candidate_whose_compute_raises(monke
 
     monkeypatch.setattr(pws, "compute_core_signals", flaky_compute)
 
-    results = pws.build_premium_watchlist([good, bad], market_data, tiers=[pws.DAILY])
+    results, _ = pws.build_premium_watchlist([good, bad], market_data, tiers=[pws.DAILY])
     assert [r.ticker for r in results] == ["GOOD"]
 
 
@@ -252,7 +238,7 @@ def test_build_premium_watchlist_ranks_strong_sector_candidate_above_equal_scori
         _signals(score=6),
     )
 
-    results = pws.build_premium_watchlist(
+    results, _ = pws.build_premium_watchlist(
         [strong, weak],
         market_data,
         tiers=[pws.DAILY],
@@ -263,6 +249,34 @@ def test_build_premium_watchlist_ranks_strong_sector_candidate_above_equal_scori
     strong_result = next(r for r in results if r.ticker == "STRONG_SECTOR")
     weak_result = next(r for r in results if r.ticker == "WEAK_SECTOR")
     assert strong_result.premium_score - weak_result.premium_score == pytest.approx(pws.STRONG_SECTOR_BONUS)
+
+
+def test_build_premium_watchlist_items_carry_their_setup_type(monkeypatch):
+    # All 20 snapshots match trend_continuation (strong, confirmed ADX trend).
+    snapshots = [_snapshot(f"T{i}", rs_rating=99 - i) for i in range(20)]
+    market_data = _StubMarketData({s.ticker for s in snapshots} | {pws.benchmark_for_region("us")})
+    monkeypatch.setattr(
+        pws,
+        "compute_core_signals",
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None, ticker=None:
+        _signals(score=rs_rating or 0),
+    )
+    results, _ = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
+    assert all(r.setup == "trend_continuation" for r in results)
+
+
+def test_build_premium_watchlist_discards_the_excess_beyond_max_candidates_per_tier(monkeypatch):
+    snapshots = [_snapshot(f"T{i}") for i in range(pws.MAX_CANDIDATES_PER_TIER + 5)]
+    market_data = _StubMarketData({s.ticker for s in snapshots} | {pws.benchmark_for_region("us")})
+    monkeypatch.setattr(
+        pws, "compute_core_signals",
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None, ticker=None:
+        _signals(score=6),
+    )
+    _, discard_stats = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.WEEKLY])
+    stats = discard_stats[pws.WEEKLY]
+    assert stats.prefilter_matches == pws.MAX_CANDIDATES_PER_TIER + 5
+    assert stats.analyzed == pws.MAX_CANDIDATES_PER_TIER  # the pre-filter cut, not silently swallowed
 
 
 # --- PremiumWatchlistService: per-tier cache TTL -----------------------------
@@ -281,14 +295,19 @@ class _StubScreener:
         return []
 
 
+def _fake_build_factory(calls):
+    def fake_build(universe_snapshot, market_data, region="us", tiers=None, sector_rs_rank=None):
+        tiers = tiers or list(pws.TIERS)
+        calls.append(sorted(tiers))
+        stats = {t: pws.TierDiscardStats(tier=t, prefilter_matches=0, analyzed=0, approved=0) for t in tiers}
+        return [], stats
+
+    return fake_build
+
+
 def test_service_reuses_cache_within_ttl(monkeypatch):
     calls = []
-
-    def fake_build(universe_snapshot, market_data, region="us", tiers=None, sector_rs_rank=None):
-        calls.append(list(tiers or pws.TIERS))
-        return []
-
-    monkeypatch.setattr(pws, "build_premium_watchlist", fake_build)
+    monkeypatch.setattr(pws, "build_premium_watchlist", _fake_build_factory(calls))
     service = pws.PremiumWatchlistService(market_data=object(), screener=_StubScreener([]))
 
     service.get_premium_watchlist()
@@ -300,7 +319,7 @@ def test_service_reuses_cache_within_ttl(monkeypatch):
 
 def test_service_force_refresh_always_recomputes(monkeypatch):
     calls = []
-    monkeypatch.setattr(pws, "build_premium_watchlist", lambda *a, **k: calls.append(1) or [])
+    monkeypatch.setattr(pws, "build_premium_watchlist", _fake_build_factory(calls))
     service = pws.PremiumWatchlistService(market_data=object(), screener=_StubScreener([]))
 
     service.get_premium_watchlist()
@@ -311,12 +330,7 @@ def test_service_force_refresh_always_recomputes(monkeypatch):
 
 def test_service_only_recomputes_stale_tiers(monkeypatch):
     calls = []
-
-    def fake_build(universe_snapshot, market_data, region="us", tiers=None, sector_rs_rank=None):
-        calls.append(sorted(tiers))
-        return []
-
-    monkeypatch.setattr(pws, "build_premium_watchlist", fake_build)
+    monkeypatch.setattr(pws, "build_premium_watchlist", _fake_build_factory(calls))
     service = pws.PremiumWatchlistService(market_data=object(), screener=_StubScreener([]))
 
     now = datetime.now(UTC)
@@ -328,3 +342,28 @@ def test_service_only_recomputes_stale_tiers(monkeypatch):
     service.get_premium_watchlist()
 
     assert calls[-1] == [pws.DAILY]  # only the stale tier gets recomputed
+
+
+def test_service_get_discard_stats_shares_the_same_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pws, "build_premium_watchlist", _fake_build_factory(calls))
+    service = pws.PremiumWatchlistService(market_data=object(), screener=_StubScreener([]))
+
+    stats = service.get_discard_stats()
+    assert {s.tier for s in stats} == set(pws.TIERS)
+    assert len(calls) == 1
+
+    # A second call for the same (already-fresh) tiers must not recompute.
+    service.get_discard_stats()
+    assert len(calls) == 1
+
+
+def test_service_get_premium_watchlist_with_stats_recomputes_only_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pws, "build_premium_watchlist", _fake_build_factory(calls))
+    service = pws.PremiumWatchlistService(market_data=object(), screener=_StubScreener([]))
+
+    items, stats = service.get_premium_watchlist_with_stats(force_refresh=True)
+    assert items == []
+    assert {s.tier for s in stats} == set(pws.TIERS)
+    assert len(calls) == 1  # one recompute, not one per accessor

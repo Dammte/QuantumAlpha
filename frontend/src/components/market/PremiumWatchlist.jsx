@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
-import { formatCurrency, formatPercent, garchRegimeLabel, isExceptionalScore } from '../../format'
+import { SETUP_LABELS, formatCurrency, formatPercent, garchRegimeLabel, isExceptionalScore } from '../../format'
 import CandlestickPatternBadge from './CandlestickPatternBadge'
 import EntryTimingBadge from './EntryTimingBadge'
 import ImminentCrossBadge from './ImminentCrossBadge'
@@ -49,6 +49,8 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
         <span className="badge badge--buy">COMPRAR ({signals.recommendation.score >= 0 ? '+' : ''}{signals.recommendation.score})</span>
       </div>
 
+      {item.setup && <span className="setup-badge">{SETUP_LABELS[item.setup] ?? item.setup}</span>}
+
       <div className="watchlist-card__stats">
         <span>{formatCurrency(signals.price, item.currency)}</span>
         <span className={signals.change_1d >= 0 ? 'delta-up' : 'delta-down'}>
@@ -92,6 +94,7 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
 function PremiumWatchlist({ onNavigateToTicker, region }) {
   const [tier, setTier] = useState('daily')
   const [items, setItems] = useState([])
+  const [discardStats, setDiscardStats] = useState([])
   const [computedAt, setComputedAt] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -103,6 +106,7 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
       try {
         const body = await api.getPremiumWatchlist({ region, tier })
         setItems(body.items)
+        setDiscardStats(body.discard_stats ?? [])
         setComputedAt(body.computed_at)
         setError(null)
       } catch (err) {
@@ -119,6 +123,7 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
     try {
       const body = await api.getPremiumWatchlist({ region, tier, refresh: true })
       setItems(body.items)
+      setDiscardStats(body.discard_stats ?? [])
       setComputedAt(body.computed_at)
       setError(null)
     } catch (err) {
@@ -169,19 +174,28 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
           es selectiva a propósito.
         </p>
       ) : (
-        sections.map((section) => (
+        sections.map((section) => {
+          const stats = discardStats.find((s) => s.tier === section.tier)
+          return (
           <section className="watchlist-section" key={section.tier}>
             <h4 className="watchlist-section__title">
               {TIER_META[section.tier].label}
               <span className="premium-watchlist__tier-hint"> · {TIER_META[section.tier].hint}</span>
             </h4>
+            {stats && stats.prefilter_matches > stats.analyzed && (
+              <p className="premium-watchlist__discard-note">
+                {stats.analyzed} de {stats.prefilter_matches} candidatos analizados en detalle
+                {stats.approved < stats.analyzed && ` · ${stats.approved} superaron la barra "premium"`}
+              </p>
+            )}
             <div className="watchlist-grid">
               {section.items.map((item) => (
                 <PremiumWatchlistCard key={`${item.tier}-${item.ticker}`} item={item} onNavigateToTicker={onNavigateToTicker} />
               ))}
             </div>
           </section>
-        ))
+          )
+        })
       )}
     </div>
   )

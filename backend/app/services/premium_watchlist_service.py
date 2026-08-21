@@ -54,10 +54,15 @@ _MONTE_CARLO_HORIZON = {DAILY: "1m", WEEKLY: "3m", MONTHLY: "6m"}
 MAX_CANDIDATES_PER_TIER = 15  # how many cheap pre-filter matches get the expensive full analysis
 MAX_APPROVED_PER_TIER = 10  # size cap of the final "premium" list - a handful of excellent names, not a scan
 HISTORY_YEARS = 10
-BACKTEST_COMPARISON = "comprar vs evitar"
-BACKTEST_EDGE_BONUS = 3.0
-KELLY_SETUP_BONUS = 1.0
-MONTE_CARLO_EDGE_WEIGHT = 2.0
+# Segunda auditoría, Bloque 3: replaces MONTE_CARLO_EDGE_WEIGHT
+# (probability_target_before_stop x 2.0) as the ranking-nudge factor - that
+# read was near-circular (Monte Carlo's own stop/target simulation is derived
+# from the same recommendation this score is already built from). This
+# rewards a candidate's cross-sectional, setup-specific percentile
+# (watchlist_service.setup_percentile_score) instead - only set for the daily
+# tier's setup-based candidates (see build_watchlist); weekly/monthly
+# candidates simply don't get this nudge, rather than a guessed substitute.
+SETUP_PERCENTILE_BONUS_WEIGHT = 2.0
 # Same "RS Rating >= 70" bar Minervini's own Trend Template already uses for
 # an individual stock (see technical_analysis.minervini_checklist) - applied
 # here to the *sector's* cross-sectional RS rank instead
@@ -66,12 +71,11 @@ MONTE_CARLO_EDGE_WEIGHT = 2.0
 # in a lagging sector. CANSLIM/IBD's own "buy leaders in leading industries"
 # principle, made concrete: two names can clear every bar on their own merits
 # and still not be equally good bets if the wind is at one's back and not the
-# other's. Deliberately smaller than BACKTEST_EDGE_BONUS - this is a ranking
-# nudge among already-qualified "comprar" verdicts, not a validated,
-# ablation-tested factor the way the core recommendation score's factors are
-# (see recommendation_engine.py's own docstring on that distinction) - same
-# character as the Kelly/Monte-Carlo bonuses already here, not the same rigor
-# bar as the score itself.
+# other's. This is a ranking nudge among already-qualified "comprar" verdicts,
+# not a validated, ablation-tested factor the way the core recommendation
+# score's factors are (see recommendation_engine.py's own docstring on that
+# distinction) - same character as SETUP_PERCENTILE_BONUS_WEIGHT/
+# EXTENDED_ENTRY_PENALTY, not the same rigor bar as the score itself.
 STRONG_SECTOR_RS_THRESHOLD = 70
 STRONG_SECTOR_BONUS = 1.0
 # entry_timing.py is deliberately informational for the core recommendation -
@@ -101,56 +105,75 @@ class PremiumWatchlistItem:
     signals: CoreTickerSignals  # the full deep-dive result that got it approved
     premium_score: float
     # The raw, un-bonused `signals.recommendation.score` - kept alongside
-    # `premium_score` (which folds in up to ~+7/-1 of backtest/Monte
-    # Carlo/Kelly/sector/entry-timing bonuses, see `_approval_score`) so a
-    # caller comparing this candidate against something that was never run
-    # through those bonuses - e.g. a held position's plain checklist score in
-    # `opportunity_cost.py` - has a same-scale number to compare against
-    # instead of reaching for the bonus-inflated one. See that module's
-    # docstring for why this distinction matters.
+    # `premium_score` (which folds in the setup-percentile/sector/entry-timing
+    # bonuses, see `_approval_score`) so a caller comparing this candidate
+    # against something that was never run through those bonuses - e.g. a
+    # held position's plain checklist score in `opportunity_cost.py` - has a
+    # same-scale number to compare against instead of reaching for the
+    # bonus-inflated one. See that module's docstring for why this
+    # distinction matters.
     raw_score: int
+    # The setup type this candidate matched (see watchlist_service.py) -
+    # `None` for the weekly/monthly tiers, which aren't split into setup
+    # types. Segunda auditoría, Bloque 3.
+    setup: str | None = None
 
 
-def _approval_score(signals: CoreTickerSignals, sector_rs_rank: int | None = None) -> float | None:
+def _approval_score(
+    signals: CoreTickerSignals, sector_rs_rank: int | None = None, setup_percentile: float | None = None
+) -> float | None:
     """Returns a ranking score for a candidate that earns a spot on the premium
-    list, or None to reject it. A rule-based "comprar" score alone isn't enough:
-    a ticker whose OWN walk-forward backtest shows "evitar" has historically beaten
-    "comprar" is excluded outright, regardless of today's score - the same
-    objectivity principle the market regime and sector rotation reads apply.
+    list, or None to reject it.
+
+    Segunda auditoría, Bloque 3 - three things this used to do, removed:
+    - The `backtest_contradicts` rejection (a ticker whose own *legacy*
+      walk-forward backtest showed "evitar" historically beating "comprar"
+      was excluded outright) ran on `walk_forward_backtest.py`
+      (MIN_BUCKET_SIZE=8 with a Bonferroni correction over 3 comparisons is a
+      noise detector at that sample size, and it systematically penalizes
+      thin-history tickers). Reintroduce only once this can run on
+      `backtest_engine`'s triple-barrier labeling with >=30 trades/bucket -
+      not before.
+    - `BACKTEST_EDGE_BONUS` (same legacy-backtest dependency) and
+      `KELLY_SETUP_BONUS` (fired for almost every "comprar" verdict - added
+      variance, not discrimination) are gone, not replaced.
+    - `MONTE_CARLO_EDGE_WEIGHT` (`probability_target_before_stop x 2.0`) was
+      near-circular (Monte Carlo's own stop/target simulation is derived
+      from the same recommendation this score is already built from) -
+      replaced by `setup_percentile` below.
 
     `sector_rs_rank` is this candidate's *sector's* own cross-sectional RS
-    rank (MarketScreenerService.get_sector_performance) - None when sector
+    rank (MarketScreenerService.get_sector_performance) - `None` when sector
     performance couldn't be computed, which contributes nothing rather than
-    guessing. See STRONG_SECTOR_BONUS."""
+    guessing. `setup_percentile` is the candidate's cross-sectional,
+    setup-specific percentile (watchlist_service.setup_percentile_score) -
+    `None` for the weekly/monthly tiers, which still order by RS Rating (see
+    build_watchlist) and get no substitute nudge here."""
     if signals.recommendation.verdict != "comprar":
         return None
 
-    backtest_edge = None
-    if signals.backtest is not None:
-        backtest_edge = next(
-            (t for t in signals.backtest.significance_tests if t.comparison == BACKTEST_COMPARISON), None
-        )
-    backtest_contradicts = (
-        backtest_edge is not None and backtest_edge.significant_at_5pct and backtest_edge.mean_difference <= 0
-    )
-    if backtest_contradicts:
-        return None
-
     score = float(signals.recommendation.score)
-    backtest_confirms = (
-        backtest_edge is not None and backtest_edge.significant_at_5pct and backtest_edge.mean_difference > 0
-    )
-    if backtest_confirms:
-        score += BACKTEST_EDGE_BONUS
-    if signals.monte_carlo is not None and signals.monte_carlo.probability_target_before_stop is not None:
-        score += signals.monte_carlo.probability_target_before_stop * MONTE_CARLO_EDGE_WEIGHT
-    if signals.position_sizing is not None:
-        score += KELLY_SETUP_BONUS  # a genuinely sizeable, favorable-odds trade setup
+    if setup_percentile is not None:
+        score += (setup_percentile - 50.0) / 50.0 * SETUP_PERCENTILE_BONUS_WEIGHT
     if sector_rs_rank is not None and sector_rs_rank >= STRONG_SECTOR_RS_THRESHOLD:
         score += STRONG_SECTOR_BONUS  # leading in a sector that's itself leading - CANSLIM/IBD's own principle
     if signals.entry_timing is not None and signals.entry_timing.status == "extended":
         score -= EXTENDED_ENTRY_PENALTY  # already ran - a fresher, equally-scored setup ranks above it here
     return score
+
+
+@dataclass(frozen=True, slots=True)
+class TierDiscardStats:
+    """How many candidates got dropped at each cut, per tier (Segunda
+    auditoría, Bloque 3): `MAX_CANDIDATES_PER_TIER` used to truncate the
+    cheap pre-filter's matches silently - "15 de 47 candidatos analizados"
+    is now a real, surfaced number, not just a constant nobody could see the
+    effect of."""
+
+    tier: str
+    prefilter_matches: int  # passed the cheap technical pre-filter, before any cut
+    analyzed: int  # of those, how many got the expensive full analysis (<= MAX_CANDIDATES_PER_TIER)
+    approved: int  # of the analyzed ones, how many made the final list (<= MAX_APPROVED_PER_TIER)
 
 
 def build_premium_watchlist(
@@ -159,20 +182,31 @@ def build_premium_watchlist(
     region: str = DEFAULT_REGION,
     tiers: list[str] | None = None,
     sector_rs_rank: dict[str, int] | None = None,
-) -> list[PremiumWatchlistItem]:
+) -> tuple[list[PremiumWatchlistItem], dict[str, TierDiscardStats]]:
     tiers = tiers if tiers else list(TIERS)
     sector_rs_rank = sector_rs_rank or {}
 
     candidates_by_tier: dict[str, list[wl.WatchlistItem]] = {}
+    prefilter_counts: dict[str, int] = {}
     all_candidate_tickers: set[str] = set()
     for t in tiers:
         items = wl.build_watchlist(universe_snapshot, horizon=_PREFILTER_HORIZON[t])
+        prefilter_counts[t] = len(items)
         top = items[:MAX_CANDIDATES_PER_TIER]
         candidates_by_tier[t] = top
         all_candidate_tickers.update(item.ticker for item in top)
+        if len(items) > MAX_CANDIDATES_PER_TIER:
+            logger.info(
+                "Premium watchlist: %s tier pre-filter found %d candidates, analyzing only the top %d",
+                t, len(items), MAX_CANDIDATES_PER_TIER,
+            )
 
     if not all_candidate_tickers:
-        return []
+        discard_stats = {
+            t: TierDiscardStats(tier=t, prefilter_matches=prefilter_counts.get(t, 0), analyzed=0, approved=0)
+            for t in tiers
+        }
+        return [], discard_stats
 
     benchmark_ticker = benchmark_for_region(region)
     end = date.today()
@@ -186,6 +220,7 @@ def build_premium_watchlist(
     vix_close = vix_df["close"] if vix_df is not None else None
 
     results: list[PremiumWatchlistItem] = []
+    discard_stats: dict[str, TierDiscardStats] = {}
     for t in tiers:
         scored: list[tuple[float, PremiumWatchlistItem]] = []
         for candidate in candidates_by_tier[t]:
@@ -218,7 +253,7 @@ def build_premium_watchlist(
                 continue
             if signals is None:
                 continue
-            score = _approval_score(signals, sector_rs_rank.get(candidate.sector))
+            score = _approval_score(signals, sector_rs_rank.get(candidate.sector), candidate.percentile_score)
             if score is None:
                 continue
             scored.append(
@@ -236,12 +271,20 @@ def build_premium_watchlist(
                         signals=signals,
                         premium_score=score,
                         raw_score=signals.recommendation.score,
+                        setup=candidate.setup,
                     ),
                 )
             )
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        results.extend(item for _, item in scored[:MAX_APPROVED_PER_TIER])
-    return results
+        approved = scored[:MAX_APPROVED_PER_TIER]
+        results.extend(item for _, item in approved)
+        discard_stats[t] = TierDiscardStats(
+            tier=t,
+            prefilter_matches=prefilter_counts.get(t, 0),
+            analyzed=len(candidates_by_tier[t]),
+            approved=len(approved),
+        )
+    return results, discard_stats
 
 
 class PremiumWatchlistService:
@@ -254,10 +297,51 @@ class PremiumWatchlistService:
         self.market_data = market_data
         self.screener = screener
         self._cache: dict[tuple[str, str], tuple[datetime, list[PremiumWatchlistItem]]] = {}
+        # Segunda auditoría, Bloque 3 - see TierDiscardStats. Same
+        # per-(region, tier) cache lifetime as `_cache` above, just tracked
+        # separately since it isn't part of the item list itself.
+        self._discard_stats_cache: dict[tuple[str, str], TierDiscardStats] = {}
 
     def get_premium_watchlist(
         self, region: str = DEFAULT_REGION, tier: str | None = None, force_refresh: bool = False
     ) -> list[PremiumWatchlistItem]:
+        self._ensure_fresh(region, tier, force_refresh)
+        tiers = [tier] if tier else list(TIERS)
+        result: list[PremiumWatchlistItem] = []
+        for t in tiers:
+            result.extend(self._cache.get((region, t), (datetime.now(UTC), []))[1])
+        return result
+
+    def get_discard_stats(
+        self, region: str = DEFAULT_REGION, tier: str | None = None, force_refresh: bool = False
+    ) -> list[TierDiscardStats]:
+        """"15 de 47 candidatos analizados" per tier - see TierDiscardStats.
+        Shares the exact same cache lifetime/computation as
+        `get_premium_watchlist` (calling this alone still triggers the same
+        full recompute on a stale/missing cache - there's no cheaper way to
+        get these counts than actually running the pipeline). Prefer
+        `get_premium_watchlist_with_stats` when a caller needs both - calling
+        this *and* `get_premium_watchlist` separately with `force_refresh=True`
+        would otherwise recompute twice."""
+        self._ensure_fresh(region, tier, force_refresh)
+        tiers = [tier] if tier else list(TIERS)
+        return [self._discard_stats_cache[(region, t)] for t in tiers if (region, t) in self._discard_stats_cache]
+
+    def get_premium_watchlist_with_stats(
+        self, region: str = DEFAULT_REGION, tier: str | None = None, force_refresh: bool = False
+    ) -> tuple[list[PremiumWatchlistItem], list[TierDiscardStats]]:
+        """Both `get_premium_watchlist` and `get_discard_stats` off a single
+        freshness check - what the API endpoint uses, so a `refresh=true`
+        request never pays for the full recompute twice."""
+        self._ensure_fresh(region, tier, force_refresh)
+        tiers = [tier] if tier else list(TIERS)
+        items: list[PremiumWatchlistItem] = []
+        for t in tiers:
+            items.extend(self._cache.get((region, t), (datetime.now(UTC), []))[1])
+        stats = [self._discard_stats_cache[(region, t)] for t in tiers if (region, t) in self._discard_stats_cache]
+        return items, stats
+
+    def _ensure_fresh(self, region: str, tier: str | None, force_refresh: bool) -> None:
         tiers = [tier] if tier else list(TIERS)
         now = datetime.now(UTC)
         stale = [
@@ -267,23 +351,21 @@ class PremiumWatchlistService:
             or (region, t) not in self._cache
             or now - self._cache[(region, t)][0] >= CACHE_TTL[t]
         ]
+        if not stale:
+            return
 
-        if stale:
-            universe_snapshot = self.screener.get_universe_snapshot(region)
-            # Already cheaply cached on its own (MarketScreenerService.CACHE_TTL) -
-            # this rarely triggers a real fetch of its own. See STRONG_SECTOR_BONUS.
-            sector_performance = self.screener.get_sector_performance(region)
-            sector_rs_rank = {s.sector: s.rs_rank for s in sector_performance if s.rs_rank is not None}
-            recomputed = build_premium_watchlist(
-                universe_snapshot, self.market_data, region=region, tiers=stale, sector_rs_rank=sector_rs_rank
-            )
-            recomputed_by_tier: dict[str, list[PremiumWatchlistItem]] = {t: [] for t in stale}
-            for item in recomputed:
-                recomputed_by_tier[item.tier].append(item)
-            for t in stale:
-                self._cache[(region, t)] = (now, recomputed_by_tier[t])
-
-        result: list[PremiumWatchlistItem] = []
-        for t in tiers:
-            result.extend(self._cache.get((region, t), (now, []))[1])
-        return result
+        universe_snapshot = self.screener.get_universe_snapshot(region)
+        # Already cheaply cached on its own (MarketScreenerService.CACHE_TTL) -
+        # this rarely triggers a real fetch of its own. See STRONG_SECTOR_BONUS.
+        sector_performance = self.screener.get_sector_performance(region)
+        sector_rs_rank = {s.sector: s.rs_rank for s in sector_performance if s.rs_rank is not None}
+        recomputed, discard_stats = build_premium_watchlist(
+            universe_snapshot, self.market_data, region=region, tiers=stale, sector_rs_rank=sector_rs_rank
+        )
+        recomputed_by_tier: dict[str, list[PremiumWatchlistItem]] = {t: [] for t in stale}
+        for item in recomputed:
+            recomputed_by_tier[item.tier].append(item)
+        for t in stale:
+            self._cache[(region, t)] = (now, recomputed_by_tier[t])
+            if t in discard_stats:
+                self._discard_stats_cache[(region, t)] = discard_stats[t]

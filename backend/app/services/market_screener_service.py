@@ -131,6 +131,11 @@ class _RawTicker:
     sma200_trending_up: bool | None
     price_52w_low_abs: float | None
     price_52w_high_abs: float | None
+    atr_ratio_50d: float | None
+    atr_multiple_sma21: float | None
+    range_position_20d: float | None
+    mansfield_rs_4w: float | None
+    relative_volume_trend: float | None
 
 
 def _build_raw(
@@ -168,10 +173,40 @@ def _build_raw(
     latest_minus_di = minus_di_series.iloc[-1] if not minus_di_series.empty else np.nan
 
     mansfield = None
+    mansfield_4w = None
     if benchmark_close is not None:
         mansfield_series = ta.mansfield_rs(close, benchmark_close)
         if not mansfield_series.empty and not pd.isna(mansfield_series.iloc[-1]):
             mansfield = float(mansfield_series.iloc[-1])
+        # 4-week window (~20 trading sessions) - a much shorter-horizon relative-
+        # strength read than the 200-day one above, for the short-term setup score.
+        mansfield_4w_series = ta.mansfield_rs(close, benchmark_close, window=20)
+        if not mansfield_4w_series.empty and not pd.isna(mansfield_4w_series.iloc[-1]):
+            mansfield_4w = float(mansfield_4w_series.iloc[-1])
+
+    atr14_series = ta.atr(high, low, close)
+    atr_ratio_50d = None
+    if len(atr14_series) >= 50:
+        atr_baseline = atr14_series.rolling(50, min_periods=50).mean().iloc[-1]
+        latest_atr14 = atr14_series.iloc[-1]
+        if pd.notna(atr_baseline) and atr_baseline != 0 and pd.notna(latest_atr14):
+            atr_ratio_50d = float(latest_atr14 / atr_baseline)
+
+    range_position_20d_series = ta.rolling_position_in_range(close, 20)
+    range_position_20d = None
+    if not range_position_20d_series.empty and pd.notna(range_position_20d_series.iloc[-1]):
+        range_position_20d = float(range_position_20d_series.iloc[-1])
+
+    # Today's relative_volume vs. its own value 5 sessions ago - the "trend"
+    # half of "relative_volume + its trend" (Segunda auditoría, Bloque 3): a
+    # single snapshot value can't distinguish "volume just spiked today" from
+    # "interest has been building for a week", which matters for how much to
+    # trust a breakout.
+    relative_volume_trend = None
+    current_rel_volume = ta.relative_volume(volume)
+    past_rel_volume = ta.relative_volume(volume.iloc[:-5]) if len(volume) > 5 else None
+    if current_rel_volume is not None and past_rel_volume is not None:
+        relative_volume_trend = current_rel_volume - past_rel_volume
 
     return _RawTicker(
         ticker=ticker,
@@ -207,6 +242,11 @@ def _build_raw(
         sma200_trending_up=ta.sma_slope_positive(sma200_series),
         price_52w_low_abs=ta.rolling_extreme_price(close, 252, "low"),
         price_52w_high_abs=ta.rolling_extreme_price(close, 252, "high"),
+        atr_ratio_50d=atr_ratio_50d,
+        atr_multiple_sma21=ta.atr_multiple_from_sma(close, high, low, sma_window=21),
+        range_position_20d=range_position_20d,
+        mansfield_rs_4w=mansfield_4w,
+        relative_volume_trend=relative_volume_trend,
     )
 
 
@@ -261,6 +301,11 @@ def _finalize(raw: _RawTicker, rs_rating: int | None) -> TickerSnapshot:
         minervini_score=sum(criteria.values()),
         minervini_pass=all(criteria.values()),
         rs_rating=rs_rating,
+        atr_ratio_50d=raw.atr_ratio_50d,
+        atr_multiple_sma21=raw.atr_multiple_sma21,
+        range_position_20d=raw.range_position_20d,
+        mansfield_rs_4w=raw.mansfield_rs_4w,
+        relative_volume_trend=raw.relative_volume_trend,
     )
 
 
