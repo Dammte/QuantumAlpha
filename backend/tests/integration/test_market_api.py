@@ -213,6 +213,27 @@ def test_trend_detail_returns_ticker_level_lists(client: TestClient) -> None:
             assert "ticker" in row and "price" in row
 
 
+def test_trend_breadth_reports_imminent_cross_counts(client: TestClient) -> None:
+    # Corto/mediano plazo (ago 2026): a projected SMA21/SMA50 crossover, not
+    # yet confirmed - separate counts from the confirmed golden_crosses/death_crosses above.
+    response = client.get("/api/v1/market/trend")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count_imminent_golden"] >= 0
+    assert body["count_imminent_death"] >= 0
+
+
+def test_trend_detail_imminent_cross_group_has_a_direction_and_sessions_estimate(client: TestClient) -> None:
+    response = client.get("/api/v1/market/trend/detail")
+    assert response.status_code == 200
+    body = response.json()
+    assert "imminent_cross" in body
+    assert isinstance(body["imminent_cross"], list)
+    for row in body["imminent_cross"]:
+        assert row["imminent_cross_short_term"]["direction"] in ("golden", "death")
+        assert row["imminent_cross_short_term"]["bars_until"] > 0
+
+
 def test_watchlist_returns_items_with_reasons(client: TestClient) -> None:
     response = client.get("/api/v1/market/watchlist")
     assert response.status_code == 200

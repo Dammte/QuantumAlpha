@@ -732,7 +732,12 @@ def detect_imminent_cross(fast: pd.Series, slow: pd.Series) -> ImminentCross | N
         return None  # moving away from zero, or too far out for a straight-line projection to mean much
 
     direction = "death" if current_gap > 0 else "golden"
-    return ImminentCross(direction=direction, bars_until=round(bars_until), r_squared=round(r_squared, 3))
+    # A raw projection under half a bar away (e.g. 0.3) still clears the
+    # `bars_until <= 0` guard above but rounds down to a literal 0 - "cruce
+    # esperado en ~0 sesiones" reads as "already happened", which is exactly
+    # the case `current_gap == 0` above already carves out separately. Never
+    # report less than 1: this is genuinely imminent, not retroactive.
+    return ImminentCross(direction=direction, bars_until=max(1, round(bars_until)), r_squared=round(r_squared, 3))
 
 
 # A body at least this much bigger than the prior one's, in the *same*

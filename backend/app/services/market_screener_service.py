@@ -46,6 +46,7 @@ from app.services.market_universe import (
     region_config,
 )
 from app.services.markov_chain_model import analyze_markov_chain
+from app.services.multi_timeframe import FAST_MA_PERIOD
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,24 @@ def _snapshot_to_dict(snapshot: TickerSnapshot) -> dict[str, Any]:
 
 def _snapshot_from_dict(data: dict[str, Any]) -> TickerSnapshot:
     stage = ta.Stage(data["stage"]) if data["stage"] else None
-    return TickerSnapshot(**{**data, "trend": ta.TrendState(data["trend"]), "stage": stage})
+    # imminent_cross_short_term round-trips through JSON as a plain dict (or
+    # None) via asdict()'s recursive nested-dataclass conversion in
+    # _snapshot_to_dict - reconstructed explicitly here the same way
+    # stage/trend already are, or any code that dereferences .bars_until on a
+    # cache-reloaded snapshot would get a plain dict instead of an
+    # ImminentCross and crash. .get(), not [...]: a snapshot cached before
+    # this field existed simply won't have the key, and that must stay a
+    # clean "no imminent cross" default, not a KeyError.
+    imminent_raw = data.get("imminent_cross_short_term")
+    imminent_cross_short_term = ta.ImminentCross(**imminent_raw) if imminent_raw else None
+    return TickerSnapshot(
+        **{
+            **data,
+            "trend": ta.TrendState(data["trend"]),
+            "stage": stage,
+            "imminent_cross_short_term": imminent_cross_short_term,
+        }
+    )
 
 
 @dataclass
@@ -136,6 +154,8 @@ class _RawTicker:
     range_position_20d: float | None
     mansfield_rs_4w: float | None
     relative_volume_trend: float | None
+    ma_cross_short: str | None
+    imminent_cross_short_term: ta.ImminentCross | None
 
 
 def _build_raw(
@@ -147,10 +167,12 @@ def _build_raw(
     close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
     price = float(close.iloc[-1])
 
-    sma20 = ta.sma(close, 20).iloc[-1]
-    sma50 = ta.sma(close, 50).iloc[-1]
+    sma20_series = ta.sma(close, 20)
+    sma50_series = ta.sma(close, 50)
     sma150_series = ta.sma(close, 150)
     sma200_series = ta.sma(close, 200)
+    sma20 = sma20_series.iloc[-1]
+    sma50 = sma50_series.iloc[-1]
     sma150 = sma150_series.iloc[-1]
     sma200 = sma200_series.iloc[-1]
     sma20 = None if pd.isna(sma20) else float(sma20)
@@ -163,8 +185,20 @@ def _build_raw(
     ma_cross = None
     stage = None
     if len(close) >= 200:
-        ma_cross = ta.detect_recent_cross(ta.sma(close, 50), sma200_series, lookback=5)
+        ma_cross = ta.detect_recent_cross(sma50_series, sma200_series, lookback=5)
         stage = ta.classify_stage(price, sma150_series)
+
+    # "Tendencia" screener, corto/mediano plazo (ago 2026): FAST_MA_PERIOD/SMA50
+    # is a weeks-scale pair, not the months-scale SMA50/SMA200 above - same
+    # already-established short-term pair multi_timeframe.py/exit_engine.py
+    # use, reused here rather than inventing a different one. Guarded on 50
+    # bars (not 200): both legs are already valid well before SMA200 is.
+    ma_cross_short = None
+    imminent_cross_short_term = None
+    if len(close) >= 50:
+        sma_fast_series = ta.sma(close, FAST_MA_PERIOD)
+        ma_cross_short = ta.detect_recent_cross(sma_fast_series, sma50_series, lookback=5)
+        imminent_cross_short_term = ta.detect_imminent_cross(sma_fast_series, sma50_series)
 
     adx_series = ta.adx(high, low, close)
     plus_di_series, minus_di_series = ta.dmi(high, low, close)
@@ -247,6 +281,8 @@ def _build_raw(
         range_position_20d=range_position_20d,
         mansfield_rs_4w=mansfield_4w,
         relative_volume_trend=relative_volume_trend,
+        ma_cross_short=ma_cross_short,
+        imminent_cross_short_term=imminent_cross_short_term,
     )
 
 
@@ -306,6 +342,8 @@ def _finalize(raw: _RawTicker, rs_rating: int | None) -> TickerSnapshot:
         range_position_20d=raw.range_position_20d,
         mansfield_rs_4w=raw.mansfield_rs_4w,
         relative_volume_trend=raw.relative_volume_trend,
+        ma_cross_short=raw.ma_cross_short,
+        imminent_cross_short_term=raw.imminent_cross_short_term,
     )
 
 
@@ -756,12 +794,14 @@ class TrendBreadth:
     count_oversold: int
     count_stage2: int
     count_minervini_pass: int
+    count_imminent_golden: int = 0
+    count_imminent_death: int = 0
 
 
 def get_trend_breadth(snapshots: list[TickerSnapshot]) -> TrendBreadth:
     total = len(snapshots)
     if total == 0:
-        return TrendBreadth(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        return TrendBreadth(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
     above_sma50 = sum(1 for s in snapshots if s.sma50 is not None and s.price > s.sma50)
     above_sma200 = sum(1 for s in snapshots if s.sma200 is not None and s.price > s.sma200)
@@ -773,39 +813,82 @@ def get_trend_breadth(snapshots: list[TickerSnapshot]) -> TrendBreadth:
         count_uptrend=sum(1 for s in snapshots if s.trend == ta.TrendState.UPTREND),
         count_downtrend=sum(1 for s in snapshots if s.trend == ta.TrendState.DOWNTREND),
         count_sideways=sum(1 for s in snapshots if s.trend == ta.TrendState.SIDEWAYS),
-        golden_crosses=sum(1 for s in snapshots if s.ma_cross == "golden"),
-        death_crosses=sum(1 for s in snapshots if s.ma_cross == "death"),
+        # Corto/mediano plazo (ago 2026): este panel usa ma_cross_short
+        # (SMA{FAST_MA_PERIOD}/SMA50, semanas) en vez de ma_cross
+        # (SMA50/SMA200, meses) - ver el campo en ticker_snapshot.py. `get_movers`
+        # (un panel distinto) sigue usando el par largo a propósito, sin cambios.
+        golden_crosses=sum(1 for s in snapshots if s.ma_cross_short == "golden"),
+        death_crosses=sum(1 for s in snapshots if s.ma_cross_short == "death"),
         count_overbought=sum(1 for s in snapshots if s.rsi14 is not None and s.rsi14 >= 70),
         count_oversold=sum(1 for s in snapshots if s.rsi14 is not None and s.rsi14 <= 30),
         count_stage2=sum(1 for s in snapshots if s.stage == ta.Stage.STAGE_2),
         count_minervini_pass=sum(1 for s in snapshots if s.minervini_pass),
+        count_imminent_golden=sum(
+            1 for s in snapshots if s.imminent_cross_short_term is not None
+            and s.imminent_cross_short_term.direction == "golden"
+        ),
+        count_imminent_death=sum(
+            1 for s in snapshots if s.imminent_cross_short_term is not None
+            and s.imminent_cross_short_term.direction == "death"
+        ),
     )
 
 
 def get_trend_detail(snapshots: list[TickerSnapshot], top_n: int = 40) -> dict[str, list[TickerSnapshot]]:
     """The ticker-level detail behind `get_trend_breadth`'s counts - so instead of
-    just "2 golden crosses" you get to see it's AAPL and MSFT."""
+    just "2 golden crosses" you get to see it's AAPL and MSFT.
 
-    def top(items: list[TickerSnapshot], key, reverse: bool) -> list[TickerSnapshot]:
+    `deprioritize` (Segunda auditoría, ago 2026 - "activos recomendados más
+    precisos"): an optional predicate that pushes a matching name to the
+    bottom of its own group instead of excluding it outright - used on the
+    bullish/"recommended" groups to stop an already-parabolic name
+    (`atr_multiple > 4`, the same overextension threshold
+    `recommendation_engine.py`'s `atr_parabolic` factor already scores) from
+    crowding out a healthier trend candidate at the top of the list, without
+    hiding it (it's still shown, just not first)."""
+
+    def top(items: list[TickerSnapshot], key, reverse: bool, deprioritize=None) -> list[TickerSnapshot]:
         valid = [s for s in items if key(s) is not None]
-        return sorted(valid, key=key, reverse=reverse)[:top_n]
+        if deprioritize is None:
+            return sorted(valid, key=key, reverse=reverse)[:top_n]
+        preferred = sorted((s for s in valid if not deprioritize(s)), key=key, reverse=reverse)
+        demoted = sorted((s for s in valid if deprioritize(s)), key=key, reverse=reverse)
+        return (preferred + demoted)[:top_n]
+
+    def is_overextended(s: TickerSnapshot) -> bool:
+        return s.atr_multiple is not None and s.atr_multiple > 4
 
     uptrend = [s for s in snapshots if s.trend == ta.TrendState.UPTREND]
     downtrend = [s for s in snapshots if s.trend == ta.TrendState.DOWNTREND]
     overbought = [s for s in snapshots if s.rsi14 is not None and s.rsi14 >= 70]
     oversold = [s for s in snapshots if s.rsi14 is not None and s.rsi14 <= 30]
+    imminent_cross = [s for s in snapshots if s.imminent_cross_short_term is not None]
 
     return {
-        "uptrend": top(uptrend, lambda s: s.rs_rating, True),
+        "uptrend": top(uptrend, lambda s: s.rs_rating, True, deprioritize=is_overextended),
         "downtrend": top(downtrend, lambda s: s.rs_rating, False),
-        "golden_cross": top([s for s in snapshots if s.ma_cross == "golden"], lambda s: s.change_1m, True),
-        "death_cross": top([s for s in snapshots if s.ma_cross == "death"], lambda s: s.change_1m, False),
+        "golden_cross": top(
+            [s for s in snapshots if s.ma_cross_short == "golden"], lambda s: s.change_1m, True,
+            deprioritize=is_overextended,
+        ),
+        "death_cross": top([s for s in snapshots if s.ma_cross_short == "death"], lambda s: s.change_1m, False),
         "overbought": top(overbought, lambda s: s.rsi14, True),
         "oversold": top(oversold, lambda s: s.rsi14, False),
-        "stage2": top([s for s in snapshots if s.stage == ta.Stage.STAGE_2], lambda s: s.rs_rating, True),
-        "stage4": top([s for s in snapshots if s.stage == ta.Stage.STAGE_4], lambda s: s.rs_rating, False),
-        "minervini_pass": top([s for s in snapshots if s.minervini_pass], lambda s: s.rs_rating, True),
-        "strong_trend": top(
-            [s for s in snapshots if s.adx14 is not None and s.adx14 >= 25], lambda s: s.adx14, True
+        "stage2": top(
+            [s for s in snapshots if s.stage == ta.Stage.STAGE_2], lambda s: s.rs_rating, True,
+            deprioritize=is_overextended,
         ),
+        "stage4": top([s for s in snapshots if s.stage == ta.Stage.STAGE_4], lambda s: s.rs_rating, False),
+        "minervini_pass": top(
+            [s for s in snapshots if s.minervini_pass], lambda s: s.rs_rating, True, deprioritize=is_overextended
+        ),
+        "strong_trend": top(
+            [s for s in snapshots if s.adx14 is not None and s.adx14 >= 25], lambda s: s.adx14, True,
+            deprioritize=is_overextended,
+        ),
+        # Corto/mediano plazo (ago 2026): proyección de detect_imminent_cross
+        # sobre el par corto (SMA{FAST_MA_PERIOD}/SMA50) - antes de que el
+        # cruce ocurra, no después. Ordenado por sesiones estimadas: el más
+        # próximo primero.
+        "imminent_cross": top(imminent_cross, lambda s: s.imminent_cross_short_term.bars_until, False),
     }

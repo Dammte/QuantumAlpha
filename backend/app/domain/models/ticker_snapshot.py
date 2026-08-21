@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.services.technical_analysis import Stage, TrendState
+from app.services.technical_analysis import ImminentCross, Stage, TrendState
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +47,16 @@ class TickerSnapshot:
     range_position_20d: float | None = None  # rolling_position_in_range(close, 20) - 0 (low) to 1 (high)
     mansfield_rs_4w: float | None = None  # mansfield_rs(window=20, ~4 weeks) - vs the 200-day one above
     relative_volume_trend: float | None = None  # today's relative_volume minus its value 5 sessions ago
+    # "Tendencia" screener, corto/mediano plazo (ago 2026): ma_cross (above) is
+    # SMA50/SMA200 - a months-scale signal, too slow for a portfolio managed on
+    # días/semanas (CLAUDE.md). ma_cross_short mirrors it on the same
+    # FAST_MA_PERIOD/50 pair multi_timeframe.py/exit_engine.py/
+    # ticker_analysis_service.py already use for exactly this reason - weeks,
+    # not months. imminent_cross_short_term reuses detect_imminent_cross (same
+    # function already wired into the single-ticker analysis view) to project
+    # a crossover *before* it happens, not just report one that already did.
+    ma_cross_short: str | None = None  # "golden" | "death" | None (SMA{FAST_MA_PERIOD} vs SMA50)
+    imminent_cross_short_term: ImminentCross | None = None
 
 
 @dataclass(frozen=True, slots=True)

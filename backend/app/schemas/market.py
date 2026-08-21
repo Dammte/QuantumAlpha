@@ -3,7 +3,7 @@ from datetime import date, datetime
 from pydantic import BaseModel
 
 from app.schemas.common import PriceLevelResponse
-from app.schemas.quant_analysis import CoreSignalsResponse, MultiTimeframeResponse
+from app.schemas.quant_analysis import CoreSignalsResponse, ImminentCrossResponse, MultiTimeframeResponse
 
 
 class NewsArticleResponse(BaseModel):
@@ -46,6 +46,8 @@ class TickerSnapshotResponse(BaseModel):
     ma_cross: str | None
     minervini_score: int
     minervini_pass: bool
+    ma_cross_short: str | None = None
+    imminent_cross_short_term: ImminentCrossResponse | None = None
 
 
 class SectorPerformanceResponse(BaseModel):
@@ -125,6 +127,8 @@ class TrendBreadthResponse(BaseModel):
     count_oversold: int
     count_stage2: int
     count_minervini_pass: int
+    count_imminent_golden: int = 0
+    count_imminent_death: int = 0
 
 
 class TrendDetailResponse(BaseModel):
@@ -138,6 +142,7 @@ class TrendDetailResponse(BaseModel):
     stage4: list[TickerSnapshotResponse]
     minervini_pass: list[TickerSnapshotResponse]
     strong_trend: list[TickerSnapshotResponse]
+    imminent_cross: list[TickerSnapshotResponse] = []
 
 
 class SupportResistanceResponse(BaseModel):

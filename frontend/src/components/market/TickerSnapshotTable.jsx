@@ -1,5 +1,6 @@
 import { formatCurrency, formatPercent, formatRatio } from '../../format'
 import { stageLabel } from '../../marketFormat'
+import ImminentCrossBadge from './ImminentCrossBadge'
 import TrendBadge from './TrendBadge'
 
 const DEFAULT_COLUMNS = ['price', 'change_1d', 'change_1w', 'rsi14', 'relative_volume', 'trend']
@@ -22,6 +23,7 @@ const COLUMN_LABELS = {
   mansfield_rs: 'Mansfield RS',
   trend: 'Tendencia',
   stage: 'Fase',
+  imminent_cross_short_term: 'Próximo cruce (corto plazo)',
 }
 
 function renderCell(row, column) {
@@ -57,6 +59,12 @@ function renderCell(row, column) {
       return <TrendBadge trend={row.trend} />
     case 'stage':
       return stageLabel(row.stage)
+    case 'imminent_cross_short_term':
+      return row.imminent_cross_short_term ? (
+        <ImminentCrossBadge imminentCross={row.imminent_cross_short_term} shortTerm />
+      ) : (
+        '—'
+      )
     default:
       return row[column]
   }

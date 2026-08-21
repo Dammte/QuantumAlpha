@@ -781,3 +781,55 @@ no contra un cálculo propio); `segment_by_setup_type` (agrupación, solape, ent
 no en calibrar); `resolve_universe_tickers` (comportamiento curado por defecto, snapshot dinámico
 cuando existe, fallback por región cuando no). 669 tests unitarios en verde, `ruff check app tests
 scripts` limpio.
+
+## 19. Panel "Tendencia": corto/mediano plazo y proyección de cruce (agosto 2026)
+
+Pedido directo del propietario, fuera de los 5 bloques de la segunda auditoría: el panel "Tendencia"
+(`market_screener_service.get_trend_breadth`/`get_trend_detail`, `TrendBreadthPanel.jsx`) usaba
+`ma_cross` (SMA50/SMA200) para sus grupos "Golden cross"/"Death cross" - una señal de meses, demasiado
+lenta para una cartera gestionada a días/semanas (CLAUDE.md) - y no ofrecía ninguna proyección de cruce
+próximo, solo el cruce ya confirmado.
+
+**Conectar, no construir de nuevo**: `technical_analysis.detect_imminent_cross` (D2, §8) ya existe y ya
+está en producción en `multi_timeframe.py`/`exit_engine.py`/`ticker_analysis_service.py`, con el par
+corto `FAST_MA_PERIOD`(21)/SMA50 ya siendo el que usan para gestión de posición a corto plazo. El panel
+"Tendencia" simplemente no lo leía todavía - se conecta aquí, no se reimplementa una segunda vez.
+
+1. **`ma_cross_short`** (`TickerSnapshot`, nuevo campo): `detect_recent_cross` sobre el mismo par
+   SMA21/SMA50, en vez de `ma_cross` (SMA50/SMA200) - solo para este panel. `get_movers.jsx`/`MarketMovers`
+   sigue usando el par largo a propósito, sin cambios - son componentes distintos con preguntas
+   distintas ("¿qué cruzó hoy, de cualquier plazo?" vs. "¿qué tendencia de corto plazo importa para
+   revisar la cartera esta semana?").
+2. **`imminent_cross_short_term`** (nuevo campo): reutiliza `detect_imminent_cross` sobre el mismo par
+   corto - nuevo grupo "Próximo cruce de medias esperado" en el panel, ordenado por sesiones estimadas
+   (el más próximo primero), con el mismo componente `ImminentCrossBadge.jsx` que ya usa la ficha de un
+   solo ticker (misma redacción, mismo umbral de R², una sola fuente de verdad para el texto).
+3. **"Activos recomendados más precisos"**: los grupos alcistas (`uptrend`, `golden_cross`, `stage2`,
+   `minervini_pass`, `strong_trend`) ahora empujan al final de su propia lista (sin ocultarlo) a
+   cualquier nombre ya parabólico (`atr_multiple > 4` - el mismo umbral que `recommendation_engine.py`
+   ya usa para `atr_parabolic`), en vez de dejar que un RS Rating alto por sí solo tape que el nombre ya
+   está sobreextendido. `downtrend` y el resto de grupos bajistas/neutros no cambian - la
+   sobreextensión no es la pregunta relevante ahí.
+
+**Bug real encontrado al conectar esto, no al escribirlo**: un test de integración contra los datos
+fake y deterministas de `tests/integration/conftest.py` hizo que `detect_imminent_cross` proyectara
+`bars_until=0` - una proyección cruda entre 0 y 0,5 sesiones redondea a 0 con `round()`, y "cruce
+esperado en ~0 sesiones" se lee como "ya pasó", exactamente el caso que `current_gap == 0` ya trata por
+separado unas líneas antes. Ningún test existente (los suyos propios, ni los de `exit_engine.py`/
+`multi_timeframe.py`/`ticker_analysis_service.py` que ya lo consumen) usaba una pendiente lo bastante
+pronunciada para tocar este caso - una fracción de bar es un resultado legítimo del ajuste lineal,
+simplemente nunca se había redondeado a exactamente 0 antes en ningún dato de prueba. Corregido con
+`max(1, round(bars_until))`: nunca reporta menos de 1 sesión. No cambia ningún umbral (`IMMINENT_CROSS_MIN_R2`,
+`IMMINENT_CROSS_HORIZON`) ni ninguna decisión de `exit_engine.py` - solo el valor mínimo reportable de
+`bars_until`, que ya era, en espíritu, "al menos 1" en cada caso que los tests existentes cubrían.
+
+**Tests**: `test_technical_analysis.py` (nuevo `test_detect_imminent_cross_never_reports_zero_bars_until`,
+serie sintética con pendiente limpia que produce `bars_until` crudo ≈0,29); `test_market_screener_service.py`
+(10 tests nuevos - `ma_cross_short`/`imminent_cross_short_term` en `_build_raw` con una reversión
+declive→rally construida a mano y verificada contra las funciones reales antes de escribir el test;
+`get_trend_breadth`/`get_trend_detail` con snapshots sintéticos para los conteos de cruce inminente, el
+orden "más próximo primero", y que la desprioritización por sobreextensión afecta a `uptrend` pero no a
+`downtrend`; reconstrucción de `imminent_cross_short_term` desde el caché durable, incluyendo el caso
+"snapshot cacheado antes de que este campo existiera"); dos tests de integración nuevos en
+`test_market_api.py` contra los endpoints reales `/market/trend` y `/market/trend/detail`. 680 tests
+unitarios en verde, `ruff check app tests` limpio, `npm run lint`/`npm run build` limpios en el frontend.

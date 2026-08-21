@@ -9,8 +9,16 @@ const DETAIL_GROUPS = [
   { key: 'downtrend', title: 'En tendencia bajista', columns: ['price', 'change_1m', 'rsi14', 'rs_rating', 'trend'] },
   { key: 'stage2', title: 'Fase 2 de Weinstein (avance)', columns: ['price', 'change_1m', 'rs_rating', 'trend'] },
   { key: 'stage4', title: 'Fase 4 de Weinstein (declive)', columns: ['price', 'change_1m', 'rs_rating', 'trend'] },
-  { key: 'golden_cross', title: 'Golden cross reciente (MA50/MA200)', columns: ['price', 'change_1m', 'rs_rating'] },
-  { key: 'death_cross', title: 'Death cross reciente (MA50/MA200)', columns: ['price', 'change_1m', 'rs_rating'] },
+  {
+    key: 'golden_cross',
+    title: 'Golden cross reciente (SMA21/SMA50, corto plazo)',
+    columns: ['price', 'change_1m', 'rs_rating'],
+  },
+  {
+    key: 'death_cross',
+    title: 'Death cross reciente (SMA21/SMA50, corto plazo)',
+    columns: ['price', 'change_1m', 'rs_rating'],
+  },
   { key: 'overbought', title: 'Sobrecompra (RSI ≥ 70)', columns: ['price', 'rsi14', 'change_1m'] },
   { key: 'oversold', title: 'Sobreventa (RSI ≤ 30)', columns: ['price', 'rsi14', 'change_1m'] },
   {
@@ -19,6 +27,11 @@ const DETAIL_GROUPS = [
     columns: ['price', 'change_1m', 'rs_rating'],
   },
   { key: 'strong_trend', title: 'Tendencia fuerte confirmada (ADX ≥ 25)', columns: ['price', 'change_1m', 'atr_multiple'] },
+  {
+    key: 'imminent_cross',
+    title: 'Próximo cruce de medias esperado (SMA21/SMA50, corto plazo)',
+    columns: ['price', 'change_1m', 'rs_rating', 'imminent_cross_short_term'],
+  },
 ]
 
 function TrendBreadthPanel({ region }) {
@@ -66,9 +79,31 @@ function TrendBreadthPanel({ region }) {
         />
         <StatTile label="En Fase 2 (Weinstein)" value={breadth.count_stage2} tone="up" />
         <StatTile label="Cumplen Minervini (8/8)" value={breadth.count_minervini_pass} tone="up" />
-        <StatTile label="Golden crosses" value={breadth.golden_crosses} tone="up" />
-        <StatTile label="Death crosses" value={breadth.death_crosses} tone="down" />
+        <StatTile
+          label="Golden crosses"
+          value={breadth.golden_crosses}
+          tone="up"
+          hint="SMA21/SMA50 - corto plazo"
+        />
+        <StatTile
+          label="Death crosses"
+          value={breadth.death_crosses}
+          tone="down"
+          hint="SMA21/SMA50 - corto plazo"
+        />
         <StatTile label="Sobrecompra / Sobreventa" value={`${breadth.count_overbought} / ${breadth.count_oversold}`} />
+        <StatTile
+          label="Cruce alcista próximo"
+          value={breadth.count_imminent_golden ?? 0}
+          tone="up"
+          hint="proyección, todavía no confirmado"
+        />
+        <StatTile
+          label="Cruce bajista próximo"
+          value={breadth.count_imminent_death ?? 0}
+          tone="down"
+          hint="proyección, todavía no confirmado"
+        />
       </div>
 
       <div className="movers-grid">

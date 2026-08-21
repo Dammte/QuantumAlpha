@@ -512,6 +512,20 @@ def test_detect_imminent_cross_none_when_projection_too_far_out():
     assert ta.detect_imminent_cross(fast, slow) is None
 
 
+def test_detect_imminent_cross_never_reports_zero_bars_until():
+    # A raw projection under half a bar away (here ~0.29) rounds down to a
+    # literal 0, which reads as "already happened" - exactly the case
+    # current_gap == 0 already carves out separately above. Found live: the
+    # market-wide "Tendencia" screener's fake-provider test data hit this
+    # exact edge case (no existing test used a fractional-bars_until series).
+    gap = list(np.linspace(10.0, 0.2, 15))  # clean linear convergence, R²=1.0
+    fast = pd.Series(gap)
+    slow = pd.Series([0.0] * len(gap))
+    result = ta.detect_imminent_cross(fast, slow)
+    assert result is not None
+    assert result.bars_until == 1  # never 0
+
+
 def test_detect_engulfing_pattern_bullish():
     # Prior bar red (100 -> 95), current bar green and fully covers it (94 -> 102).
     open_ = pd.Series([100.0, 94.0])
