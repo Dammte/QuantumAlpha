@@ -100,9 +100,15 @@ from scipy import stats
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.infrastructure.db.repositories.universe_membership_repository import (  # noqa: E402
+    UniverseMembershipRepository,
+)
+from app.infrastructure.db.session import SessionLocal  # noqa: E402
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider  # noqa: E402
 from app.services import backtest_engine as be  # noqa: E402
+from app.services import dynamic_universe_service as dus  # noqa: E402
 from app.services import technical_analysis as ta  # noqa: E402
+from app.services import watchlist_service as wl  # noqa: E402
 from app.services.market_data_service import MarketDataService  # noqa: E402
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, universe_tickers  # noqa: E402
 from app.services.recommendation_engine import ATR_STOP_MULTIPLE, REWARD_RISK_RATIO  # noqa: E402
@@ -115,6 +121,12 @@ N_PERMUTATIONS = 5000
 DEFAULT_HORIZONS = (5, 10, 21)  # this portfolio's real holding horizon - see docs/quant_methodology.md Fase 5
 MIN_GROUP_SIZE = 30  # per side of a comparison, before trusting a statistic at all
 MIN_BUCKET_SIZE_FOR_IC = 5  # per calendar-month bucket, before that bucket contributes to a factor's IC
+
+# Segunda auditoría, Bloque 5: calibrate 2016-2022 / validate 2023-2026 - the
+# brief's own explicit split. Never mixed: a factor's calibrate-period result
+# is reported separately from its validate-period one, never pooled into a
+# single number.
+TEMPORAL_SPLIT_CUTOFF = pd.Timestamp("2023-01-01")
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +246,39 @@ def compute_triggers_at(
         vix_close.iloc[: i + 1] if vix_close is not None else None,
     )
 
+    # Segunda auditoría, Bloque 5: which of watchlist_service.py's four
+    # short-term setup types would have matched at this historical point -
+    # same exact thresholds as that module's own detectors (reusing its
+    # named constants where it has them), duplicated here rather than
+    # imported directly because watchlist_service operates on a
+    # TickerSnapshot (a live, cross-sectional object this script never
+    # builds), not a raw indicator series at an arbitrary past bar. These are
+    # setup *memberships*, not recommendation_engine.py factors - excluded
+    # from the regular per-factor reports (see `factor_names` below), used
+    # only to segment samples (`segment_by_setup_type`).
+    change_1d = ta.pct_change_over(close.iloc[: i + 1], 1)
+    change_1w = ta.pct_change_over(close.iloc[: i + 1], 5)
+    relative_volume = ta.relative_volume(volume.iloc[: i + 1])
+    dist_52w_high = ta.distance_to_rolling_extreme(close.iloc[: i + 1], 252, "high")
+
+    setup_oversold_bounce = not pd.isna(rsi_t) and rsi_t <= 35 and change_1d is not None and change_1d > 0
+    setup_breakout_volume = (
+        dist_52w_high is not None
+        and dist_52w_high >= -0.02
+        and relative_volume is not None
+        and relative_volume >= 1.3
+    )
+    setup_trend_continuation = strong_trend and change_1w is not None and change_1w > 0
+    setup_pullback_to_support = (
+        not pd.isna(s50)
+        and not pd.isna(s200)
+        and s50 > s200
+        and price >= s50
+        and (price - s50) / s50 <= wl.PULLBACK_MAX_DISTANCE_ABOVE_SMA50
+        and not pd.isna(rsi_t)
+        and rsi_t > wl.PULLBACK_MIN_RSI
+    )
+
     return {
         "trend_up": trend == ta.TrendState.UPTREND,
         "trend_down": trend == ta.TrendState.DOWNTREND,
@@ -250,6 +295,10 @@ def compute_triggers_at(
         "minervini_range_position": minervini_range_position,
         "market_below_sma200": market_trend == ta.TrendState.DOWNTREND,
         "vix_stress": vix_regime_label in ("pánico", "crisis"),
+        "setup_oversold_bounce": setup_oversold_bounce,
+        "setup_breakout_volume": setup_breakout_volume,
+        "setup_trend_continuation": setup_trend_continuation,
+        "setup_pullback_to_support": setup_pullback_to_support,
     }
 
 
@@ -408,6 +457,40 @@ def segment_by_regime(samples: list[FactorSample]) -> dict[str, list[FactorSampl
     }
 
 
+SETUP_TRIGGER_KEYS = (
+    "setup_oversold_bounce", "setup_breakout_volume", "setup_trend_continuation", "setup_pullback_to_support",
+)
+
+
+def segment_by_setup_type(samples: list[FactorSample]) -> dict[str, list[FactorSample]]:
+    """The same pooled sample set, split by which of watchlist_service.py's
+    four short-term setup types applies at each point (Segunda auditoría,
+    Bloque 3/5) - a factor's effect can differ by setup the same way it can
+    differ by market regime (see `segment_by_regime`). Not mutually
+    exclusive the way regime segments are - a sample can match more than one
+    setup, or none, and still appears in every segment it matches."""
+    return {
+        key.removeprefix("setup_"): [s for s in samples if s.triggers.get(key, False)]
+        for key in SETUP_TRIGGER_KEYS
+    }
+
+
+def split_samples_by_date(
+    samples: list[FactorSample], cutoff: pd.Timestamp = TEMPORAL_SPLIT_CUTOFF
+) -> tuple[list[FactorSample], list[FactorSample]]:
+    """(calibrate, validate) - calibrate is strictly before `cutoff`,
+    validate on/after - reuses `backtest_engine.split_by_date`'s own
+    boundary convention (Segunda auditoría, Bloque 5). Never mixed: report
+    each side separately, never pool them into one statistic."""
+    if not samples:
+        return [], []
+    dates = pd.DatetimeIndex([s.date for s in samples])
+    calibrate_mask, validate_mask = be.split_by_date(dates, cutoff)
+    calibrate = [s for s, m in zip(samples, calibrate_mask, strict=True) if m]
+    validate = [s for s, m in zip(samples, validate_mask, strict=True) if m]
+    return calibrate, validate
+
+
 def benjamini_hochberg_adjust(p_values: list[float]) -> list[float]:
     """Benjamini-Hochberg false-discovery-rate-adjusted p-values. Standard
     step-up procedure: sort ascending, adjust each by n/rank, then enforce
@@ -465,16 +548,42 @@ def analyze_factor(factor: str, samples: list[FactorSample]) -> _RawFactorStats 
     )
 
 
+def resolve_universe_tickers(regions: list[str], use_dynamic_universe: bool) -> list[str]:
+    """The curated `market_universe.py` dict (default, unchanged behavior) or
+    the point-in-time `universe_memberships` table (Segunda auditoría,
+    Bloque 5 - `--use-dynamic-universe`) per region, with an explicit,
+    logged fallback to the curated list for any region that hasn't been
+    refreshed yet (`scripts/refresh_universe_membership.py`) rather than
+    silently returning nothing for it."""
+    tickers: list[str] = []
+    if not use_dynamic_universe:
+        for region in regions:
+            tickers.extend(universe_tickers(region))
+        return sorted(set(tickers))
+
+    db = SessionLocal()
+    try:
+        repo = UniverseMembershipRepository(db)
+        for region in regions:
+            dynamic = dus.read_dynamic_universe(repo, region)
+            if dynamic is None:
+                print(f"[{region}] no point-in-time snapshot on file - falling back to the curated universe")
+                tickers.extend(universe_tickers(region))
+            else:
+                print(f"[{region}] using point-in-time universe: {len(dynamic)} tickers")
+                tickers.extend(dynamic.keys())
+    finally:
+        db.close()
+    return sorted(set(tickers))
+
+
 def download_universe_ohlcv(
-    regions: list[str],
+    regions: list[str], use_dynamic_universe: bool = False
 ) -> tuple[dict[str, pd.DataFrame], dict[str, str], pd.Series | None]:
     """Returns (ohlcv_by_ticker, benchmark_ticker_by_ticker, vix_close) - the
     benchmark map and VIX series are shared, single-fetch inputs every
     ticker's factor computation reuses for the market-regime factors."""
-    tickers: list[str] = []
-    for region in regions:
-        tickers.extend(universe_tickers(region))
-    tickers = sorted(set(tickers))
+    tickers = resolve_universe_tickers(regions, use_dynamic_universe)
     print(f"Universe: {len(tickers)} tickers across {regions}")
 
     benchmark_ticker_by_ticker = {ticker: benchmark_for_ticker(ticker) for ticker in tickers}
@@ -584,16 +693,19 @@ def _results_to_frame(results: list[FactorResult]) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("permutation_p_value_bh")
 
 
-def run_study_for_horizon(
+def collect_all_samples(
     ohlcv_by_ticker: dict[str, pd.DataFrame],
     benchmark_ticker_by_ticker: dict[str, str],
     vix_close: pd.Series | None,
     horizon_days: int,
-) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
-    """Returns (pooled_report, regime_reports) - the main cross-sectional
-    report (demeaned, with IC and the multivariate coefficient alongside the
-    univariate one), plus one additional report per regime segment (see
-    `segment_by_regime`)."""
+) -> list[FactorSample]:
+    """Every ticker's own samples, pooled - the raw material every report in
+    this script (pooled, regime-segmented, setup-segmented, temporally
+    split) is built from. Returns un-demeaned samples - demeaning happens
+    per report, on whatever subset of samples that specific report actually
+    covers (see `build_reports`): demeaning a temporal split against the
+    *other* split's cross-section would leak information across the exact
+    boundary this split exists to keep apart."""
     tickers_only = [t for t in ohlcv_by_ticker if t in benchmark_ticker_by_ticker]
     all_samples: list[FactorSample] = []
     for idx, ticker in enumerate(tickers_only, 1):
@@ -604,25 +716,71 @@ def run_study_for_horizon(
         all_samples.extend(samples)
         if idx % 50 == 0:
             print(f"  [horizon={horizon_days}] processed {idx}/{len(tickers_only)} tickers")
+    print(f"[horizon={horizon_days}] Total pooled samples: {len(all_samples)}")
+    return all_samples
 
-    print(f"\n[horizon={horizon_days}] Total pooled samples: {len(all_samples)}")
-    if not all_samples:
-        raise SystemExit("No samples collected - check ticker universe / data availability")
 
-    all_samples = demean_cross_sectionally(all_samples)
-    factor_names = list(all_samples[0].triggers.keys())
+def build_reports(
+    samples: list[FactorSample], horizon_days: int, label: str = ""
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
+    """(pooled_report, regime_reports, setup_reports) for one already-
+    collected sample set - demeans internally, using only this set's own
+    cross-section (see `collect_all_samples`'s docstring on why that must
+    never mix with samples outside the set being measured). Empty frame/dicts
+    when `samples` is empty (e.g. a temporal split with too little history
+    on one side) rather than raising - a thin split is a real, reportable
+    result, not a script failure."""
+    if not samples:
+        return _results_to_frame([]), {}, {}
 
-    pooled_results = _build_results(all_samples, factor_names)
-    pooled_report = _results_to_frame(pooled_results)
+    samples = demean_cross_sectionally(samples)
+    # setup_* keys are membership flags for segment_by_setup_type, not
+    # recommendation_engine.py-weighted factors - excluded from the regular
+    # per-factor reports so they don't show up as if they were one.
+    factor_names = [f for f in samples[0].triggers if not f.startswith("setup_")]
+
+    pooled_report = _results_to_frame(_build_results(samples, factor_names))
 
     regime_reports: dict[str, pd.DataFrame] = {}
-    for regime_name, regime_samples in segment_by_regime(all_samples).items():
-        regime_results = _build_results(regime_samples, factor_names)
-        if regime_results:
-            regime_reports[regime_name] = _results_to_frame(regime_results)
-        print(f"  [horizon={horizon_days}] regime '{regime_name}': {len(regime_samples)} samples")
+    for regime_name, regime_samples in segment_by_regime(samples).items():
+        results = _build_results(regime_samples, factor_names)
+        if results:
+            regime_reports[regime_name] = _results_to_frame(results)
+        print(f"  [horizon={horizon_days}]{label} regime '{regime_name}': {len(regime_samples)} samples")
 
+    setup_reports: dict[str, pd.DataFrame] = {}
+    for setup_name, setup_samples in segment_by_setup_type(samples).items():
+        results = _build_results(setup_samples, factor_names)
+        if results:
+            setup_reports[setup_name] = _results_to_frame(results)
+        print(f"  [horizon={horizon_days}]{label} setup '{setup_name}': {len(setup_samples)} samples")
+
+    return pooled_report, regime_reports, setup_reports
+
+
+def run_study_for_horizon(
+    ohlcv_by_ticker: dict[str, pd.DataFrame],
+    benchmark_ticker_by_ticker: dict[str, str],
+    vix_close: pd.Series | None,
+    horizon_days: int,
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Returns (pooled_report, regime_reports) - the main cross-sectional
+    report (demeaned, with IC and the multivariate coefficient alongside the
+    univariate one), plus one additional report per regime segment (see
+    `segment_by_regime`). Kept as the simple two-tuple existing callers
+    expect; see `__main__` for the fuller version that also saves per-setup
+    and calibrate/validate temporal-split reports (Segunda auditoría,
+    Bloque 5)."""
+    all_samples = collect_all_samples(ohlcv_by_ticker, benchmark_ticker_by_ticker, vix_close, horizon_days)
+    if not all_samples:
+        raise SystemExit("No samples collected - check ticker universe / data availability")
+    pooled_report, regime_reports, _setup_reports = build_reports(all_samples, horizon_days)
     return pooled_report, regime_reports
+
+
+def _save_report(report: pd.DataFrame, path: str, description: str) -> None:
+    report.to_csv(path, index=False)
+    print(f"Saved {description} to {path}")
 
 
 if __name__ == "__main__":
@@ -637,23 +795,73 @@ if __name__ == "__main__":
     )
     parser.add_argument("--regions", nargs="+", default=["us", "europe"], help="Universe regions to include")
     parser.add_argument("--out-prefix", type=str, default="factor_ablation_report", help="Output CSV path prefix")
+    parser.add_argument(
+        "--use-dynamic-universe",
+        action="store_true",
+        help="Segunda auditoría, Bloque 5: read each region's point-in-time universe "
+        "(scripts/refresh_universe_membership.py) instead of the curated market_universe.py dict - "
+        "falls back to curated, per region, with a logged notice, if that region has no snapshot yet.",
+    )
+    parser.add_argument(
+        "--temporal-split",
+        action="store_true",
+        help="Segunda auditoría, Bloque 5: also report calibrate (before "
+        f"{TEMPORAL_SPLIT_CUTOFF.date()}) and validate (on/after) separately - never mixed into "
+        "the main pooled report.",
+    )
     args = parser.parse_args()
 
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", None)
 
-    ohlcv, benchmark_by_ticker, vix_close = download_universe_ohlcv(args.regions)
+    ohlcv, benchmark_by_ticker, vix_close = download_universe_ohlcv(args.regions, args.use_dynamic_universe)
     for horizon in args.horizons:
-        report, regime_reports = run_study_for_horizon(ohlcv, benchmark_by_ticker, vix_close, horizon)
+        all_samples = collect_all_samples(ohlcv, benchmark_by_ticker, vix_close, horizon)
+        if not all_samples:
+            raise SystemExit("No samples collected - check ticker universe / data availability")
+
+        pooled_report, regime_reports, setup_reports = build_reports(all_samples, horizon)
         print("\n" + "=" * 100)
         print(f"HORIZON = {horizon} trading days (pooled, cross-sectionally demeaned)")
         print("=" * 100)
-        print(report.to_string(index=False))
-        out_path = f"{args.out_prefix}_h{horizon}.csv"
-        report.to_csv(out_path, index=False)
-        print(f"Saved to {out_path}")
+        print(pooled_report.to_string(index=False))
+        _save_report(pooled_report, f"{args.out_prefix}_h{horizon}.csv", "pooled report")
 
         for regime_name, regime_report in regime_reports.items():
-            regime_out_path = f"{args.out_prefix}_h{horizon}_regime_{regime_name}.csv"
-            regime_report.to_csv(regime_out_path, index=False)
-            print(f"Saved regime segment '{regime_name}' to {regime_out_path}")
+            _save_report(
+                regime_report, f"{args.out_prefix}_h{horizon}_regime_{regime_name}.csv",
+                f"regime segment '{regime_name}'",
+            )
+
+        for setup_name, setup_report in setup_reports.items():
+            _save_report(
+                setup_report,
+                f"{args.out_prefix}_h{horizon}_setup_{setup_name}.csv",
+                f"setup segment '{setup_name}'",
+            )
+
+        if args.temporal_split:
+            calibrate_samples, validate_samples = split_samples_by_date(all_samples)
+            print(
+                f"  [horizon={horizon}] temporal split: {len(calibrate_samples)} calibrate "
+                f"(< {TEMPORAL_SPLIT_CUTOFF.date()}), {len(validate_samples)} validate (>= same date)"
+            )
+            for split_name, split_samples in (("calibrate", calibrate_samples), ("validate", validate_samples)):
+                split_pooled, split_regime, split_setup = build_reports(
+                    split_samples, horizon, label=f" {split_name}"
+                )
+                _save_report(
+                    split_pooled, f"{args.out_prefix}_h{horizon}_{split_name}.csv", f"{split_name} pooled report"
+                )
+                for regime_name, regime_report in split_regime.items():
+                    _save_report(
+                        regime_report,
+                        f"{args.out_prefix}_h{horizon}_{split_name}_regime_{regime_name}.csv",
+                        f"{split_name} regime segment '{regime_name}'",
+                    )
+                for setup_name, setup_report in split_setup.items():
+                    _save_report(
+                        setup_report,
+                        f"{args.out_prefix}_h{horizon}_{split_name}_setup_{setup_name}.csv",
+                        f"{split_name} setup segment '{setup_name}'",
+                    )

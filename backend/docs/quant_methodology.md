@@ -719,3 +719,65 @@ en `test_ticker_analysis_service.py`/`test_ticker_analysis_api.py` (el segundo c
 del repositorio, no una fábrica de datos) confirmando que `sign_contradicted_factors` es siempre un
 subconjunto de los factores realmente disparados. 654 tests unitarios en verde, `ruff check app tests`
 limpio.
+
+## 18. Segunda auditoría independiente — Bloque 5: el script listo para la partición temporal y el
+universo dinámico (agosto 2026) — **todavía no ejecutado contra datos reales**
+
+Este bloque es, deliberadamente, solo la mitad "construir y probar" del encargo. La otra mitad -
+correr el estudio completo (5-10 tickers x 10 años x varios horizontes, del orden de la misma
+duración que el estudio v2 de la Fase 5) y traer una recomendación de recalibración con evidencia
+dentro/fuera de muestra al lado - es un paso deliberadamente separado, no ejecutado todavía: es un
+proceso largo, y decidir *cuándo* correrlo (y sobre qué universo - curado o dinámico) es una decisión
+visible para el propietario, no algo que se lanza en silencio dentro de una sesión de código.
+
+**Lo que sí se construyó y se probó de punta a punta, contra `scripts/factor_ablation_study.py`:**
+
+- **Partición temporal calibrar/validar** (`split_samples_by_date`, `TEMPORAL_SPLIT_CUTOFF =
+  2023-01-01`): reutiliza `backtest_engine.split_by_date` (ya existía desde la Fase 5) sobre las
+  fechas de los propios `FactorSample`. Calibrar es estrictamente antes del corte, validar es en o
+  después - nunca mezclados. Crítico: el *demeaning* transversal ocurre **después** de partir, no
+  antes (`build_reports` desmedia solo sobre el subconjunto que se le pase) - desmediar contra la
+  media de todo el periodo antes de partir habría filtrado información de validación hacia calibrar,
+  exactamente el tipo de fuga que esta partición existe para evitar.
+- **Segmentación por tipo de setup** (`segment_by_setup_type`, `SETUP_TRIGGER_KEYS`): las mismas
+  cuatro heurísticas de `watchlist_service.py` (Bloque 3) - `oversold_bounce`, `breakout_volume`,
+  `trend_continuation`, `pullback_to_support` - reimplementadas dentro de `compute_triggers_at` sobre
+  series de indicadores en un índice histórico arbitrario (no sobre un `TickerSnapshot`, que
+  `watchlist_service` construye solo para el presente vivo), reutilizando las mismas constantes con
+  nombre (`wl.PULLBACK_MAX_DISTANCE_ABOVE_SMA50`, `wl.PULLBACK_MIN_RSI`) para no derivar en silencio
+  de los umbrales que sí están en producción. No son mutuamente excluyentes (una muestra puede
+  coincidir con varios setups o ninguno) y se excluyen explícitamente de los informes por factor
+  (`factor_names` filtra cualquier clave `setup_*`) - son membresías de segmento, no factores
+  puntuados por `recommendation_engine.py`.
+- **Universo punto-en-el-tiempo opcional** (`resolve_universe_tickers`, flag `--use-dynamic-universe`):
+  lee `universe_memberships` (Bloque 3, §15) por región vía `dynamic_universe_service.read_dynamic_universe`,
+  con fallback explícito y logueado al diccionario curado por región cuando esa región todavía no
+  tiene snapshot - nunca falla en silencio devolviendo un universo vacío para media convocatoria.
+  Comportamiento por defecto (`--use-dynamic-universe` no pasado) sin cambios: sigue siendo el
+  diccionario curado, igual que antes de este bloque.
+- **CLI (`__main__`)**: `--use-dynamic-universe` y `--temporal-split` son opt-in explícitos - correr
+  el script sin ellos produce exactamente los mismos archivos que producía antes de este bloque
+  (`{prefix}_h{N}.csv`, `{prefix}_h{N}_regime_{name}.csv`), más los nuevos
+  `{prefix}_h{N}_setup_{name}.csv` (siempre, son baratos - reutilizan las muestras ya recolectadas,
+  sin recolección adicional). Con `--temporal-split` se añaden además
+  `{prefix}_h{N}_calibrate.csv`/`{prefix}_h{N}_validate.csv` y sus propios desgloses por régimen/setup
+  (`{prefix}_h{N}_calibrate_regime_{name}.csv`, etc.) - nunca un archivo que mezcle ambos periodos.
+
+**Por qué no se ejecutó todavía**: correr esto de verdad, con `--use-dynamic-universe` real, primero
+necesitaba que el universo dinámico existiera de verdad para ambas regiones - lo cual expuso (ver el
+fix de `dynamic_universe_service.py` en el commit `6b9bd72`, el mismo día) un bug real de producción
+(duplicado "SHEL.L" en la página de STOXX 600) que habría hecho fallar cualquier intento de correr el
+estudio con `--use-dynamic-universe europe`. Con ese bug corregido y verificado en vivo (Europa guarda
+242 tickers, `source=live`), el script está listo para correrse - pero el propio corrido (varias horas,
+resultado con datos reales que hay que revisar antes de recomendar nada) es la siguiente decisión, no
+parte de este commit.
+
+**Tests**: `test_factor_ablation_study.py` (13 tests, nuevo - primer archivo de test para este script):
+las cuatro heurísticas de setup contra series sintéticas donde el resultado es obvio a mano (una
+caída pronunciada seguida de un día verde para `oversold_bounce`, una tendencia limpia para
+`trend_continuation`, etc., validadas también contra las funciones reales de `technical_analysis.py`,
+no contra un cálculo propio); `segment_by_setup_type` (agrupación, solape, entrada vacía);
+`split_samples_by_date` (corte por defecto y personalizado, el propio día del corte cae en validar,
+no en calibrar); `resolve_universe_tickers` (comportamiento curado por defecto, snapshot dinámico
+cuando existe, fallback por región cuando no). 669 tests unitarios en verde, `ruff check app tests
+scripts` limpio.
