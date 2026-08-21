@@ -334,3 +334,55 @@ class PremiumWatchlistResponse(BaseModel):
 class WatchlistResponse(BaseModel):
     items: list[WatchlistItemResponse]
     computed_at: datetime
+
+
+class CorrelationWarningResponse(BaseModel):
+    """See portfolio_construction_service.CorrelationWarning - two held
+    tickers correlated at or beyond the threshold: one bet with two names,
+    not two independent ones."""
+
+    ticker_a: str
+    ticker_b: str
+    correlation: float
+
+
+class SectorConcentrationResponse(BaseModel):
+    sector: str
+    weight_pct: float
+    tickers: list[str]
+
+
+class PositionRiskContributionResponse(BaseModel):
+    ticker: str
+    weight_pct: float
+    risk_contribution_pct: float
+
+
+class AggregateRiskReportResponse(BaseModel):
+    total_risk_amount: float
+    total_risk_pct_of_capital: float | None
+    exceeds_limit: bool
+
+
+class PortfolioConstructionResponse(BaseModel):
+    """See portfolio_construction_service.py (D12) - portfolio-level risk no
+    single position's own analysis can see: correlated bets, sector
+    concentration, and the real money lost if every stop got hit at once.
+    Positions with no return history yet (a brand-new listing) or no open
+    trade plan (aggregate_risk only) are simply absent from the relevant
+    section rather than assumed - see each pure function's own docstring."""
+
+    # ticker -> ticker -> correlation, only tickers with return history; None
+    # for a pair whose correlation can't be computed (e.g. one side has zero
+    # variance over the window) rather than a silently wrong number.
+    correlation_matrix: dict[str, dict[str, float | None]]
+    correlated_pairs: list[CorrelationWarningResponse]
+    sector_concentrations: list[SectorConcentrationResponse]
+    concentrated_sectors: list[SectorConcentrationResponse]
+    risk_contributions: list[PositionRiskContributionResponse]
+    portfolio_volatility_pct: float | None  # annualized realized vol of the portfolio as a whole
+    volatility_target_pct: float
+    suggested_to_trim: list[PositionRiskContributionResponse]  # top contributors to trim if vol exceeds target
+    aggregate_risk: AggregateRiskReportResponse
+    tickers_without_trade_plan: list[str]  # excluded from aggregate_risk - no known stop to size risk against
+    computed_at: datetime

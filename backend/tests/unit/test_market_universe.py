@@ -85,6 +85,28 @@ def test_region_config_falls_back_to_default_for_unknown_region():
     assert mu.region_config("nonsense").key == mu.DEFAULT_REGION
 
 
+def test_region_of_us_default():
+    assert mu.region_of("AAPL") == "us"
+    assert mu.region_of("SOME_UNKNOWN_TICKER") == "us"
+
+
+def test_region_of_curated_european():
+    assert mu.region_of("SAP.DE") == "europe"
+
+
+def test_region_of_recognizes_european_suffix_even_if_uncurated():
+    assert mu.region_of("SOMECOMPANY.PA") == "europe"
+
+
+def test_closed_bar_cutoff_for_ticker_is_region_specific():
+    # Segunda auditoría, Bloque 2: the D6 fix's single US-centric cutoff
+    # applied to a European ticker held an already-settled bar as "still
+    # forming" for 5-6 extra hours every evening.
+    assert mu.closed_bar_cutoff_for_ticker("AAPL") == mu.CLOSED_BAR_CUTOFF_BY_REGION["us"]
+    assert mu.closed_bar_cutoff_for_ticker("SAP.DE") == mu.CLOSED_BAR_CUTOFF_BY_REGION["europe"]
+    assert mu.CLOSED_BAR_CUTOFF_BY_REGION["europe"] < mu.CLOSED_BAR_CUTOFF_BY_REGION["us"]
+
+
 def test_industries_by_sector_is_region_scoped():
     us_grouped = mu.industries_by_sector("us")
     europe_grouped = mu.industries_by_sector("europe")

@@ -116,6 +116,70 @@ def test_label_triple_barrier_trailing_stop_locks_in_profit_a_fixed_stop_would_m
     assert trailing.return_pct == pytest.approx(0.35)  # locked in well before the round trip
 
 
+def test_label_triple_barrier_trailing_uses_the_profit_lock_multiplier_once_up_2r():
+    # Entry at 100, stop at 90 -> risk (R) = 10. The rally clears +2R at the
+    # bar where close=120 (r_multiple recomputed from the *original* stop_loss,
+    # never the already-trailing current_stop) - trade_manager's profit-lock
+    # multiplier (2.0, tighter than "normal"'s 3.0) should apply from there on.
+    # Before this fix, chandelier_multiplier was always called with
+    # r_multiple=None, so the trail only ever used the looser 3.0 multiplier.
+    close = pd.Series([100.0, 105.0, 110.0, 115.0, 120.0, 125.0, 120.0, 115.0, 110.0])
+    high, low = close + 1.0, close - 1.0
+    atr14 = pd.Series([2.0] * len(close))
+
+    label = be.label_triple_barrier(
+        close, high, low, entry_index=0, stop_loss=90.0, take_profit=1000.0,
+        vertical_barrier_bars=8, trailing=True, atr14=atr14, vol_regime="normal",
+    )
+
+    assert label is not None
+    assert label.exit_reason == "stop"
+    assert label.exit_index == 6
+    # Trail: 106-3*2=100 -> 111-3*2=105 -> 116-3*2=110 -> (r=2.0>=2R, mult=2.0)
+    # 121-2*2=117 -> (r=2.5) 126-2*2=122 -> bar 6's low (119) touches 122.
+    assert label.exit_price == pytest.approx(122.0)
+    assert label.return_pct == pytest.approx(0.22)
+
+
+def test_label_triple_barrier_gap_through_stop_fills_at_the_worse_open_price():
+    # A stop at 95 that the market gaps straight through overnight, opening
+    # at 62 - the same numbers the brief's own example uses. Without gap
+    # awareness this books as -5% (filled at the stop, which was never
+    # actually available to sell at); the real fill is -38% (the open).
+    close = pd.Series([100.0, 62.0])
+    high = pd.Series([100.5, 63.0])
+    low = pd.Series([99.5, 60.0])
+    open_ = pd.Series([100.0, 62.0])
+
+    gap_aware = be.label_triple_barrier(close, high, low, entry_index=0, stop_loss=95.0, take_profit=200.0,
+                                         vertical_barrier_bars=1, open_=open_)
+    assert gap_aware is not None and gap_aware.exit_reason == "stop"
+    assert gap_aware.exit_price == pytest.approx(62.0)
+    assert gap_aware.return_pct == pytest.approx(-0.38)
+
+    # No open series given -> no gap information to act on, the old,
+    # honest-about-its-limits fill (at the stop itself) still holds.
+    gap_blind = be.label_triple_barrier(close, high, low, entry_index=0, stop_loss=95.0, take_profit=200.0,
+                                         vertical_barrier_bars=1)
+    assert gap_blind is not None and gap_blind.exit_reason == "stop"
+    assert gap_blind.exit_price == pytest.approx(95.0)
+    assert gap_blind.return_pct == pytest.approx(-0.05)
+
+
+def test_label_triple_barrier_gap_through_target_fills_at_the_better_open_price():
+    close = pd.Series([100.0, 130.0])
+    high = pd.Series([100.5, 131.0])
+    low = pd.Series([99.5, 129.0])
+    open_ = pd.Series([100.0, 130.0])
+
+    label = be.label_triple_barrier(close, high, low, entry_index=0, stop_loss=90.0, take_profit=110.0,
+                                     vertical_barrier_bars=1, open_=open_)
+    assert label is not None
+    assert label.exit_reason == "target"
+    assert label.exit_price == pytest.approx(130.0)
+    assert label.return_pct == pytest.approx(0.30)
+
+
 # --- compute_trading_metrics ---------------------------------------------------
 
 
@@ -136,27 +200,44 @@ def test_trading_metrics_empty_labels():
 
 
 def test_trading_metrics_win_rate_and_expectancy():
-    # 2 wins of +10%, 2 losses of -5% -> win_rate=0.5, expectancy = 0.5*0.10 + 0.5*(-0.05) = 0.025
+    # 2 wins of +10%, 2 losses of -5%, net of the round-trip cost:
+    # net_win = 0.10 - cost, net_loss = -0.05 - cost -> win_rate=0.5,
+    # expectancy = 0.5*net_win + 0.5*net_loss.
     labels = [_label(0.10), _label(0.10), _label(-0.05), _label(-0.05)]
     metrics = be.compute_trading_metrics(labels)
+    net_win = 0.10 - be.ROUND_TRIP_COST_PCT
+    net_loss = -0.05 - be.ROUND_TRIP_COST_PCT
     assert metrics.n_trades == 4
     assert metrics.win_rate == pytest.approx(0.5)
-    assert metrics.avg_win_pct == pytest.approx(0.10)
-    assert metrics.avg_loss_pct == pytest.approx(-0.05)
-    assert metrics.expectancy_pct == pytest.approx(0.025)
+    assert metrics.avg_win_pct == pytest.approx(net_win)
+    assert metrics.avg_loss_pct == pytest.approx(net_loss)
+    assert metrics.expectancy_pct == pytest.approx(0.5 * net_win + 0.5 * net_loss)
 
 
 def test_trading_metrics_profit_factor():
-    # sum(wins)=0.20, sum(|losses|)=0.10 -> profit factor = 2.0
+    # sum(net wins) / sum(|net losses|), not the gross 0.20/0.10=2.0 - costs
+    # shrink every win and deepen every loss before the ratio is taken.
     labels = [_label(0.10), _label(0.10), _label(-0.05), _label(-0.05)]
     metrics = be.compute_trading_metrics(labels)
-    assert metrics.profit_factor == pytest.approx(2.0)
+    net_win = 0.10 - be.ROUND_TRIP_COST_PCT
+    net_loss = -0.05 - be.ROUND_TRIP_COST_PCT
+    assert metrics.profit_factor == pytest.approx((2 * net_win) / abs(2 * net_loss))
 
 
 def test_trading_metrics_profit_factor_none_without_losses():
     labels = [_label(0.10), _label(0.05)]
     metrics = be.compute_trading_metrics(labels)
     assert metrics.profit_factor is None
+
+
+def test_trading_metrics_a_trade_that_doesnt_clear_costs_counts_as_a_net_loss():
+    # +0.10% gross is smaller than the round-trip cost (0.2%) - after costs
+    # it's a real loss, and must count as one for win_rate/profit_factor, not
+    # get counted as a "win" just because the raw price move was positive.
+    labels = [_label(0.001), _label(-0.05)]
+    metrics = be.compute_trading_metrics(labels)
+    assert metrics.win_rate == pytest.approx(0.0)
+    assert metrics.profit_factor == pytest.approx(0.0)  # losses exist, but zero wins to offset them
 
 
 def test_trading_metrics_mae_mfe_averages():
@@ -167,15 +248,19 @@ def test_trading_metrics_mae_mfe_averages():
 
 
 def test_trading_metrics_max_drawdown_on_a_losing_streak():
-    # Three consecutive -10% trades: equity curve 0.9 -> 0.81 -> 0.729 (the
-    # curve is normalized to the *first* trade's own multiplier, not a
-    # separate starting-capital baseline). Max drawdown is peak-to-trough,
-    # not from some fixed starting point: peak is 0.9 (after trade 1),
-    # trough is 0.729 (after trade 3) -> (0.729-0.9)/0.9 = -0.19, not the
-    # full -0.271 compounded loss from an assumed 1.0 baseline.
+    # Three consecutive -10% trades, net of the round-trip cost. Segunda
+    # auditoría, Bloque 2: the equity curve must start from a baseline of 1.0
+    # *before* the first trade, not from the first trade's own multiplier -
+    # my own bug from the previous round (this exact test used to assert the
+    # understated (0.729-0.9)/0.9, which makes trade 1's own loss invisible
+    # to the drawdown). The real drawdown is peak(1.0)-to-trough, the full
+    # compounded loss from the pre-trade baseline.
     labels = [_label(-0.10), _label(-0.10), _label(-0.10)]
     metrics = be.compute_trading_metrics(labels)
-    assert metrics.max_drawdown_pct == pytest.approx((0.729 - 0.9) / 0.9, abs=1e-6)
+    net_r = -0.10 - be.ROUND_TRIP_COST_PCT
+    expected_curve = np.cumprod([1.0, 1 + net_r, 1 + net_r, 1 + net_r])
+    expected_drawdown = (expected_curve[-1] - expected_curve[0]) / expected_curve[0]
+    assert metrics.max_drawdown_pct == pytest.approx(expected_drawdown, abs=1e-9)
 
 
 def test_trading_metrics_avg_bars_held_split_by_outcome():
@@ -292,10 +377,15 @@ def _synthetic_regime_series(n: int, block: int, seed: int = 123) -> pd.Series:
 def _full_bundle(close: pd.Series) -> dict:
     high = close * 1.01
     low = close * 0.99
+    # Each bar's open ~= the prior bar's close (a small, realistic gap), not
+    # close itself - a degenerate zero-range "open==close" bar would never
+    # exercise the gap-fill path at all.
+    open_ = close.shift(1).bfill()
     return {
         "close": close,
         "high": high,
         "low": low,
+        "open_": open_,
         "sma20": ta.sma(close, 20),
         "sma50": ta.sma(close, 50),
         "sma150": ta.sma(close, 150),

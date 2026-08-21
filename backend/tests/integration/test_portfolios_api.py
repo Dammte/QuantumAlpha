@@ -428,6 +428,60 @@ def test_portfolio_risk_response_carries_computed_at(client: TestClient) -> None
     assert refreshed["computed_at"] >= first["computed_at"]
 
 
+def test_portfolio_construction_for_unknown_portfolio_returns_404(client: TestClient) -> None:
+    response = client.get("/api/v1/portfolios/999/construction")
+    assert response.status_code == 404
+
+
+def test_portfolio_construction_empty_portfolio_returns_an_empty_report(client: TestClient) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Empty"}).json()["id"]
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/construction")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["correlation_matrix"] == {}
+    assert body["sector_concentrations"] == []
+    assert body["aggregate_risk"]["total_risk_amount"] == 0.0
+    assert body["aggregate_risk"]["exceeds_limit"] is False
+
+
+def test_portfolio_construction_computes_sector_concentration_and_correlation(client: TestClient) -> None:
+    # Segunda auditoría, Bloque 2: portfolio_construction_service.py (D12)
+    # existed, fully tested in isolation, with zero callers anywhere in
+    # app/api - this is that connection.
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "PCONS1", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "PCONS2", "transaction_type": "buy", "quantity": 5, "price": 200},
+    )
+
+    response = client.get(f"/api/v1/portfolios/{portfolio_id}/construction")
+    assert response.status_code == 200
+    body = response.json()
+
+    held = {"PCONS1", "PCONS2"}
+    assert set(body["correlation_matrix"].keys()) == held
+    for row in body["correlation_matrix"].values():
+        assert set(row.keys()) == held
+
+    sector_weight_total = sum(s["weight_pct"] for s in body["sector_concentrations"])
+    assert sector_weight_total == pytest.approx(1.0, abs=1e-6)
+    assert {t for s in body["sector_concentrations"] for t in s["tickers"]} == held
+
+    contributing_tickers = {r["ticker"] for r in body["risk_contributions"]}
+    assert contributing_tickers <= held
+
+    assert body["volatility_target_pct"] > 0
+    assert "total_risk_amount" in body["aggregate_risk"]
+    # Neither ticker has gone through a real trade_plan-creating GET /risk
+    # call in this test, so their stop is genuinely unknown - excluded from
+    # aggregate_risk, not assumed.
+    assert set(body["tickers_without_trade_plan"]) == held
+
+
 def test_selling_moves_proceeds_into_cash_balance(client: TestClient) -> None:
     """The literal bug this feature fixes: selling a position must not make its
     proceeds disappear from the portfolio's total - they become liquidity.

@@ -64,6 +64,7 @@ def label_triple_barrier(
     trailing: bool = False,
     atr14: pd.Series | None = None,
     vol_regime: str | None = None,
+    open_: pd.Series | None = None,
 ) -> TripleBarrierLabel | None:
     """Simulates one trade opened at `entry_index`'s close, walking forward
     bar by bar until the stop, the target, or the vertical (time) barrier is
@@ -72,6 +73,18 @@ def label_triple_barrier(
     target are touched within the *same* bar, the stop wins - the
     conservative convention (the brief's own instruction), since there is no
     way to know from daily bars alone which was actually touched first.
+
+    `open_`, when given, makes the fill gap-aware: a bar that *opens* beyond
+    a barrier (an overnight gap through the stop, or a gap-up through the
+    target) never actually traded at the barrier price - the barrier level
+    was skipped over, not touched and filled. The fill is the worse of
+    (open, stop) for a stop-out and the better of (open, target) for a
+    target hit. Segunda auditoría, Bloque 2: without this, a gap to 62 with
+    a stop at 95 booked as -5% (filled at the unreachable stop) instead of
+    the real -38% (filled at the open), inflating expectancy and profit
+    factor on exactly the bars that hurt the most. `None` (the default) keeps
+    the old, gap-blind fill - honest about not inventing an open price that
+    wasn't actually passed in.
 
     `trailing=True` runs `trade_manager.py`'s actual Chandelier Exit logic
     bar by bar instead of a fixed stop - tests the strategy this system
@@ -96,6 +109,7 @@ def label_triple_barrier(
     for i in range(entry_index + 1, max_index + 1):
         bar_high = float(high.iloc[i])
         bar_low = float(low.iloc[i])
+        bar_open = float(open_.iloc[i]) if open_ is not None else None
 
         mae_pct = min(mae_pct, (bar_low - entry_price) / entry_price)
         mfe_pct = max(mfe_pct, (bar_high - entry_price) / entry_price)
@@ -112,13 +126,19 @@ def label_triple_barrier(
         target_touched = bar_high >= take_profit
 
         if stop_touched:  # stop wins on a same-bar tie - see docstring
+            # A gap-down open trades through the stop before it can ever be
+            # filled there - `bar_open` is always <= `bar_high` and >=
+            # `bar_low` by construction, so this is a no-op (fill == stop)
+            # on any bar that didn't actually gap.
+            fill_price = min(bar_open, current_stop) if bar_open is not None else current_stop
             return TripleBarrierLabel(
-                entry_index, i, "stop", entry_price, current_stop, current_stop / entry_price - 1,
+                entry_index, i, "stop", entry_price, fill_price, fill_price / entry_price - 1,
                 i - entry_index, mae_pct, mfe_pct,
             )
         if target_touched:
+            fill_price = max(bar_open, take_profit) if bar_open is not None else take_profit
             return TripleBarrierLabel(
-                entry_index, i, "target", entry_price, take_profit, take_profit / entry_price - 1,
+                entry_index, i, "target", entry_price, fill_price, fill_price / entry_price - 1,
                 i - entry_index, mae_pct, mfe_pct,
             )
 
@@ -126,7 +146,17 @@ def label_triple_barrier(
             highest_high_since_entry = max(highest_high_since_entry, bar_high)
             latest_atr = atr14.iloc[i]
             if not pd.isna(latest_atr):
-                multiplier = tm.chandelier_multiplier(vol_regime, None)
+                # Segunda auditoría, Bloque 2: recomputed at each bar from
+                # THIS bar's close against the ORIGINAL (never-mutated)
+                # stop_loss parameter - never the currently-trailing
+                # `current_stop` - as the risk denominator, so the >=2R
+                # profit-lock multiplier (chandelier_multiplier) can engage
+                # mid-simulation exactly like the live system, instead of
+                # being permanently `None` and never tightening.
+                risk_per_share = entry_price - stop_loss
+                bar_close = float(close.iloc[i])
+                r_multiple = (bar_close - entry_price) / risk_per_share if risk_per_share > 0 else None
+                multiplier = tm.chandelier_multiplier(vol_regime, r_multiple)
                 candidate = highest_high_since_entry - multiplier * float(latest_atr)
                 current_stop = tm.update_trailing_stop(current_stop, candidate)
 
@@ -158,12 +188,23 @@ _EMPTY_METRICS = TradingMetrics(0, None, None, None, None, None, None, None, Non
 
 
 def compute_trading_metrics(labels: list[TripleBarrierLabel]) -> TradingMetrics:
+    """Segunda auditoría, Bloque 2: every P&L-derived stat here - win_rate,
+    avg_win/avg_loss, expectancy, profit_factor, the equity curve and its
+    drawdown - is computed net of `ROUND_TRIP_COST_PCT`, not just the summary
+    `net_return_pct` scalar. A trade whose gross move is smaller than the
+    round-trip cost is a real loss, not a "win" with an asterisk, and must
+    count as one everywhere a win/loss split happens. `avg_mae_pct`/
+    `avg_mfe_pct` stay gross on purpose - they describe intrabar price
+    action (how far the trade wandered), not P&L, and costs don't apply to a
+    price level that was never actually realized as an entry/exit."""
     if not labels:
         return _EMPTY_METRICS
 
-    returns = [label.return_pct for label in labels]
-    wins = [r for r in returns if r > 0]
-    losses = [r for r in returns if r <= 0]
+    gross_returns = [label.return_pct for label in labels]
+    net_returns = [r - ROUND_TRIP_COST_PCT for r in gross_returns]
+
+    wins = [r for r in net_returns if r > 0]
+    losses = [r for r in net_returns if r <= 0]
     n = len(labels)
     win_rate = len(wins) / n
     avg_win = float(np.mean(wins)) if wins else 0.0
@@ -174,14 +215,18 @@ def compute_trading_metrics(labels: list[TripleBarrierLabel]) -> TradingMetrics:
     sum_losses = abs(float(sum(losses)))
     profit_factor = sum_wins / sum_losses if sum_losses > 0 else None
 
-    equity_curve = np.cumprod([1 + r for r in returns])
+    # Baseline of 1.0 prepended *before* the first trade - without it, the
+    # first trade's own loss is invisible to the drawdown calculation (my own
+    # bug from the previous round: see quant_methodology.md §13).
+    equity_curve = np.cumprod([1.0] + [1 + r for r in net_returns])
     running_max = np.maximum.accumulate(equity_curve)
     max_drawdown = float(((equity_curve - running_max) / running_max).min())
 
-    winners_bars = [label.bars_held for label in labels if label.return_pct > 0]
-    losers_bars = [label.bars_held for label in labels if label.return_pct <= 0]
+    winners_bars = [label.bars_held for label, r in zip(labels, net_returns, strict=True) if r > 0]
+    losers_bars = [label.bars_held for label, r in zip(labels, net_returns, strict=True) if r <= 0]
 
-    gross_mean = float(np.mean(returns))
+    gross_mean = float(np.mean(gross_returns))
+    net_mean = float(np.mean(net_returns))
 
     return TradingMetrics(
         n_trades=n,
@@ -196,7 +241,7 @@ def compute_trading_metrics(labels: list[TripleBarrierLabel]) -> TradingMetrics:
         avg_bars_held_winners=float(np.mean(winners_bars)) if winners_bars else None,
         avg_bars_held_losers=float(np.mean(losers_bars)) if losers_bars else None,
         gross_return_pct=gross_mean,
-        net_return_pct=gross_mean - ROUND_TRIP_COST_PCT,
+        net_return_pct=net_mean,
     )
 
 
@@ -270,7 +315,7 @@ def buy_and_hold_labels(close: pd.Series, entry_indices: list[int], horizon_bars
 
 def random_entry_labels(
     close: pd.Series, high: pd.Series, low: pd.Series, n_trades: int, horizon_bars: int, atr14: pd.Series,
-    atr_stop_multiple: float, reward_risk_ratio: float, seed: int = 0,
+    atr_stop_multiple: float, reward_risk_ratio: float, seed: int = 0, open_: pd.Series | None = None,
 ) -> list[TripleBarrierLabel]:
     """The "no skill" comparator the brief asks for: `n_trades` entries at
     uniformly random bars, sized with the exact same ATR-based stop/target
@@ -294,7 +339,7 @@ def random_entry_labels(
         stop = entry_price - atr_stop_multiple * atr_t
         risk = entry_price - stop
         target = entry_price + reward_risk_ratio * risk
-        label = label_triple_barrier(close, high, low, entry_index, stop, target, horizon_bars)
+        label = label_triple_barrier(close, high, low, entry_index, stop, target, horizon_bars, open_=open_)
         if label is not None:
             labels.append(label)
     return labels
@@ -314,6 +359,7 @@ def run_triple_barrier_backtest(
     close: pd.Series,
     high: pd.Series,
     low: pd.Series,
+    open_: pd.Series,
     sma20: pd.Series,
     sma50: pd.Series,
     sma150: pd.Series,
@@ -343,6 +389,11 @@ def run_triple_barrier_backtest(
     instead) - `n_signals_evaluated` is reported plainly rather than hidden
     behind a silent `None` below some arbitrary sample-size floor, so a
     thin-sample result reads as thin, not as a confident answer.
+
+    `open_` is required, not optional: every real OHLCV source already has
+    it, and skipping gap-aware fills silently here would understate exactly
+    the tail-risk trades this backtest exists to be honest about (Segunda
+    auditoría, Bloque 2).
     """
     n = len(close)
     last_valid_start = n - horizon_days - 1
@@ -367,11 +418,12 @@ def run_triple_barrier_backtest(
     fixed_labels = []
     trailing_labels = []
     for i, stop, target in entries:
-        fixed = label_triple_barrier(close, high, low, i, stop, target, horizon_days)
+        fixed = label_triple_barrier(close, high, low, i, stop, target, horizon_days, open_=open_)
         if fixed is not None:
             fixed_labels.append(fixed)
         trailing = label_triple_barrier(
-            close, high, low, i, stop, target, horizon_days, trailing=True, atr14=atr14, vol_regime=vol_regime
+            close, high, low, i, stop, target, horizon_days, trailing=True, atr14=atr14, vol_regime=vol_regime,
+            open_=open_,
         )
         if trailing is not None:
             trailing_labels.append(trailing)
@@ -379,7 +431,8 @@ def run_triple_barrier_backtest(
     entry_indices = [i for i, _, _ in entries]
     bnh_labels = buy_and_hold_labels(close, entry_indices, horizon_days)
     random_labels = random_entry_labels(
-        close, high, low, len(entries), horizon_days, atr14, atr_stop_multiple=2.5, reward_risk_ratio=2.0
+        close, high, low, len(entries), horizon_days, atr14, atr_stop_multiple=2.5, reward_risk_ratio=2.0,
+        open_=open_,
     )
 
     return TripleBarrierBacktestResult(

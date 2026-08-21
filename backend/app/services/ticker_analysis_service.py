@@ -30,19 +30,25 @@ always computed for everyone.
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 import pandas as pd
 
 from app.domain.models.ticker_analysis import PricePoint, TickerAnalysis
 from app.services import analysis_tools as at
+from app.services import multi_timeframe as mtf
 from app.services import statistical_structure as stats_structure
 from app.services import technical_analysis as ta
+from app.services.backtest_engine import (
+    VERTICAL_BARRIER_HORIZONS,
+    TripleBarrierBacktestResult,
+    run_triple_barrier_backtest,
+)
 from app.services.entry_timing import EntryTiming, assess_entry_timing
 from app.services.kelly_criterion import KellyResult, recommend_position_size, win_probability_from_barriers
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
-from app.services.market_universe import VIX_TICKER, benchmark_for_ticker
+from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, closed_bar_cutoff_for_ticker
 from app.services.markov_chain_model import MarkovChainResult, analyze_markov_chain
 from app.services.monte_carlo_simulation import MonteCarloResult, simulate_and_analyze
 from app.services.recommendation_engine import Recommendation, build_recommendation
@@ -63,6 +69,12 @@ MONTE_CARLO_HORIZON_PRESETS: dict[str, tuple[int, tuple[int, ...]]] = {
     "6m": (126, (21, 42, 84, 126)),
 }
 DEFAULT_HORIZON = "3m"
+
+# Segunda auditoría, Bloque 2: fixed at this portfolio's actual holding
+# horizon (backtest_engine.py's own validated range), never the Monte Carlo
+# preset the caller picked (1m/3m/6m -> 21/63/126 days) - 63/126 is outside
+# what run_triple_barrier_backtest was designed and documented against.
+TRIPLE_BARRIER_HORIZON_DAYS = VERTICAL_BARRIER_HORIZONS[1]  # 21
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,11 +128,45 @@ class CoreTickerSignals:
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
     is_intraday_snapshot: bool
     recommendation: Recommendation
+    # Segunda auditoría, Bloque 2: `recommendation` above (and every field on
+    # this dataclass) is computed on the raw, possibly still-forming last
+    # bar - live, real-time, but not repaint-proof (see D6/`closed_bars`'
+    # docstring). `multi_timeframe` gives the weekly/daily read off *closed*
+    # bars only, reusing the exact same machinery `portfolio_risk_service.py`
+    # already runs for open positions - before this, "Analizar activo" never
+    # referenced `analyze_multi_timeframe`/`closed_bars` at all, so a weekly
+    # bearish crossover already visible on higher timeframes was invisible
+    # here regardless of what the daily-only verdict said.
+    multi_timeframe: mtf.MultiTimeframeRead
+    # The same verdict/stop/target `recommendation` carries, recomputed with
+    # every discrete technical input (trend, stage, cross, Minervini,
+    # support/resistance) re-derived from `technical_analysis.closed_bars`
+    # instead of the live frame - `None` when there's nothing to separate
+    # from (the last bar is already settled, so `recommendation` itself is
+    # already the confirmed read; see `is_intraday_snapshot`). Deliberately
+    # reuses the already-computed markov/garch/obv_divergence/fundamentals
+    # reads rather than refitting them on one bar less of history - those
+    # are continuous statistical estimates, not discrete signals that
+    # repaint the way a moving-average cross does.
+    confirmed_recommendation: Recommendation | None
     entry_timing: EntryTiming | None  # see entry_timing.py - a timing read, not a second verdict
     markov: MarkovChainResult | None
     garch: GarchResult | None
     monte_carlo: MonteCarloResult | None
     backtest: WalkForwardBacktestResult | None
+    # Segunda auditoría, Bloque 2: `backtest` above (walk_forward_backtest.py)
+    # measures a naive fixed-horizon buy-and-hold return - it ignores the
+    # very stop_loss/take_profit `recommendation` proposes at that same bar,
+    # so it validates a strategy nobody actually executes (see
+    # backtest_engine.py's own module docstring). Kept for now (existing UI
+    # contract, and premium_watchlist_service.py's not-yet-reworked
+    # `backtest_contradicts` gate still reads it - Bloque 3), but this is the
+    # honest one: triple-barrier labeling, real Chandelier trailing, costs
+    # net, at this portfolio's actual holding horizon. `None` unless the
+    # caller opted into `include_triple_barrier_backtest` - see
+    # `compute_core_signals`'s own docstring for why this one, unlike every
+    # other field here, isn't computed unconditionally.
+    triple_barrier_backtest: TripleBarrierBacktestResult | None
     position_sizing: KellyResult | None
 
 
@@ -143,6 +189,84 @@ def _nearest_level(levels: list[ta.PriceLevel], kind: str) -> ta.PriceLevel | No
     return min(candidates, key=lambda lv: abs(lv.distance_pct)) if candidates else None
 
 
+def _confirmed_recommendation(
+    daily_df: pd.DataFrame,
+    rs_rating: int | None,
+    markov: MarkovChainResult | None,
+    garch: GarchResult | None,
+    obv_div: str | None,
+    mean_reverting_structure: bool,
+    revenue_growth: float | None,
+    profit_margins: float | None,
+    debt_to_equity: float | None,
+    cutoff: time | None = None,
+) -> Recommendation | None:
+    """Re-derives the verdict/stop/target from `technical_analysis.closed_bars`
+    instead of the live frame - the same discrete-technical-inputs mirror
+    `compute_core_signals` builds for the live read, just bound to settled
+    bars. `None` when there aren't enough closed bars left to say anything
+    (a data-thin ticker whose last closed bar is also its only usable one).
+    `cutoff` - see `market_universe.closed_bar_cutoff_for_ticker`."""
+    closed = ta.closed_bars(daily_df, cutoff=cutoff)
+    if len(closed) < MIN_BARS_REQUIRED:
+        return None
+    close, high, low = closed["close"], closed["high"], closed["low"]
+    price = float(close.iloc[-1])
+
+    sma20_s, sma50_s = ta.sma(close, 20), ta.sma(close, 50)
+    sma150_s, sma200_s = ta.sma(close, 150), ta.sma(close, 200)
+    sma20, sma50, sma150, sma200 = _last(sma20_s), _last(sma50_s), _last(sma150_s), _last(sma200_s)
+    trend = ta.classify_trend(price, sma20, sma50, sma200)
+
+    stage, ma_cross = None, None
+    if len(close) >= 200:
+        stage = ta.classify_stage(price, sma150_s)
+        ma_cross = ta.detect_recent_cross(sma50_s, sma200_s, lookback=5)
+
+    adx_s = ta.adx(high, low, close)
+    plus_di_s, minus_di_s = ta.dmi(high, low, close)
+    atr_s = ta.atr(high, low, close)
+    atr_multiple = ta.atr_multiple_from_sma(close, high, low)
+
+    sma200_trending_up = ta.sma_slope_positive(sma200_s)
+    price_52w_low = ta.rolling_extreme_price(close, 252, "low")
+    price_52w_high = ta.rolling_extreme_price(close, 252, "high")
+    criteria = ta.minervini_checklist(
+        price, sma50, sma150, sma200, sma200_trending_up, price_52w_low, price_52w_high, rs_rating
+    )
+    minervini_pass = all(criteria.values())
+    minervini_range_confirmed = (
+        criteria["price_25pct_above_52w_low"] and criteria["price_within_25pct_of_52w_high"]
+    )
+
+    levels = ta.support_resistance_levels(high, low, close)
+
+    return build_recommendation(
+        price=price,
+        trend=trend,
+        stage=stage,
+        ma_cross=ma_cross,
+        rsi14=_last(ta.rsi(close)),
+        adx14=_last(adx_s),
+        plus_di=_last(plus_di_s),
+        minus_di=_last(minus_di_s),
+        atr14=_last(atr_s),
+        atr_multiple=atr_multiple,
+        rs_rating=rs_rating,
+        minervini_pass=minervini_pass,
+        nearest_support=_nearest_level(levels, "support"),
+        nearest_resistance=_nearest_level(levels, "resistance"),
+        minervini_range_confirmed=minervini_range_confirmed,
+        markov=markov,
+        garch=garch,
+        obv_divergence=obv_div,
+        revenue_growth=revenue_growth,
+        profit_margins=profit_margins,
+        debt_to_equity=debt_to_equity,
+        mean_reverting_structure=mean_reverting_structure,
+    )
+
+
 def compute_core_signals(
     close: pd.Series,
     high: pd.Series,
@@ -156,9 +280,29 @@ def compute_core_signals(
     profit_margins: float | None = None,
     debt_to_equity: float | None = None,
     vix_close: pd.Series | None = None,
+    ticker: str | None = None,
+    include_triple_barrier_backtest: bool = False,
 ) -> CoreTickerSignals | None:
+    """`ticker`, when given, picks a region-aware settlement cutoff for
+    `multi_timeframe`/`confirmed_recommendation` (`market_universe.closed_bar_cutoff_for_ticker`
+    - Segunda auditoría, Bloque 2) instead of the US-centric default. Optional
+    (not every caller has traced a ticker string this far down, and every
+    other field here is computable without one) - `None` just means "assume
+    US settlement hours".
+
+    `include_triple_barrier_backtest` defaults to `False`: measured at
+    ~3x this function's own cost (a bar-by-bar Python simulation over the
+    full grid, twice - fixed and trailing - plus the random-entry benchmark,
+    unlike every other computation here, which is vectorized pandas). The
+    brief's own ask for this (Segunda auditoría, Bloque 2) was specifically
+    "Analizar activo" - `TickerAnalysisService.analyze()` is the only caller
+    that opts in; `portfolio_risk_service`/`premium_watchlist_service` run
+    this same function per held position / per candidate on every cache
+    refresh, where that 3x would compound across 15+ tickers for a field
+    neither of those views shows."""
     if len(close) < MIN_BARS_REQUIRED:
         return None
+    closed_bar_cutoff = closed_bar_cutoff_for_ticker(ticker) if ticker else None
 
     mc_days, mc_checkpoints = MONTE_CARLO_HORIZON_PRESETS.get(
         horizon, MONTE_CARLO_HORIZON_PRESETS[DEFAULT_HORIZON]
@@ -176,6 +320,12 @@ def compute_core_signals(
     is_intraday_snapshot = bool(
         hasattr(last_bar_date, "date") and last_bar_date.date() == date.today()
     )
+
+    # Reconstructed here (compute_core_signals gets pre-split series, not a
+    # combined frame) - identical values/index to whatever `df` the caller
+    # actually holds, since these are the exact series it sliced out of it.
+    daily_df = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": volume})
+    multi_timeframe = mtf.analyze_multi_timeframe(daily_df, cutoff=closed_bar_cutoff)
 
     sma20_s = ta.sma(close, 20)
     sma50_s = ta.sma(close, 50)
@@ -214,6 +364,13 @@ def compute_core_signals(
         horizon_days=mc_days,
         volume=volume,
     )
+    triple_barrier_backtest = None
+    if include_triple_barrier_backtest:
+        triple_barrier_backtest = run_triple_barrier_backtest(
+            close, high, low, open_, sma20_s, sma50_s, sma150_s, sma200_s, rsi_s, adx_s, plus_di_s, minus_di_s,
+            atr_s, horizon_days=TRIPLE_BARRIER_HORIZON_DAYS, volume=volume,
+            vol_regime=garch.regime if garch else None,
+        )
 
     sma20, sma50, sma150, sma200 = _last(sma20_s), _last(sma50_s), _last(sma150_s), _last(sma200_s)
     trend = ta.classify_trend(price, sma20, sma50, sma200)
@@ -295,6 +452,13 @@ def compute_core_signals(
         mean_reverting_structure=mean_reverting_structure,
     )
 
+    confirmed_recommendation = None
+    if is_intraday_snapshot:
+        confirmed_recommendation = _confirmed_recommendation(
+            daily_df, rs_rating, markov, garch, obv_div, mean_reverting_structure,
+            revenue_growth, profit_margins, debt_to_equity, cutoff=closed_bar_cutoff,
+        )
+
     entry_timing = assess_entry_timing(atr_multiple, nearest_support, trend)
 
     monte_carlo = simulate_and_analyze(
@@ -366,11 +530,14 @@ def compute_core_signals(
         vix_regime=vix_regime_label,
         is_intraday_snapshot=is_intraday_snapshot,
         recommendation=recommendation,
+        multi_timeframe=multi_timeframe,
+        confirmed_recommendation=confirmed_recommendation,
         entry_timing=entry_timing,
         markov=markov,
         garch=garch,
         monte_carlo=monte_carlo,
         backtest=backtest,
+        triple_barrier_backtest=triple_barrier_backtest,
         position_sizing=position_sizing,
     )
 
@@ -434,6 +601,8 @@ class TickerAnalysisService:
             profit_margins=info.profit_margins if info else None,
             debt_to_equity=info.debt_to_equity if info else None,
             vix_close=vix_close,
+            ticker=ticker,
+            include_triple_barrier_backtest=True,
         )
         if core is None:
             raise ValueError(f"No hay suficientes datos de precio para {ticker}")
@@ -532,6 +701,8 @@ class TickerAnalysisService:
             market_trend=core.market_trend,
             vix_regime=core.vix_regime,
             is_intraday_snapshot=core.is_intraday_snapshot,
+            multi_timeframe=core.multi_timeframe,
+            confirmed_recommendation=core.confirmed_recommendation,
             price_history=price_history,
             news=news,
             fundamentals=info,
@@ -544,5 +715,6 @@ class TickerAnalysisService:
             garch=core.garch,
             monte_carlo=core.monte_carlo,
             backtest=core.backtest,
+            triple_barrier_backtest=core.triple_barrier_backtest,
             position_sizing=core.position_sizing,
         )

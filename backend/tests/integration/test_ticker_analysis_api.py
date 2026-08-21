@@ -48,6 +48,29 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
         assert monte_carlo["probability_target_before_stop"] is not None
 
 
+def test_ticker_analysis_includes_multi_timeframe_and_triple_barrier_backtest(client: TestClient) -> None:
+    """Segunda auditoría, Bloque 2: before this, "Analizar activo" never
+    referenced analyze_multi_timeframe/closed_bars, and run_triple_barrier_backtest
+    had zero callers anywhere. 10 years of fake daily bars comfortably clears
+    both modules' minimum history, so this exercises the real end-to-end wiring,
+    not just the unit-level pure functions."""
+    response = client.get("/api/v1/market/tickers/AAPL/analysis")
+    assert response.status_code == 200
+    body = response.json()
+
+    mtf = body["multi_timeframe"]
+    assert mtf is not None
+    assert mtf["daily"] is not None
+    assert mtf["alignment"] in {"bullish_aligned", "bearish_aligned", "conflicted", "transitioning"}
+
+    tbb = body["triple_barrier_backtest"]
+    assert tbb is not None
+    assert tbb["horizon_days"] == 21
+    assert tbb["n_signals_evaluated"] >= 0
+    for bucket in ("strategy_fixed", "strategy_trailing", "buy_and_hold", "random_entries"):
+        assert "n_trades" in tbb[bucket]
+
+
 def test_ticker_analysis_position_sizing_present_only_for_buy_verdicts(client: TestClient) -> None:
     for ticker in ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL"]:
         body = client.get(f"/api/v1/market/tickers/{ticker}/analysis").json()

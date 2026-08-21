@@ -209,6 +209,7 @@ def build_premium_watchlist(
                     candidate.snapshot.rs_rating,
                     horizon=_MONTE_CARLO_HORIZON[t],
                     vix_close=vix_close,
+                    ticker=candidate.ticker,
                 )
             except Exception:
                 logger.exception(

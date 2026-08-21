@@ -3,10 +3,12 @@ from datetime import date
 
 from app.domain.models.ticker_info import HoldersSummary, NewsArticle, TickerInfo
 from app.services.analysis_tools import HistoricalAnalogs, MonthSeasonality
+from app.services.backtest_engine import TripleBarrierBacktestResult
 from app.services.entry_timing import EntryTiming
 from app.services.kelly_criterion import KellyResult
 from app.services.markov_chain_model import MarkovChainResult
 from app.services.monte_carlo_simulation import MonteCarloResult
+from app.services.multi_timeframe import MultiTimeframeRead
 from app.services.recommendation_engine import Recommendation
 from app.services.statistical_structure import StatisticalStructure
 from app.services.technical_analysis import ImminentCross, PriceLevel, Stage, TrendState
@@ -84,6 +86,8 @@ class TickerAnalysis:
     market_trend: TrendState | None  # informational only - see recommendation_engine.py docstring
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
     is_intraday_snapshot: bool
+    multi_timeframe: MultiTimeframeRead
+    confirmed_recommendation: Recommendation | None
     price_history: list[PricePoint]
     news: list[NewsArticle]
     fundamentals: TickerInfo | None
@@ -96,4 +100,5 @@ class TickerAnalysis:
     garch: GarchResult | None
     monte_carlo: MonteCarloResult | None
     backtest: WalkForwardBacktestResult | None
+    triple_barrier_backtest: TripleBarrierBacktestResult | None
     position_sizing: KellyResult | None

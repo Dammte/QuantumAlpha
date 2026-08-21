@@ -186,6 +186,44 @@ class MultiTimeframeResponse(BaseModel):
     conflicts: list[str]
 
 
+class TradingMetricsResponse(BaseModel):
+    """See `backtest_engine.TradingMetrics` - every P&L figure here
+    (win_rate, avg_win/avg_loss, expectancy, profit_factor, max_drawdown) is
+    net of the round-trip cost estimate; avg_mae_pct/avg_mfe_pct stay gross
+    on purpose (intrabar price action, not P&L - see that dataclass's own
+    docstring)."""
+
+    n_trades: int
+    win_rate: float | None
+    avg_win_pct: float | None
+    avg_loss_pct: float | None
+    expectancy_pct: float | None
+    profit_factor: float | None
+    avg_mae_pct: float | None
+    avg_mfe_pct: float | None
+    max_drawdown_pct: float | None
+    avg_bars_held_winners: float | None
+    avg_bars_held_losers: float | None
+    gross_return_pct: float | None
+    net_return_pct: float | None
+
+
+class TripleBarrierBacktestResponse(BaseModel):
+    """See `backtest_engine.TripleBarrierBacktestResult` - the honest
+    counterpart to the legacy walk-forward backtest (`WalkForwardBacktestResponse`
+    above, kept alongside it for now - see quant_methodology.md §14 for why):
+    triple-barrier labeling (stop/target/vertical, gap-aware), replayed with
+    the system's real Chandelier trailing, net of costs, against buy-and-hold
+    and random-entry benchmarks at the exact same entry points."""
+
+    horizon_days: int
+    n_signals_evaluated: int
+    strategy_fixed: TradingMetricsResponse
+    strategy_trailing: TradingMetricsResponse
+    buy_and_hold: TradingMetricsResponse
+    random_entries: TradingMetricsResponse
+
+
 class CoreSignalsResponse(BaseModel):
     """Everything the recommendation engine and its supporting quant models
     produce for one ticker at one point in time - the same bundle `TickerAnalysisService.analyze()`

@@ -27,6 +27,7 @@ for the exchange-suffix convention used (.PA/.DE/.AS/.MC/.MI/.SW/.L).
 """
 
 from dataclasses import dataclass
+from datetime import time
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,17 +318,48 @@ def benchmark_for_region(region: str) -> str:
     return region_config(region).benchmark_ticker
 
 
+def region_of(ticker: str) -> str:
+    """Best-effort region guess for a ticker searched directly (e.g. from
+    "Analizar activo"), which may or may not be in the curated universe
+    above: "europe" if it's a curated European ticker or carries a
+    recognized European exchange suffix, "us" otherwise. Segunda auditoría,
+    Bloque 2: factored out of `benchmark_for_ticker` so
+    `technical_analysis.closed_bars` can pick the right settlement cutoff
+    per ticker (US closes ~21:00-21:30 UTC, Europe ~15:30-16:30 UTC) without
+    needing to know anything about benchmarks."""
+    ticker = ticker.upper()
+    if ticker in all_sector_tickers("europe"):
+        return "europe"
+    if any(ticker.endswith(suffix) for suffix in EUROPEAN_EXCHANGE_SUFFIXES):
+        return "europe"
+    return DEFAULT_REGION
+
+
 def benchmark_for_ticker(ticker: str) -> str:
     """Best-effort benchmark pick for a ticker searched directly (e.g. from
     "Analizar activo"), which may or may not be in the curated universe above:
     Europe's benchmark if it's a curated European ticker or carries a
     recognized European exchange suffix, the S&P 500 otherwise."""
-    ticker = ticker.upper()
-    if ticker in all_sector_tickers("europe"):
-        return EUROPE_BENCHMARK_TICKER
-    if any(ticker.endswith(suffix) for suffix in EUROPEAN_EXCHANGE_SUFFIXES):
-        return EUROPE_BENCHMARK_TICKER
-    return BENCHMARK_TICKER
+    return benchmark_for_region(region_of(ticker))
+
+
+# See technical_analysis.CLOSED_BAR_CUTOFF_UTC's own docstring for the
+# reasoning behind each value (settlement time + a ~30min data-provider
+# buffer, under either DST state).
+CLOSED_BAR_CUTOFF_BY_REGION: dict[str, time] = {
+    "us": time(21, 30),
+    "europe": time(16, 30),
+}
+
+
+def closed_bar_cutoff_for_ticker(ticker: str) -> time:
+    """Which UTC time-of-day a *today*-dated daily bar for this ticker can be
+    trusted as settled (`technical_analysis.closed_bars`'s `cutoff` param).
+    Segunda auditoría, Bloque 2: a single US-centric cutoff applied to every
+    ticker held an already-settled European bar as "still forming" for 5-6
+    extra hours every evening (real close ~15:30-16:30 UTC vs. the US's
+    ~21:00-21:30 UTC)."""
+    return CLOSED_BAR_CUTOFF_BY_REGION.get(region_of(ticker), CLOSED_BAR_CUTOFF_BY_REGION[DEFAULT_REGION])
 
 
 # Broad indices tracked for market context / comparison (not part of the stock universe).

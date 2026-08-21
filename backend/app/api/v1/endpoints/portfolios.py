@@ -1,7 +1,8 @@
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import (
@@ -26,10 +27,15 @@ from app.infrastructure.db.repositories.position_signal_snapshot_repository impo
 )
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.schemas.market import (
+    AggregateRiskReportResponse,
+    CorrelationWarningResponse,
+    PortfolioConstructionResponse,
     PortfolioRiskResponse,
+    PositionRiskContributionResponse,
     PositionRiskResponse,
     PriceLevelResponse,
     ScaledExitPlanResponse,
+    SectorConcentrationResponse,
     SwapSuggestionResponse,
     TradePlanResponse,
 )
@@ -38,10 +44,12 @@ from app.schemas.quant_analysis import CoreSignalsResponse, MultiTimeframeRespon
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services import durable_cache
 from app.services import multi_timeframe as mtf
+from app.services import portfolio_construction_service as pcs
 from app.services import trade_manager as tm
 from app.services import trade_plan_service as tps
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
+from app.services.market_universe import sector_of
 from app.services.opportunity_cost import find_swap_suggestions
 from app.services.portfolio_risk_service import PortfolioRiskService
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
@@ -53,6 +61,13 @@ from app.services.ticker_analysis_service import CoreTickerSignals
 # the underlying signals actually get; "actualizar" (the `refresh=true` query
 # param) always forces a live recompute regardless of this window.
 PORTFOLIO_RISK_DURABLE_TTL = timedelta(hours=6)
+
+# Comfortably covers portfolio_construction_service.CORRELATION_WINDOW (60
+# trading days) with room to spare for the inner-join alignment across
+# tickers with mismatched calendars (different markets/holidays) - not the
+# full 10-year window ticker_analysis_service.py fetches, since nothing here
+# needs more than a few months of daily returns.
+PORTFOLIO_CONSTRUCTION_HISTORY_DAYS = 400
 
 router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
@@ -354,3 +369,101 @@ def get_portfolio_risk(
     )
     durable_cache.save(db, cache_key, response.model_dump(mode="json"), computed_at=computed_at)
     return response
+
+
+def _correlation_matrix_to_response(matrix: pd.DataFrame) -> dict[str, dict[str, float | None]]:
+    return {
+        str(ticker_a): {str(ticker_b): None if pd.isna(v) else float(v) for ticker_b, v in row.items()}
+        for ticker_a, row in matrix.to_dict(orient="index").items()
+    }
+
+
+@router.get("/{portfolio_id}/construction", response_model=PortfolioConstructionResponse)
+def get_portfolio_construction(
+    portfolio_id: int,
+    portfolio_service: Annotated[PortfolioService, Depends(get_portfolio_service)],
+    market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
+    trade_plan_repo: Annotated[TradePlanRepository, Depends(get_trade_plan_repository)],
+) -> PortfolioConstructionResponse:
+    """Portfolio-level risk no single position's own exit_urgency can ever see
+    (D12, portfolio_construction_service.py): two correlated positions that
+    are really one bet with two names, a sector concentrated past a sane
+    limit, and the real money lost if every open stop got hit at once. Pure
+    functions there, orchestrated here with one batched OHLCV fetch (never
+    one network call per ticker - same discipline `PortfolioRiskService`
+    already follows) plus each ticker's own open `trade_plan` (a DB read, not
+    a market-data call) for its current stop.
+
+    A position with no open trade plan (never went through `ensure_trade_plan`,
+    e.g. imported history) or no live quote is simply excluded from
+    `aggregate_risk` and listed in `tickers_without_trade_plan` - its risk
+    genuinely isn't known, not assumed to be zero."""
+    try:
+        portfolio = portfolio_service.get_portfolio_summary(portfolio_id)
+    except PortfolioNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    computed_at = datetime.now(UTC)
+    positions = [p for p in portfolio.positions if p.quantity > 0]
+    total_value = portfolio.total_market_value
+    if not positions or total_value <= 0:
+        return PortfolioConstructionResponse(
+            correlation_matrix={}, correlated_pairs=[], sector_concentrations=[], concentrated_sectors=[],
+            risk_contributions=[], portfolio_volatility_pct=None,
+            volatility_target_pct=pcs.PORTFOLIO_VOLATILITY_TARGET, suggested_to_trim=[],
+            aggregate_risk=AggregateRiskReportResponse(
+                total_risk_amount=0.0, total_risk_pct_of_capital=None, exceeds_limit=False
+            ),
+            tickers_without_trade_plan=[p.ticker for p in positions], computed_at=computed_at,
+        )
+
+    weight_by_ticker = {
+        p.ticker: p.market_value_base / total_value for p in positions if p.market_value_base is not None
+    }
+    sector_by_ticker = {p.ticker: sector_of(p.ticker) for p in positions}
+
+    tickers = sorted({p.ticker for p in positions})
+    end = date.today()
+    start = end - timedelta(days=PORTFOLIO_CONSTRUCTION_HISTORY_DAYS)
+    ohlcv_by_ticker = market_data.get_bulk_ohlcv(tickers, start, end)
+    returns_by_ticker = {
+        ticker: df["close"].pct_change().dropna() for ticker, df in ohlcv_by_ticker.items() if not df.empty
+    }
+
+    correlation_matrix = pcs.compute_correlation_matrix(returns_by_ticker)
+    correlated_pairs = pcs.find_correlated_pairs(correlation_matrix)
+    sector_concentrations = pcs.compute_sector_concentration(weight_by_ticker, sector_by_ticker)
+    concentrated_sectors = pcs.flag_concentrated_sectors(sector_concentrations)
+    risk_contributions = pcs.compute_risk_contributions(weight_by_ticker, returns_by_ticker)
+    portfolio_vol = pcs.compute_portfolio_volatility(weight_by_ticker, returns_by_ticker)
+    suggested_to_trim = pcs.suggest_volatility_reduction(
+        portfolio_vol, pcs.PORTFOLIO_VOLATILITY_TARGET, risk_contributions
+    )
+
+    position_risks: list[pcs.HeldPositionRisk] = []
+    tickers_without_trade_plan: list[str] = []
+    for p in positions:
+        plan = trade_plan_repo.get_open(portfolio_id, p.ticker)
+        if plan is None or plan.current_stop is None or p.current_price is None:
+            tickers_without_trade_plan.append(p.ticker)
+            continue
+        position_risks.append(
+            pcs.HeldPositionRisk(
+                ticker=p.ticker, price=p.current_price, stop=plan.current_stop, quantity=p.quantity
+            )
+        )
+    aggregate_risk = pcs.compute_aggregate_risk(position_risks, total_value)
+
+    return PortfolioConstructionResponse(
+        correlation_matrix=_correlation_matrix_to_response(correlation_matrix),
+        correlated_pairs=[CorrelationWarningResponse(**asdict(w)) for w in correlated_pairs],
+        sector_concentrations=[SectorConcentrationResponse(**asdict(s)) for s in sector_concentrations],
+        concentrated_sectors=[SectorConcentrationResponse(**asdict(s)) for s in concentrated_sectors],
+        risk_contributions=[PositionRiskContributionResponse(**asdict(r)) for r in risk_contributions],
+        portfolio_volatility_pct=portfolio_vol,
+        volatility_target_pct=pcs.PORTFOLIO_VOLATILITY_TARGET,
+        suggested_to_trim=[PositionRiskContributionResponse(**asdict(r)) for r in suggested_to_trim],
+        aggregate_risk=AggregateRiskReportResponse(**asdict(aggregate_risk)),
+        tickers_without_trade_plan=tickers_without_trade_plan,
+        computed_at=computed_at,
+    )

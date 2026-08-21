@@ -12,20 +12,31 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 
-# Conservative, single global cutoff (UTC time-of-day) used by `closed_bars`
-# to decide whether *today's* bar is safe to treat as settled - not a real
-# exchange calendar (same documented tradeoff as the frontend's MarketClock:
-# regular hours only, no holidays, a rare enough edge case not to chase).
-# Picked to sit safely past the latest close this project's supported
-# regions can produce, under either DST state, plus a buffer for the data
-# provider to actually publish the settled bar:
+# Conservative, single global default cutoff (UTC time-of-day) used by
+# `closed_bars` to decide whether *today's* bar is safe to treat as settled -
+# not a real exchange calendar (same documented tradeoff as the frontend's
+# MarketClock: regular hours only, no holidays, a rare enough edge case not
+# to chase). Picked to sit safely past the latest close this project's
+# supported regions can produce, under either DST state, plus a buffer for
+# the data provider to actually publish the settled bar:
 #   - US (NYSE/NASDAQ): 16:00 ET -> 20:00 UTC (EDT, summer) / 21:00 UTC (EST, winter)
 #   - Europe (Paris/Frankfurt-style): 17:30 CET/CEST -> 15:30-16:30 UTC
 # 21:00 UTC (the latest of those, EST) + a ~30min settlement buffer.
+#
+# Segunda auditoría, Bloque 2: this single constant, applied unconditionally,
+# treated a European ticker's already-settled bar as still "in progress" for
+# 5-6 extra hours every evening (its real close is 15:30-16:30 UTC). This
+# module stays market-universe-agnostic on purpose (pure pandas/numpy, no
+# service imports - see module docstring), so it can't look a ticker's region
+# up itself; `closed_bars`'s `cutoff` parameter lets a caller that *does* know
+# the ticker (see `market_universe.closed_bar_cutoff_for_ticker`) pass the
+# right one in. This constant remains the default for callers that don't.
 CLOSED_BAR_CUTOFF_UTC = time(21, 30)
 
 
-def resample_ohlcv(df: pd.DataFrame, rule: str = "W-FRI", include_partial: bool = False) -> pd.DataFrame:
+def resample_ohlcv(
+    df: pd.DataFrame, rule: str = "W-FRI", include_partial: bool = False, now: datetime | None = None
+) -> pd.DataFrame:
     """Aggregates daily OHLCV bars into weekly (`rule="W-FRI"`, the default -
     weeks ending Friday) or monthly (`rule="ME"`) bars: open=first, high=max,
     low=min, close=last, volume=sum. Purely a re-aggregation of the daily
@@ -38,10 +49,20 @@ def resample_ohlcv(df: pd.DataFrame, rule: str = "W-FRI", include_partial: bool 
     week that hasn't actually finished trading yet isn't a "weekly bar" any
     more than today's still-open daily candle is a closed daily bar (see
     `closed_bars`) - a discrete signal (cross, stage, pattern) evaluated on it
-    would repaint intraweek the same way a same-day daily read does. This is
-    detected from the data itself, with no "today" needed from the caller: if
-    the last raw daily bar falls short of the resampled period's own right
-    edge, that period hasn't closed yet.
+    would repaint intraweek the same way a same-day daily read does.
+
+    Segunda auditoría, Bloque 2: this used to be "detected from the data
+    itself" by comparing the last raw daily bar's date against the resampled
+    period's own right-edge label (e.g. the calendar Friday a weekly bar is
+    anchored to) - but that edge is a *calendar* date, not a *trading* one: a
+    Friday holiday (more common in Europe) or a month-end that falls on a
+    weekend (~5/12 months) makes an already-complete period's last raw bar
+    fall short of that calendar edge, discarding a period that had, in fact,
+    already finished. The real question - has trading actually moved past
+    this period, or are we still inside it - needs to know "today", the same
+    way `closed_bars` does: `now`'s calendar date is compared against the
+    period's right edge directly, not the raw data's own last bar date.
+    `now` is injectable for tests; defaults to the real current UTC time.
     """
     if df.empty:
         return df
@@ -49,12 +70,16 @@ def resample_ohlcv(df: pd.DataFrame, rule: str = "W-FRI", include_partial: bool 
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     )
     agg = agg.dropna(subset=["close"])
-    if not include_partial and not agg.empty and df.index[-1] < agg.index[-1]:
-        agg = agg.iloc[:-1]
+    if not include_partial and not agg.empty:
+        now = now or datetime.now(UTC)
+        period_end = agg.index[-1]
+        period_end_date = period_end.date() if hasattr(period_end, "date") else period_end
+        if now.date() < period_end_date:
+            agg = agg.iloc[:-1]
     return agg
 
 
-def closed_bars(df: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
+def closed_bars(df: pd.DataFrame, now: datetime | None = None, cutoff: time | None = None) -> pd.DataFrame:
     """Drops the in-progress bar so discrete signals (crosses, patterns,
     stage) are only ever evaluated on the last *settled* close - never on a
     same-session price that can still move before the actual close (the D6
@@ -64,21 +89,24 @@ def closed_bars(df: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
 
     A bar dated strictly before today (UTC calendar date) is always settled.
     A bar dated *today* is only treated as settled once `now`'s time-of-day
-    is past `CLOSED_BAR_CUTOFF_UTC` - comparing by calendar date alone (the
-    original D6 fix) meant a session that had already closed hours earlier
-    was still excluded until UTC midnight, silently running every discrete
-    signal (crosses, price-vs-MA, patterns) a stale day behind for several
-    hours every single evening. `now` is injectable for tests (a full
-    datetime, ideally UTC-aware); defaults to the real current UTC time."""
+    is past `cutoff` (`CLOSED_BAR_CUTOFF_UTC` when not given - see that
+    constant's own docstring for why a caller that knows the ticker should
+    pass a region-specific one instead) - comparing by calendar date alone
+    (the original D6 fix) meant a session that had already closed hours
+    earlier was still excluded until UTC midnight, silently running every
+    discrete signal (crosses, price-vs-MA, patterns) a stale day behind for
+    several hours every single evening. `now` is injectable for tests (a
+    full datetime, ideally UTC-aware); defaults to the real current UTC time."""
     if df.empty:
         return df
+    cutoff = cutoff or CLOSED_BAR_CUTOFF_UTC
     now = now or datetime.now(UTC)
     today = now.date()
     last_bar_date = df.index[-1]
     last_date = last_bar_date.date() if hasattr(last_bar_date, "date") else last_bar_date
     if last_date > today:
         return df.iloc[:-1]
-    if last_date == today and now.time() < CLOSED_BAR_CUTOFF_UTC:
+    if last_date == today and now.time() < cutoff:
         return df.iloc[:-1]
     return df
 

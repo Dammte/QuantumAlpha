@@ -10,8 +10,10 @@ from app.schemas.quant_analysis import (
     KellyPositionSizeResponse,
     MarkovChainResponse,
     MonteCarloResponse,
+    MultiTimeframeResponse,
     RecommendationResponse,
     StatisticalStructureResponse,
+    TripleBarrierBacktestResponse,
     WalkForwardBacktestResponse,
 )
 
@@ -162,6 +164,8 @@ class TickerAnalysisResponse(BaseModel):
     market_trend: str | None
     vix_regime: str | None
     is_intraday_snapshot: bool
+    multi_timeframe: MultiTimeframeResponse
+    confirmed_recommendation: RecommendationResponse | None
     price_history: list[PricePointResponse]
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None
@@ -174,4 +178,5 @@ class TickerAnalysisResponse(BaseModel):
     garch: GarchResponse | None
     monte_carlo: MonteCarloResponse | None
     backtest: WalkForwardBacktestResponse | None
+    triple_barrier_backtest: TripleBarrierBacktestResponse | None
     position_sizing: KellyPositionSizeResponse | None

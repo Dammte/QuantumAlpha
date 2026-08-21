@@ -31,7 +31,12 @@ from app.services import technical_analysis as ta
 from app.services import trade_manager as tm
 from app.services import trade_plan_service as tps
 from app.services.market_data_service import MarketDataService
-from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, currency_of
+from app.services.market_universe import (
+    VIX_TICKER,
+    benchmark_for_ticker,
+    closed_bar_cutoff_for_ticker,
+    currency_of,
+)
 from app.services.recommendation_engine import ENGINE_VERSION
 from app.services.ticker_analysis_service import HISTORY_YEARS, CoreTickerSignals, compute_core_signals
 
@@ -132,6 +137,7 @@ def assess_position_risk(
         benchmark_close,
         rs_rating,
         vix_close=vix_close,
+        ticker=ticker,
     )
     if signals is None:
         return None
@@ -238,9 +244,17 @@ def assess_position_risk(
     bars_held: int | None = None
 
     if portfolio_id is not None and trade_plan_repo is not None and transactions is not None:
-        multi_timeframe = mtf.analyze_multi_timeframe(df)
+        # Segunda auditoría, Bloque 2: `compute_core_signals` above now builds
+        # this exact same read itself (`ticker_analysis_service.py`) off the
+        # same `df` - reusing it here instead of calling
+        # `analyze_multi_timeframe` a second time avoids redoing the weekly
+        # resample + full indicator suite twice per position on every
+        # portfolio refresh.
+        multi_timeframe = signals.multi_timeframe
         plan = tps.ensure_trade_plan(trade_plan_repo, portfolio_id, ticker, transactions, df)
-        closed = ta.closed_bars(df)
+        # Region-aware cutoff (Segunda auditoría, Bloque 2) - a European
+        # position's already-settled bar shouldn't wait for the US close.
+        closed = ta.closed_bars(df, cutoff=closed_bar_cutoff_for_ticker(ticker))
         if plan is not None and not closed.empty:
             trade_plan = plan
             exit_price = float(closed["close"].iloc[-1])

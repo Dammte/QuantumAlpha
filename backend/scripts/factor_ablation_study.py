@@ -269,6 +269,7 @@ def collect_samples_for_ticker(
     are pooled (demeaning needs the whole cross-section, not one ticker at a
     time)."""
     close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
+    open_ = df["open"]
     n = len(close)
     if n < MIN_BARS_REQUIRED:
         return []
@@ -311,7 +312,8 @@ def collect_samples_for_ticker(
         # falls back to CHANDELIER_MULTIPLIER_DEFAULT, a reasonable, uniform
         # choice applied identically to every sample.
         label = be.label_triple_barrier(
-            close, high, low, i, stop, target, horizon_days, trailing=True, atr14=atr_s, vol_regime=None
+            close, high, low, i, stop, target, horizon_days, trailing=True, atr14=atr_s, vol_regime=None,
+            open_=open_,
         )
         if label is None:
             continue

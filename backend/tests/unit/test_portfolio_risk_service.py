@@ -8,13 +8,19 @@ import pandas as pd
 from app.domain.models.trade_plan import TradePlan
 from app.domain.models.transaction import Transaction, TransactionType
 from app.services import exit_engine as ee
+from app.services import multi_timeframe as mtf
 from app.services import portfolio_risk_service as prs
 from app.services import recommendation_engine as re
 from app.services import technical_analysis as ta
 
 
 def _ohlc(close: np.ndarray, wiggle: float = 1.0) -> pd.DataFrame:
-    close_s = pd.Series(close)
+    # A real DatetimeIndex, ending well in the past - compute_core_signals
+    # now derives weekly bars (multi_timeframe.analyze_multi_timeframe) off
+    # this index via technical_analysis.closed_bars/resample_ohlcv, which
+    # both need real dates, not a bare positional RangeIndex.
+    index = pd.bdate_range(end=pd.Timestamp("2024-01-01"), periods=len(close))
+    close_s = pd.Series(close, index=index)
     return pd.DataFrame(
         {
             "open": close_s,
@@ -38,14 +44,15 @@ def _stub_signals(
     rsi14=None,
     adx14=None,
     atr_multiple=None,
+    multi_timeframe=None,
 ):
     """A minimal stand-in for CoreTickerSignals carrying only what
     assess_position_risk actually reads - used to test its signal/reasons
     logic in isolation from the real indicator pipeline. The exit-engine-only
-    fields (garch/obv_divergence/relative_volume/rsi14/adx14/atr_multiple)
-    default to None/unset, same "only what's needed" philosophy - they're
-    only read at all when a test supplies portfolio_id/transactions/
-    trade_plan_repo to exercise that branch."""
+    fields (garch/obv_divergence/relative_volume/rsi14/adx14/atr_multiple/
+    multi_timeframe) default to None/unset, same "only what's needed"
+    philosophy - they're only read at all when a test supplies portfolio_id/
+    transactions/trade_plan_repo to exercise that branch."""
     return SimpleNamespace(
         price=105.0,
         trend=ta.TrendState.SIDEWAYS,
@@ -64,6 +71,7 @@ def _stub_signals(
         rsi14=rsi14,
         adx14=adx14,
         atr_multiple=atr_multiple,
+        multi_timeframe=multi_timeframe,
     )
 
 
@@ -297,7 +305,6 @@ def test_trailing_stop_never_uses_a_pre_entry_high(monkeypatch):
     a stop far above the current price. Bounded to entry (this fix), the
     highest high it can see is whatever happened since index 15, nowhere
     near 300."""
-    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(verdict="esperar", score=0))
     n = 25
     dates = pd.bdate_range("2024-01-01", periods=n)
     post_entry = [92.0, 93.0, 94.0, 95.0, 96.0, 97.0, 96.0, 95.0, 96.0, 95.0]
@@ -306,6 +313,14 @@ def test_trailing_stop_never_uses_a_pre_entry_high(monkeypatch):
     close_s = pd.Series(close, index=dates)
     df = pd.DataFrame(
         {"open": close_s, "close": close_s, "high": close_s + 1.0, "low": close_s - 1.0, "volume": 1_000_000.0}
+    )
+    # This test exercises the real exit engine (unlike the exit-engine-context
+    # tests above, which stub ee.evaluate_exit itself) - multi_timeframe must
+    # be the real read off this same df, not None, for evaluate_exit to have
+    # a `.daily` to look at.
+    monkeypatch.setattr(
+        prs, "compute_core_signals",
+        lambda *a, **k: _stub_signals(verdict="esperar", score=0, multi_timeframe=mtf.analyze_multi_timeframe(df)),
     )
     entry_date = dates[15]
     transactions = [

@@ -376,3 +376,138 @@ total + recompra que crea un plan con `entry_price`/`entry_date` nuevos y cierra
 explícitamente; test de `detect_cross_with_quality` con warmup NaN real que lee la barra correcta.
 (El de `label_triple_barrier` con hueco es del Bloque 2, todavía por hacer.) 666 tests en verde
 (subieron de 640), `ruff check app tests` limpio.
+
+## 14. Segunda auditoría independiente — Bloque 2: conectar lo que ya existía (agosto 2026)
+
+El encargo era explícito: "casi todo lo que hace falta ya existe, el trabajo es conectar, corregir y
+medir". Seis piezas, todas ya construidas y probadas en aislamiento en rondas anteriores, sin un
+solo llamador real:
+
+1. **`backtest_engine.label_triple_barrier` no era consciente de huecos de apertura.** Un stop en 95
+   con la barra abriendo en 62 (un hueco bajista) se registraba como -5% (relleno al nivel del stop,
+   que nunca estuvo realmente disponible para vender) en vez del -38% real (relleno al peor precio
+   entre apertura y stop). Nuevo parámetro `open_` (opcional - `None` mantiene el comportamiento
+   antiguo, consciente de sus propios límites, para quien no tenga la serie de apertura a mano):
+   `fill = min(open, stop)` en un stop-out, `fill = max(open, target)` en un target alcanzado - una
+   sola fórmula que no cambia nada cuando la barra no tuvo hueco real (`open` cae dentro de
+   `[low, high]` por construcción, así que el `min`/`max` es un no-op salvo que de verdad haya
+   hueco). `random_entry_labels` y `run_triple_barrier_backtest` (este último con `open_` obligatorio
+   - todo caller real tiene la serie de apertura a mano) lo propagan a `label_triple_barrier`.
+2. **`compute_trading_metrics` solo restaba costes al `net_return_pct` final.** `win_rate`,
+   `avg_win_pct`/`avg_loss_pct`, `expectancy_pct`, `profit_factor` y `max_drawdown_pct` eran todos
+   brutos - una operación de +0,10% bruto (menor que el coste de ida y vuelta, 0,2%) contaba como
+   "ganadora" cuando en realidad fue una pérdida neta. Recalculado todo sobre retornos netos;
+   `avg_mae_pct`/`avg_mfe_pct` se quedan brutos a propósito (describen recorrido intrabarra, no P&L -
+   el coste no aplica a un nivel de precio que nunca se realizó como entrada/salida real).
+3. **La curva de equity no anteponía una base de 1,0.** `np.cumprod([1+r for r in returns])` sin ese
+   1,0 inicial deja invisible la pérdida de la primera operación al calcular el drawdown - corrijo
+   aquí mi propio criterio de la ronda anterior: el test que yo mismo escribí
+   (`test_trading_metrics_max_drawdown_on_a_losing_streak`) defendía la cifra subestimada como
+   correcta ("normalizado al propio multiplicador de la primera operación"), y no lo era. Con base
+   1,0 antepuesta, tres pérdidas del 10% seguidas (netas del coste) dan el drawdown compuesto real
+   desde antes de la primera operación, no desde después.
+4. **El trailing simulado nunca activaba el multiplicador de bloqueo de beneficio (+2R).**
+   `tm.chandelier_multiplier(vol_regime, None)` - el segundo argumento, fijo en `None`, en cada barra
+   del bucle. Ahora se recalcula en cada barra: `r_multiple = (close_barra - entry_price) /
+   (entry_price - stop_loss)`, usando siempre el `stop_loss` **original** de la función (nunca el
+   `current_stop` ya trailado) como denominador de riesgo - igual que hace el sistema en vivo. El
+   multiplicador 2,0 (más ajustado que el 3,0 por defecto de régimen "normal") ya se activa a partir
+   de +2R también en el backtest, no solo en producción.
+5. **`ticker_analysis_service.py` no usaba `analyze_multi_timeframe`/`closed_bars` en absoluto.**
+   Cada campo de "Analizar activo" (veredicto, stop, objetivo, cruces, patrones, Minervini, pivotes)
+   se calculaba sobre el `df` crudo, vela en curso incluida. Dos añadidos, no una reescritura:
+   - `multi_timeframe: MultiTimeframeRead`, siempre poblado - la misma lectura semanal/diaria sobre
+     barras **cerradas** que `portfolio_risk_service.py` ya usa para el motor de salida, ahora
+     también visible en `CoreTickerSignals`/`TickerAnalysis` (y por tanto en las tres superficies que
+     comparten `compute_core_signals`: "Analizar activo", riesgo de cartera, watchlist premium).
+     `portfolio_risk_service.py` dejó de calcularla por su cuenta una segunda vez - reutiliza
+     `signals.multi_timeframe`, evitando repetir el resample semanal completo dos veces por posición
+     en cada refresco de cartera.
+   - `confirmed_recommendation: Recommendation | None` - el mismo veredicto/stop/objetivo, re-derivado
+     con cada input técnico discreto (tendencia, stage, cruce, Minervini, soporte/resistencia)
+     recalculado sobre `technical_analysis.closed_bars`, no el frame vivo. `None` cuando no hay nada
+     que separar (la última barra ya está asentada, así que `recommendation` ya *es* la lectura
+     confirmada) - nunca un duplicado inventado sin motivo. Decisión explícita de alcance: markov/
+     GARCH/OBV/fundamentales **no** se recalculan (siguen siendo los del `recommendation` vivo) -
+     son estimaciones estadísticas continuas, no señales discretas que repintan barra a barra como
+     un cruce de medias, y recalcularlas exigiría rehacer el ajuste GARCH completo por cada consulta
+     intradía.
+6. **`run_triple_barrier_backtest` seguía sin un solo llamador fuera de sus propios tests.** Conectado
+   a `compute_core_signals` como `triple_barrier_backtest: TripleBarrierBacktestResult | None`, a un
+   horizonte **fijo de 21 sesiones** (`TRIPLE_BARRIER_HORIZON_DAYS`, del propio rango validado de
+   `backtest_engine.py` - nunca el horizonte 1m/3m/6m que elige quien busca el ticker, ya que 63/126
+   sesiones queda fuera de lo que este motor está pensado y documentado para medir). Decisión
+   explícita distinta de la literalidad del encargo ("sustituir" el backtest legacy): en vez de
+   retirar `backtest: WalkForwardBacktestResult`, lo mantengo **junto al nuevo campo**, porque
+   `premium_watchlist_service._approval_score`'s `backtest_contradicts` todavía lee el backtest
+   legacy (su reescritura para depender de `backtest_engine` con ≥30 operaciones/bucket es trabajo
+   explícito del Bloque 3) - retirarlo ahora habría dejado esa puerta rota a mitad de camino en vez
+   de en un punto de corte limpio. El Bloque 4 (etiquetar cada backtest por lo que es, con sus
+   propias limitaciones) usa esta misma coexistencia.
+
+   **Corrección medida tras el primer intento**: lo conecté inicialmente dentro de
+   `compute_core_signals` sin condición, así que también corría para cada posición de
+   `portfolio_risk_service.py` y cada candidato de `premium_watchlist_service.py` en cada refresco de
+   caché - ninguna de esas dos vistas muestra este campo. Medido, no supuesto: la suite de
+   integración completa (`pytest -q tests/integration`, ~80 tests) pasó de 1733 s (~28,9 min) con el
+   campo sin condición a 1181 s (~19,7 min) tras el fix de abajo - una caída real del 32%.
+   `run_triple_barrier_backtest` simula barra a barra en Python (no vectorizado como el resto de esta
+   función) dos veces por señal "comprar" replayeada (fijo y trailing) más el benchmark de entradas
+   aleatorias - unas 3x el coste del resto de `compute_core_signals` junto. Nuevo parámetro
+   `include_triple_barrier_backtest: bool = False`: solo `TickerAnalysisService.analyze()` (lo único
+   que el encargo pedía conectar aquí) lo activa; los otros dos llamadores se quedan sin este campo
+   (`None`), exactamente como antes de este bloque.
+
+   Los ~19,7 min restantes siguen por encima del tiempo histórico de esta suite antes de todo el
+   Bloque 2 - atribuible en su mayor parte a que `multi_timeframe` (punto 5) sí quedó sin condición
+   para los tres llamadores, `premium_watchlist_service.py` incluido, que antes nunca lo calculaba.
+   Decisión explícita de no meterle también un flag de activación: su coste es pandas vectorizado
+   (un resample semanal + una segunda pasada de SMA/RSI/ADX/DMI/MACD), no un bucle Python barra a
+   barra como el del backtest - el mismo orden de magnitud que el resto de `compute_core_signals` ya
+   hacía, no una categoría de coste nueva - y `portfolio_risk_service.py` ya lo necesitaba de todos
+   modos en el caso real (con contexto de cartera), así que para ese llamador esto es, en la práctica,
+   una sola pasada donde antes había dos. Queda como coste aceptado, no como pendiente.
+7. **`portfolio_construction_service.py` (D12) tenía cero llamadores en `app/api`.** Nuevo endpoint
+   `GET /api/v1/portfolios/{id}/construction`, orquestado en el propio endpoint (no un servicio
+   nuevo): pesos por posición vía `PortfolioService.get_portfolio_summary` (ya calcula
+   `market_value_base`/`quantity` correctamente en multi-moneda), sector vía
+   `market_universe.sector_of`, retornos diarios vía un único `get_bulk_ohlcv` batched (nunca una
+   llamada de red por ticker), y el stop vigente de cada posición vía su `trade_plan` abierto (lectura
+   de BD, no de mercado). Una posición sin plan de trade abierto o sin cotización en vivo queda fuera
+   de `aggregate_risk` y listada explícitamente en `tickers_without_trade_plan` - su riesgo
+   genuinamente no se conoce, nunca se asume cero. Panel nuevo en el dashboard
+   (`PortfolioConstructionPanel.jsx`): riesgo agregado si saltaran todos los stops, volatilidad de
+   cartera vs. objetivo, pares correlacionados (>0,8) y concentración por sector con aviso visual
+   cuando supera el 30%.
+8. **`resample_ohlcv` comparaba contra el borde de calendario, no contra si de verdad había pasado
+   el periodo.** `df.index[-1] < agg.index[-1]` compara la fecha del último dato crudo contra la
+   etiqueta del periodo (el viernes calendario de una semana, el último día calendario de un mes) -
+   un festivo en viernes (más común en Europa) o un fin de mes en fin de semana (~5/12 meses) hace
+   que el último dato real caiga corto de ese borde *aunque el periodo ya haya terminado de verdad*,
+   descartando una semana/mes ya completo. La pregunta real - ¿ya pasó este periodo, o seguimos
+   dentro de él? - necesita saber "hoy", igual que `closed_bars`: nuevo parámetro `now` (mismo
+   patrón, mismo valor por defecto), comparando la fecha de `now` contra el borde derecho del
+   periodo directamente, no la fecha del último dato crudo.
+9. **`closed_bars`'s `CLOSED_BAR_CUTOFF_UTC` (21:30 UTC, cierre de EE.UU.) se aplicaba a cualquier
+   ticker, europeos incluidos** (cierre real 15:30-16:30 UTC) - una barra europea ya asentada se
+   descartaba 5-6 horas de más cada tarde. `technical_analysis.py` se mantiene deliberadamente
+   agnóstico del universo de mercado (funciones puras, sin imports de `services/`) - en vez de
+   importar `market_universe` ahí, `closed_bars`/`resample_ohlcv` ganan un parámetro `cutoff`
+   opcional (`None` = el valor por defecto de antes), y es el llamador que sí conoce el ticker
+   (`market_universe.closed_bar_cutoff_for_ticker`, nuevo, factoriza la misma detección de región que
+   ya usaba `benchmark_for_ticker`) quien decide cuál pasar. Enhebrado a través de
+   `multi_timeframe.analyze_multi_timeframe`/`_read_timeframe`, `compute_core_signals` (que ahora
+   acepta un `ticker` opcional para esto) y el propio `ta.closed_bars` de
+   `portfolio_risk_service.assess_position_risk`.
+
+**Criterios de aceptación verificados en este bloque**: test de `label_triple_barrier` con hueco de
+apertura (stop y target) que reproduce el ejemplo exacto del encargo (-38% real vs. -5% sin
+consciencia de hueco); test de drawdown con base 1,0 correcta (corrigiendo mi propio test anterior);
+test del multiplicador de bloqueo +2R activándose en el trailing simulado; `grep
+"analyze_multi_timeframe\|closed_bars" app/services/ticker_analysis_service.py` no vacío; `grep
+portfolio_construction app/api` no vacío (el nuevo endpoint); `run_triple_barrier_backtest` con
+llamador real (`compute_core_signals`); tests de `resample_ohlcv` con festivo en viernes y fin de mes
+en fin de semana; tests de `closed_bars`/`market_universe` con cutoff específico por región; test de
+`include_triple_barrier_backtest` sin activar por defecto (y de "Analizar activo" activándolo de
+verdad, de punta a punta, contra la API real). 606 tests unitarios en verde, 80 tests de integración
+en verde (19,7 min), `ruff check app tests` limpio.

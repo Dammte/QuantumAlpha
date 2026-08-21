@@ -225,8 +225,13 @@ def test_analyze_multi_timeframe_end_to_end_bearish_aligned():
 
 def test_analyze_multi_timeframe_weekly_is_none_with_too_little_history():
     # A handful of daily bars can't even form a couple of closed weekly bars.
+    # `now` pinned the day after the last bar (2015-01-08, Thursday) - late
+    # enough that the daily bars themselves are all settled, but still before
+    # the second week's own Friday close (2015-01-09), so that week reads as
+    # still-forming and gets dropped, same as resample_ohlcv's own test.
     df = _ohlcv_df(5, [100.0, 101.0, 102.0, 101.5, 103.0])
-    result = mtf.analyze_multi_timeframe(df)
+    now = datetime(2015, 1, 8, 12, 0, tzinfo=UTC)
+    result = mtf.analyze_multi_timeframe(df, now=now)
     assert result.weekly is None
     assert result.daily is not None
 
@@ -240,7 +245,7 @@ def test_analyze_multi_timeframe_weekly_resample_has_no_network_cost():
     import inspect
 
     params = inspect.signature(mtf.analyze_multi_timeframe).parameters
-    assert list(params) == ["daily_df", "now"]
+    assert list(params) == ["daily_df", "now", "cutoff"]
     assert params["daily_df"].annotation in ("pd.DataFrame", pd.DataFrame)
 
 

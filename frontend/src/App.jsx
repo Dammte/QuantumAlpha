@@ -17,6 +17,7 @@ import MarketView from './components/market/MarketView'
 import Sidebar from './components/Sidebar'
 import RefreshBar from './components/RefreshBar'
 import SwapSuggestions from './components/SwapSuggestions'
+import PortfolioConstructionPanel from './components/PortfolioConstructionPanel'
 import TodayActionsPanel from './components/TodayActionsPanel'
 import SystemPerformanceView from './components/SystemPerformanceView'
 import { DEFAULT_REGION } from './regions'
@@ -33,6 +34,7 @@ function App() {
   const [risk, setRisk] = useState(null)
   const [riskLoading, setRiskLoading] = useState(false)
   const [riskRefreshing, setRiskRefreshing] = useState(false)
+  const [construction, setConstruction] = useState(null)
   const [metrics, setMetrics] = useState(null)
   const [history, setHistory] = useState({ points: [], benchmarkPoints: null })
   const [timeframe, setTimeframe] = useState('6M')
@@ -81,6 +83,12 @@ function App() {
       .then(setRisk)
       .catch(() => setRisk(null))
       .finally(() => setRiskLoading(false))
+
+    setConstruction(null)
+    api
+      .getPortfolioConstruction(id)
+      .then(setConstruction)
+      .catch(() => setConstruction(null))
   }, [])
 
   const loadAnalysis = useCallback(async (id, tf, benchmark) => {
@@ -370,6 +378,8 @@ function App() {
               />
             )}
           </section>
+
+          <PortfolioConstructionPanel construction={construction} currency={summary?.base_currency ?? 'USD'} />
 
           <section className="panel">
             <h2>Métricas de riesgo y rendimiento</h2>

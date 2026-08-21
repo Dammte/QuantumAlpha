@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 
 import numpy as np
 import pandas as pd
@@ -57,12 +57,16 @@ def test_resample_ohlcv_weekly_aggregates_ohlc_and_volume_correctly():
 def test_resample_ohlcv_drops_still_forming_week_by_default():
     # Two complete weeks (as above) plus a single Monday of a third week -
     # that third week hasn't finished trading, so it must not be reported as
-    # a "weekly bar" unless explicitly asked for.
+    # a "weekly bar" unless explicitly asked for. `now` pinned to that same
+    # Monday - resample_ohlcv compares *today's* calendar date against the
+    # period's own right edge, not the raw data's last bar date (see its
+    # docstring on why that used to be wrong).
     dates = list(pd.bdate_range("2024-01-01", periods=10)) + [pd.Timestamp("2024-01-15")]
     closes = [10, 11, 9, 12, 13, 20, 22, 18, 25, 24, 30]
     df = _ohlcv_df(dates, closes)
+    now = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
 
-    default = ta.resample_ohlcv(df, rule="W-FRI")
+    default = ta.resample_ohlcv(df, rule="W-FRI", now=now)
     assert len(default) == 2
 
     with_partial = ta.resample_ohlcv(df, rule="W-FRI", include_partial=True)
@@ -74,6 +78,36 @@ def test_resample_ohlcv_drops_still_forming_week_by_default():
 def test_resample_ohlcv_empty_df_returns_empty():
     empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     assert ta.resample_ohlcv(empty).empty
+
+
+def test_resample_ohlcv_keeps_a_complete_week_when_the_period_edge_was_a_calendar_holiday():
+    # Segunda auditoría, Bloque 2: a Friday holiday (more common in Europe)
+    # means the week's last raw bar falls on Thursday, short of the
+    # resampled period's own calendar-Friday right edge - the old check
+    # (the raw data's own last bar date vs. that edge) read this as "still
+    # forming" and discarded an already-complete week. `now` pinned well
+    # after that Friday: the week is unambiguously over regardless of
+    # whether Friday itself had a bar.
+    dates = pd.bdate_range("2024-01-01", periods=4)  # Mon-Thu; Fri 2024-01-05 is the simulated holiday
+    df = _ohlcv_df(dates, [10, 11, 12, 13])
+    now = datetime(2024, 1, 10, 12, 0, tzinfo=UTC)
+
+    weekly = ta.resample_ohlcv(df, rule="W-FRI", now=now)
+    assert len(weekly) == 1
+    assert weekly.iloc[0]["close"] == pytest.approx(13.0)
+
+
+def test_resample_ohlcv_keeps_a_complete_month_ending_on_a_weekend():
+    # 2024-03-31 (the "ME" period's calendar right edge) is a Sunday - the
+    # last actual trading day is Friday 2024-03-29, short of that edge.
+    # ~5/12 months end on a weekend, so `rule="ME"` hit this constantly.
+    dates = pd.bdate_range("2024-03-25", periods=5)  # Mon 3/25 .. Fri 3/29
+    df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
+    now = datetime(2024, 4, 5, 12, 0, tzinfo=UTC)
+
+    monthly = ta.resample_ohlcv(df, rule="ME", now=now)
+    assert len(monthly) == 1
+    assert monthly.iloc[0]["close"] == pytest.approx(14.0)
 
 
 def test_closed_bars_drops_the_bar_dated_today_before_the_close_cutoff():
@@ -113,6 +147,19 @@ def test_closed_bars_keeps_every_bar_when_the_last_one_is_not_today():
     df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
     result = ta.closed_bars(df, now=datetime(2024, 1, 8, 10, 0, tzinfo=UTC))
     assert len(result) == 5
+
+
+def test_closed_bars_uses_a_custom_cutoff_instead_of_the_default():
+    # Segunda auditoría, Bloque 2: a bar dated today at 17:00 UTC - past
+    # Europe's real close (~16:30 UTC) but well before the US-centric
+    # default (21:30 UTC). A caller that knows the ticker's region (see
+    # market_universe.closed_bar_cutoff_for_ticker) can pass the right one.
+    dates = pd.bdate_range("2024-01-01", periods=5)
+    df = _ohlcv_df(dates, [10, 11, 12, 13, 14])
+    now = datetime(2024, 1, 5, 17, 0, tzinfo=UTC)
+
+    assert len(ta.closed_bars(df, now=now)) == 4  # default (US) cutoff: still "forming"
+    assert len(ta.closed_bars(df, now=now, cutoff=time(16, 30))) == 5  # Europe: already settled
 
 
 def test_closed_bars_empty_df_returns_empty():

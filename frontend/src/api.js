@@ -112,6 +112,8 @@ export const api = {
   getPortfolioRisk: (portfolioId, { refresh } = {}) =>
     request(`/api/v1/portfolios/${portfolioId}/risk${toQueryString({ refresh })}`),
 
+  getPortfolioConstruction: (portfolioId) => request(`/api/v1/portfolios/${portfolioId}/construction`),
+
   getTickerAnalysis: (ticker, { horizon } = {}) =>
     request(`/api/v1/market/tickers/${ticker}/analysis${toQueryString({ horizon })}`),
 

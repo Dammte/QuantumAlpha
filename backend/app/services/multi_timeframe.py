@@ -17,7 +17,7 @@ were tuned.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 
 import pandas as pd
 
@@ -108,9 +108,10 @@ def _price_vs(price: float, moving_average: float | None) -> str | None:
 
 
 def _read_timeframe(
-    df: pd.DataFrame, timeframe: str, stage_ma_window: int, min_bars_for_stage: int, now: datetime | None = None
+    df: pd.DataFrame, timeframe: str, stage_ma_window: int, min_bars_for_stage: int,
+    now: datetime | None = None, cutoff: time | None = None,
 ) -> TimeframeRead | None:
-    closed = ta.closed_bars(df, now=now)
+    closed = ta.closed_bars(df, now=now, cutoff=cutoff)
     if len(closed) < 2:
         return None
     close, high, low, volume = closed["close"], closed["high"], closed["low"], closed["volume"]
@@ -299,23 +300,32 @@ def combine_timeframes(weekly: TimeframeRead | None, daily: TimeframeRead) -> tu
     return alignment, alignment_score, conflicts
 
 
-def analyze_multi_timeframe(daily_df: pd.DataFrame, now: datetime | None = None) -> MultiTimeframeRead:
+def analyze_multi_timeframe(
+    daily_df: pd.DataFrame, now: datetime | None = None, cutoff: time | None = None
+) -> MultiTimeframeRead:
     """Weekly bias, daily execution - see module docstring and
     `combine_timeframes` for the alignment rules. `daily_df` is the same
     daily OHLCV frame every caller already fetches; weekly is derived from it
     at zero extra network cost via `resample_ohlcv`. `now` passes straight
-    through to `technical_analysis.closed_bars` (both timeframes) - injectable
-    for tests that need to control whether "today's" bar counts as settled;
-    defaults to the real current UTC time in production, same as `closed_bars`
-    itself."""
+    through to `technical_analysis.closed_bars`/`resample_ohlcv` (both
+    timeframes) - injectable for tests that need to control whether "today's"
+    bar/period counts as settled; defaults to the real current UTC time in
+    production, same as those functions themselves. `cutoff` similarly passes
+    through to `closed_bars` - this module stays market-universe-agnostic on
+    purpose, so a caller that knows the ticker should pass
+    `market_universe.closed_bar_cutoff_for_ticker(ticker)` here instead of
+    leaving the US-centric default to apply to every region (Segunda
+    auditoría, Bloque 2)."""
     daily = (
-        _read_timeframe(daily_df, "daily", DAILY_STAGE_MA_WINDOW, MIN_DAILY_BARS_FOR_STAGE, now=now)
+        _read_timeframe(daily_df, "daily", DAILY_STAGE_MA_WINDOW, MIN_DAILY_BARS_FOR_STAGE, now=now, cutoff=cutoff)
         or _empty_daily_read()
     )
 
-    weekly_df = ta.resample_ohlcv(daily_df, WEEKLY_RULE)
+    weekly_df = ta.resample_ohlcv(daily_df, WEEKLY_RULE, now=now)
     weekly = (
-        _read_timeframe(weekly_df, "weekly", WEEKLY_STAGE_MA_WINDOW, MIN_WEEKLY_BARS_FOR_STAGE, now=now)
+        _read_timeframe(
+            weekly_df, "weekly", WEEKLY_STAGE_MA_WINDOW, MIN_WEEKLY_BARS_FOR_STAGE, now=now, cutoff=cutoff
+        )
         if len(weekly_df) >= 2
         else None
     )
