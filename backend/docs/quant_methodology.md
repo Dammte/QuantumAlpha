@@ -511,3 +511,88 @@ en fin de semana; tests de `closed_bars`/`market_universe` con cutoff específic
 `include_triple_barrier_backtest` sin activar por defecto (y de "Analizar activo" activándolo de
 verdad, de punta a punta, contra la API real). 606 tests unitarios en verde, 80 tests de integración
 en verde (19,7 min), `ruff check app tests` limpio.
+
+## 15. Segunda auditoría independiente — Bloque 3, punto 1: universo dinámico punto-en-el-tiempo (agosto 2026)
+
+El resto del Bloque 3 (separación de setups, percentil transversal, limpieza de `_approval_score`,
+diversificación, logging de descartados, estadística por setup vía `backtest_engine`) queda pendiente
+- ver la nota al final de esta sección sobre por qué se corta aquí, no a media implementación de algo
+a medio probar.
+
+**Lo que sí se construyó, probado de punta a punta:**
+
+- **Tabla nueva `universe_memberships`** (`UniverseMembershipORM`, migración `697be1f02648`): una fila
+  por `(region, ticker, as_of_date)`, con `source` (`"live"` | `"curated_fallback"`). Cada refresco
+  **añade** un snapshot fechado, nunca sobrescribe uno anterior - así se acumula historia
+  punto-en-el-tiempo real a partir de hoy, en vez de que cada refresco borre la posibilidad de
+  reconstruir qué había en el universo hace meses. `UniverseMembershipRepositoryPort` +
+  `UniverseMembershipRepository` siguen exactamente el mismo patrón puerto/adaptador que
+  `TradePlanRepositoryPort`/`PositionSignalSnapshotRepositoryPort`.
+- **`dynamic_universe_service.py`** (nuevo módulo - la excepción justificada de "no nuevos módulos":
+  es la pieza sustantiva que el encargo pide para el Bloque 3, no algo no pedido):
+  - `fetch_live_constituents(region)`: S&P 500 + S&P 400 (EE.UU., de sus páginas públicas de
+    Wikipedia) o STOXX Europe 600 (Europa) - verificado en vivo contra la red real antes de escribir
+    ninguna línea de parseo, no supuesto. STOXX 600 da un ticker desnudo + país, no un ticker listo
+    para Yahoo Finance - `YAHOO_SUFFIX_BY_COUNTRY` lo resuelve al mismo sufijo que
+    `market_universe.EUROPEAN_EXCHANGE_SUFFIXES` ya reconoce en el lado de lectura; un país sin
+    mapeo se descarta con log, nunca se adivina.
+  - `apply_liquidity_filter`: el filtro duro del encargo (volumen en $ de 20 sesiones ≥$20M,
+    precio≥$5, capitalización≥$1.000M). Un ticker que ni siquiera se puede descargar (deslistado
+    desde la foto de Wikipedia, un símbolo que Yahoo Finance no reconoce) falla el filtro igual que
+    uno genuinamente ilíquido - no es una excepción especial, es exactamente el mismo "no es
+    negociable a esta escala".
+  - `refresh_universe_membership`: orquesta fetch → filtro → snapshot persistido. Si el fetch en vivo
+    falla, o si sobrevive vacío tras el filtro (un fallo silencioso distinto pero igual de real), cae
+    al universo curado de `market_universe.py` - **con log explícito**, nunca en silencio - y lo
+    persiste igual (como snapshot `source="curated_fallback"`) para que `latest_as_of_date` no quede
+    huérfano.
+  - `scripts/refresh_universe_membership.py`: script mensual independiente, no un código de camino
+    en vivo. Descargar y filtrar por liquidez ~1.000-1.500 tickers combinados es mucho más pesado que
+    cualquier otra cosa en los caminos calientes de este proyecto - "no llamadas de red por ticker en
+    los caminos calientes" (CLAUDE.md) aplica aquí también aunque el coste sea cómputo tanto como
+    red: nadie debería pagar este coste por casualidad en una petición en vivo. `is_refresh_due`
+    reutiliza la misma idea de TTL que `durable_cache.py` ya usa en todo el proyecto (aquí, 30 días).
+  - Limitación honesta, no maquillada: esto **no puede reconstruir retroactivamente** quién estaba en
+    cada índice hace años - solo un feed de pago con historial de constituyentes podría. Cada
+    snapshot que esto guarda es "el universo tal como estaba el día que corrió esto", así que un
+    estudio de factores que use un snapshot temprano para evaluar precios mucho más antiguos sigue
+    cargando algo de sesgo de supervivencia para esas fechas antiguas - simplemente deja de
+    **acumularse** hacia adelante, y el sesgo se reduce a cero para cualquier fecha de muestra en o
+    después de que esto se desplegara.
+  - Nueva dependencia: `lxml` (requirements.txt) - `pandas.read_html` la necesita; `bs4` sola (ya
+    presente, transitiva de otra dependencia) no basta sin `lxml`/`html5lib` de todos modos.
+
+**Decisión explícita de alcance, con la razón medida, no supuesta**: el universo dinámico **no** se
+conectó todavía a `market_screener_service.get_universe_snapshot` (la base compartida de
+`premium_watchlist_service.py`, rotación sectorial, movers, amplitud de tendencia). Ese snapshot hoy
+descarga OHLCV de ~170 tickers curados en cualquier cache-miss - un camino **en vivo**, no un script
+mensual. Conectarlo al universo dinámico (~1.000-1.500 tickers combinados) multiplicaría ese fetch
+por 6-9x en cualquier petición que caiga en un cache-miss - exactamente el tipo de regresión de
+latencia que `PortfolioRiskService`'s propio incidente en producción ya advierte evitar, y que el
+propio Bloque 2 acaba de medir de verdad (29 min → 19,7 min) antes de decidir un gateo, no antes. No
+tengo una medición real de cuánto tardaría ese cache-miss a 1.000+ tickers - y no voy a conectarlo sin
+medirlo primero, mismo estándar que el resto de este documento exige para cualquier cambio de peso o
+factor. El consumidor real, ya seguro de conectar sin ese riesgo, es `factor_ablation_study.py`
+(Bloque 5): ese script ya es un proceso lento, offline, sin usuario esperando una respuesta en vivo -
+es exactamente donde el encargo dice que el sesgo de supervivencia importa ("es la causa raíz de lo
+que mide el estudio de ablación"). El resto del Bloque 3 (setups/percentil/limpieza/diversificación/
+logging) puede construirse igualmente sobre el snapshot curado existente sin depender de esta
+decisión - queda para continuar.
+
+**Por qué se corta aquí**: los 6 puntos restantes del Bloque 3 son, cada uno, del orden de un día de
+trabajo por derecho propio (separación de 4 tipos de setup con su propio scoring, un percentil
+transversal multi-factor que necesita datos que hoy no existen en `TickerSnapshot` -algunos
+requieren enhebrar series temporales nuevas a través de todo el universo, no solo un valor puntual-,
+limpieza validada de `_approval_score`, diversificación reutilizando `portfolio_construction_service`,
+logging + UI de descartados, y estadística por setup vía `backtest_engine` sobre el universo
+completo - esta última, en sí misma, de una escala parecida a la del propio estudio de ablación).
+Completarlos a medias o con atajos que inventen datos que no existen contradiría exactamente el
+estándar que este documento exige en cada sección anterior. Se documentan aquí como el trabajo
+pendiente explícito del Bloque 3, no como "hecho a medias" sin decirlo.
+
+**Tests**: `test_dynamic_universe_service.py` (17 tests - parseo de S&P 500/400 y STOXX 600 contra
+HTML de referencia, no la red real; filtro de liquidez con los 4 casos límite - precio, volumen,
+capitalización, sin datos; orquestación con fetch simulado en vivo y con fallback). Migración
+verificada con `alembic heads`/`alembic history` y con `Base.metadata.create_all` contra SQLite (las
+migraciones de este proyecto son Postgres-only por diseño - ver `tests/integration/conftest.py`, que
+ya evita alembic por completo). 623 tests unitarios en verde, `ruff check app tests` limpio.

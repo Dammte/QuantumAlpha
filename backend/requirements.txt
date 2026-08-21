@@ -7,6 +7,7 @@ alembic>=1.14
 psycopg[binary]>=3.2
 yfinance>=0.2.50
 requests>=2.32
+lxml>=5.3
 pandas>=2.2
 numpy>=2.2
 scipy>=1.14

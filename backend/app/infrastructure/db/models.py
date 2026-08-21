@@ -174,3 +174,24 @@ class ComputationCacheORM(Base):
     cache_key: Mapped[str] = mapped_column(String(200), primary_key=True)
     computed_at: Mapped[datetime] = mapped_column(index=True)
     payload: Mapped[dict] = mapped_column(JSON)
+
+
+class UniverseMembershipORM(Base):
+    """One row per (region, ticker, as_of_date) - the D14 fix (Segunda
+    auditoría, Bloque 3). See `UniverseMember`'s docstring for why this
+    persists a dated snapshot instead of overwriting the previous one on
+    every refresh."""
+
+    __tablename__ = "universe_memberships"
+    __table_args__ = (
+        UniqueConstraint("region", "ticker", "as_of_date", name="uq_universe_membership_region_ticker_date"),
+        Index("ix_universe_memberships_region_date", "region", "as_of_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    region: Mapped[str] = mapped_column(String(20))
+    ticker: Mapped[str] = mapped_column(String(20))
+    sector: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    as_of_date: Mapped[date] = mapped_column()
+    source: Mapped[str] = mapped_column(String(20))  # "live" | "curated_fallback"
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
