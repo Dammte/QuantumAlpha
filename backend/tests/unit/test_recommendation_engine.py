@@ -116,6 +116,82 @@ def test_strong_bullish_setup_recommends_buy_with_stop_and_target():
     assert rec.take_profit == pytest.approx(110.0)
     assert rec.take_profit_method == "resistencia más cercana"
     assert rec.risk_reward > 0
+    assert rec.veto_reason is None
+
+
+# --- fast-pair (EMA21/55) veto: cuarta auditoría, Bloque B (B-1.3) ----------
+
+
+def _strong_bullish_kwargs():
+    return dict(
+        price=100.0,
+        trend=TrendState.UPTREND,
+        stage=Stage.STAGE_2,
+        ma_cross="golden",
+        rsi14=55.0,
+        adx14=30.0,
+        plus_di=25.0,
+        minus_di=10.0,
+        atr14=2.0,
+        atr_multiple=1.0,
+        rs_rating=90,
+        minervini_pass=True,
+        nearest_support=PriceLevel(price=97.0, kind="support", strength=2, distance_pct=-0.03),
+        nearest_resistance=PriceLevel(price=110.0, kind="resistance", strength=1, distance_pct=0.10),
+    )
+
+
+def test_fast_pair_veto_downgrades_comprar_to_esperar():
+    rec = re.build_recommendation(
+        **_strong_bullish_kwargs(),
+        fast_pair_bearish_signal="Cruce bajista confirmado en el par rápido EMA21/EMA55 en los últimos 5 días",
+    )
+    assert rec.verdict == "esperar"
+    assert rec.veto_reason == "Cruce bajista confirmado en el par rápido EMA21/EMA55 en los últimos 5 días"
+
+
+def test_fast_pair_veto_does_not_touch_the_score():
+    without_veto = re.build_recommendation(**_strong_bullish_kwargs())
+    with_veto = re.build_recommendation(**_strong_bullish_kwargs(), fast_pair_bearish_signal="cualquier motivo")
+    assert with_veto.score == without_veto.score  # the checklist's own number never changes
+
+
+def test_fast_pair_veto_clears_stop_and_target_once_downgraded():
+    rec = re.build_recommendation(**_strong_bullish_kwargs(), fast_pair_bearish_signal="cualquier motivo")
+    assert rec.stop_loss is None
+    assert rec.take_profit is None
+    assert rec.take_profit_method is None
+    assert rec.risk_reward is None
+
+
+def test_fast_pair_veto_is_a_noop_when_verdict_is_not_comprar():
+    # A weak setup that would never reach "comprar" regardless - the veto has
+    # nothing to add to a verdict that was never a buy signal to begin with.
+    rec = re.build_recommendation(
+        price=100.0,
+        trend=TrendState.SIDEWAYS,
+        stage=None,
+        ma_cross=None,
+        rsi14=50.0,
+        adx14=15.0,
+        plus_di=15.0,
+        minus_di=15.0,
+        atr14=2.0,
+        atr_multiple=1.0,
+        rs_rating=50,
+        minervini_pass=False,
+        nearest_support=None,
+        nearest_resistance=None,
+        fast_pair_bearish_signal="cualquier motivo",
+    )
+    assert rec.verdict != "comprar"
+    assert rec.veto_reason is None
+
+
+def test_fast_pair_veto_absent_leaves_comprar_untouched():
+    rec = re.build_recommendation(**_strong_bullish_kwargs(), fast_pair_bearish_signal=None)
+    assert rec.verdict == "comprar"
+    assert rec.veto_reason is None
 
 
 def test_strong_bearish_setup_recommends_avoid_with_no_stop():

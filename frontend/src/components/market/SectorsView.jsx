@@ -2,6 +2,7 @@ import { useState } from 'react'
 import SectorStrength from './SectorStrength'
 import IndustryCards from './IndustryCards'
 import SectorRotationCard from './SectorRotationCard'
+import SectorRrgCard from './SectorRrgCard'
 import SectorForecastCard from './SectorForecastCard'
 
 function SectorsView({ region, onNavigateToTicker }) {
@@ -11,6 +12,10 @@ function SectorsView({ region, onNavigateToTicker }) {
     <div>
       <SectorForecastCard region={region} onNavigateToTicker={onNavigateToTicker} />
       <SectorRotationCard region={region} />
+      <section className="panel panel--nested">
+        <h3>Mapa de rotación sectorial (RRG)</h3>
+        <SectorRrgCard region={region} />
+      </section>
       <div className="sub-toggle">
         <button
           type="button"

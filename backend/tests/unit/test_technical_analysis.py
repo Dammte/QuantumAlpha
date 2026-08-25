@@ -526,6 +526,54 @@ def test_detect_imminent_cross_never_reports_zero_bars_until():
     assert result.bars_until == 1  # never 0
 
 
+# --- detect_fast_pair_bearish_veto: cuarta auditoría, Bloque B (B-1.3) ------
+
+
+def test_detect_fast_pair_bearish_veto_confirmed_cross():
+    # A long, clean uptrend followed by a sharp, recent reversal - EMA21
+    # (fast) drops below EMA55 (slow) within the last few sessions.
+    up = 100 + np.arange(250) * 0.5
+    down = up[-1] - np.arange(1, 13) * 3.0
+    close = pd.Series(np.concatenate([up, down]))
+    reason = ta.detect_fast_pair_bearish_veto(close)
+    assert reason is not None
+    assert "confirmado" in reason
+    assert "EMA21" in reason and "EMA55" in reason
+
+
+def test_detect_fast_pair_bearish_veto_imminent_cross_with_high_confidence():
+    # A long uptrend, then a smooth, sustained decline (well past any kink
+    # from the trend change, so the recent gap trajectory is genuinely
+    # linear) - EMA21 approaching EMA55 from above, not crossed yet, but
+    # projected to within a few sessions at a clean R².
+    up = 100 + np.arange(250) * 0.5
+    down = up[-1] - np.arange(1, 41) * 0.2
+    close = pd.Series(np.concatenate([up, down]))
+    reason = ta.detect_fast_pair_bearish_veto(close)
+    assert reason is not None
+    assert "proyectado" in reason
+
+
+def test_detect_fast_pair_bearish_veto_none_on_a_steady_uptrend():
+    close = pd.Series(100 + np.arange(300) * 0.3)
+    assert ta.detect_fast_pair_bearish_veto(close) is None
+
+
+def test_detect_fast_pair_bearish_veto_none_with_too_little_history():
+    close = pd.Series(100 + np.arange(30) * 0.3)
+    assert ta.detect_fast_pair_bearish_veto(close) is None
+
+
+def test_detect_fast_pair_bearish_veto_ignores_a_golden_cross():
+    # A long downtrend that reverses sharply upward - a confirmed *golden*
+    # cross on this pair is not this veto's concern (it only ever fires for
+    # a bearish signal against a "comprar" verdict).
+    down = 100 - np.arange(250) * 0.5
+    up = down[-1] + np.arange(1, 13) * 3.0
+    close = pd.Series(np.concatenate([down, up]))
+    assert ta.detect_fast_pair_bearish_veto(close) is None
+
+
 def test_detect_engulfing_pattern_bullish():
     # Prior bar red (100 -> 95), current bar green and fully covers it (94 -> 102).
     open_ = pd.Series([100.0, 94.0])

@@ -259,7 +259,12 @@ function App() {
           </section>
         ) : (
           <main className="dashboard">
-          <TodayActionsPanel riskByTicker={riskByTicker} onNavigateToTicker={navigateToAnalysis} />
+          <TodayActionsPanel
+            riskByTicker={riskByTicker}
+            onNavigateToTicker={navigateToAnalysis}
+            construction={construction}
+            currency={summary?.base_currency ?? 'USD'}
+          />
 
           {summary && (
             <section className="hero-row">

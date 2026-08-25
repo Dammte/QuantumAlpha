@@ -38,6 +38,7 @@ from app.infrastructure.db.repositories.universe_membership_repository import (
 )
 from app.services import durable_cache
 from app.services import dynamic_universe_service as dus
+from app.services import sector_rrg_service as srrg
 from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import (
@@ -66,6 +67,9 @@ HISTORY_DAYS = 400  # enough calendar days to cover a 252-trading-day lookback +
 SECTOR_HISTORY_DAYS = 500
 MIN_BARS_REQUIRED = 60
 RS_LEADERS_PER_INDUSTRY = 3
+# Cuarta auditoría, DEUDA-3 - see IndustryPerformance.performance_method's docstring.
+INDUSTRY_METHOD_ETF = "etf"
+INDUSTRY_METHOD_BASKET_AVERAGE = "basket_average"
 FORECAST_HISTORY_YEARS = 5  # Markov chain needs 300+ clean daily returns (see markov_chain_model.py) - a
 # much longer lookback than the technicals above need, so sector forecasting fetches its own history.
 TOP_STOCKS_PER_SECTOR = 3
@@ -98,6 +102,30 @@ def _snapshot_from_dict(data: dict[str, Any]) -> TickerSnapshot:
             "imminent_cross_short_term": imminent_cross_short_term,
         }
     )
+
+
+def _rrg_reading_to_dict(reading: srrg.SectorRrgReading) -> dict[str, Any]:
+    # `RrgPoint.as_of` is a `date`, not JSON-native - stored as an ISO string,
+    # same idiom `relationship_map_service.get_disclosed_relations` already
+    # uses for `DisclosedRelation.filing_date`.
+    data = asdict(reading)
+    data["tail"] = [{**point, "as_of": point["as_of"].isoformat()} for point in data["tail"]]
+    return data
+
+
+def _rrg_readings_from_payload(payload: list[dict[str, Any]]) -> list[srrg.SectorRrgReading]:
+    return [
+        srrg.SectorRrgReading(
+            **{
+                **reading,
+                "tail": [
+                    srrg.RrgPoint(**{**point, "as_of": pd.Timestamp(point["as_of"]).date()})
+                    for point in reading["tail"]
+                ],
+            }
+        )
+        for reading in payload
+    ]
 
 
 @dataclass
@@ -367,6 +395,7 @@ class MarketScreenerService:
         self._industry_cache: dict[str, tuple[datetime, list[IndustryPerformance]]] = {}
         self._ohlcv_cache: dict[str, tuple[datetime, dict[str, pd.DataFrame]]] = {}
         self._forecast_cache: dict[str, tuple[datetime, list[SectorForecast]]] = {}
+        self._rrg_cache: dict[str, tuple[datetime, list[srrg.SectorRrgReading]]] = {}
 
     def _date_range(self) -> tuple[date, date]:
         end = date.today()
@@ -737,6 +766,44 @@ class MarketScreenerService:
             durable_cache.save(db, cache_key, [asdict(f) for f in forecast])
         return forecast
 
+    def get_sector_rrg(
+        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
+    ) -> list[srrg.SectorRrgReading]:
+        """Cuarta auditoría, Bloque E: Relative Rotation Graph reading per
+        sector - see `sector_rrg_service.py`'s module docstring for the full
+        methodology. Fetches its own OHLCV (`srrg.RRG_HISTORY_YEARS`, ~2y -
+        longer than `get_sector_performance`'s own `SECTOR_HISTORY_DAYS`
+        needs, and for a different reason: the double rolling-window
+        normalization needs real warmup, not just enough bars for a 252-day
+        return) rather than reusing `_ohlcv_cache` - same precedent
+        `get_sector_forecast` already set for exactly this reason."""
+        cached = self._rrg_cache.get(region)
+        if not force_refresh and cached is not None:
+            cached_at, readings = cached
+            if datetime.now(UTC) - cached_at < CACHE_TTL:
+                return readings
+
+        cache_key = f"sector_rrg:{region}"
+        if db is not None and not force_refresh:
+            readings = durable_cache.load_fresh_as(db, cache_key, CACHE_TTL, _rrg_readings_from_payload)
+            if readings is not None:
+                self._rrg_cache[region] = (datetime.now(UTC), readings)
+                return readings
+
+        sector_etfs = region_config(region).sector_etfs
+        benchmark_ticker = benchmark_for_region(region)
+        end = date.today()
+        start = end - timedelta(days=365 * srrg.RRG_HISTORY_YEARS)
+        fetch_list = [*sector_etfs.values(), benchmark_ticker]
+        ohlcv_by_ticker = self.market_data.get_bulk_ohlcv(fetch_list, start, end)
+
+        readings = srrg.compute_sector_rrg(sector_etfs, ohlcv_by_ticker, benchmark_ticker)
+
+        self._rrg_cache[region] = (datetime.now(UTC), readings)
+        if db is not None:
+            durable_cache.save(db, cache_key, [_rrg_reading_to_dict(r) for r in readings])
+        return readings
+
     def get_industry_performance(
         self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
     ) -> list[IndustryPerformance]:
@@ -777,9 +844,13 @@ class MarketScreenerService:
                     "change_6m": ta.pct_change_over(close, 126),
                     "change_1y": ta.pct_change_over(close, 252),
                 }
+                performance_method = INDUSTRY_METHOD_ETF
             else:
-                # No liquid ETF proxy for this industry - fall back to an equal-weight
-                # average of its constituents' own returns (a synthetic index).
+                # No liquid ETF proxy for this industry (either none configured, or
+                # its OHLCV came back empty) - fall back to an equal-weight average
+                # of its constituents' own returns (a synthetic index). Recorded as
+                # its own method, not silently folded into the same "etf" label just
+                # because industry.etf happens to be set (DEUDA-3).
                 changes = {
                     field: (
                         float(np.mean(values))
@@ -788,6 +859,7 @@ class MarketScreenerService:
                     )
                     for field in ("change_1d", "change_1w", "change_1m", "change_3m", "change_6m", "change_1y")
                 }
+                performance_method = INDUSTRY_METHOD_BASKET_AVERAGE
 
             performance.append(
                 IndustryPerformance(
@@ -796,6 +868,7 @@ class MarketScreenerService:
                     etf=industry.etf,
                     avg_rs_rating=avg_rs,
                     leaders=leaders,
+                    performance_method=performance_method,
                     **changes,
                 )
             )

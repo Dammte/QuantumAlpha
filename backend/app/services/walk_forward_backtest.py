@@ -44,6 +44,7 @@ from app.services.recommendation_engine import Recommendation, build_recommendat
 from app.services.technical_analysis import (
     classify_stage,
     classify_trend,
+    detect_fast_pair_bearish_veto,
     detect_recent_cross,
     obv_divergence,
     rolling_extreme_price,
@@ -128,6 +129,7 @@ def replay_recommendation_at(
         nearest_resistance=None,
         minervini_range_confirmed=range_confirmed,
         obv_divergence=obv_div,
+        fast_pair_bearish_signal=detect_fast_pair_bearish_veto(close.iloc[: i + 1]),
     )
     return rec
 

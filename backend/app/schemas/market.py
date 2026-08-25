@@ -86,6 +86,27 @@ class SectorRotationResponse(BaseModel):
     warning: str | None
 
 
+class RrgPointResponse(BaseModel):
+    as_of: date
+    rs_ratio: float
+    rs_momentum: float
+
+
+class SectorRrgResponse(BaseModel):
+    """Cuarta auditoría, Bloque E: one Relative Rotation Graph reading per
+    sector - see `sector_rrg_service.py`'s module docstring for the full
+    methodology and the four quadrants' meaning. Distinct from
+    `SectorRotationResponse` (business-cycle leadership pattern-matching,
+    unchanged) - this adds the momentum axis that service never had."""
+
+    sector: str
+    etf: str
+    quadrant: str  # "leading" | "weakening" | "lagging" | "improving"
+    rs_ratio: float
+    rs_momentum: float
+    tail: list[RrgPointResponse]
+
+
 class IndustryPerformanceResponse(BaseModel):
     industry: str
     sector: str
@@ -98,6 +119,7 @@ class IndustryPerformanceResponse(BaseModel):
     change_1y: float | None
     avg_rs_rating: float | None
     leaders: list[TickerSnapshotResponse]
+    performance_method: str  # "etf" | "basket_average" - see IndustryPerformance's docstring
 
 
 class MoversResponse(BaseModel):
@@ -258,6 +280,10 @@ class WatchlistItemResponse(BaseModel):
     # "pullback_to_support" for a short-term item, `None` for medium/long-term
     # ones (not split into setup types) - see watchlist_service.py.
     setup: str | None = None
+    # Server-computed from watchlist_service.SETUP_LABELS - the single source
+    # of truth, so the frontend never needs its own copy that can drift (see
+    # WatchlistItem.setup_label's docstring).
+    setup_label: str | None = None
     percentile_score: float | None = None
     setup_outcome_stats: SetupOutcomeStatsResponse | None = None
 
@@ -279,7 +305,9 @@ class PremiumWatchlistItemResponse(BaseModel):
     premium_score: float
     signals: CoreSignalsResponse
     setup: str | None = None
+    setup_label: str | None = None
     also_matched_setups: list[str] = []
+    also_matched_setup_labels: list[str] = []
     setup_outcome_stats: SetupOutcomeStatsResponse | None = None
     days_to_earnings: int | None = None
 
@@ -443,6 +471,7 @@ class StatisticalRelationResponse(BaseModel):
     comovement_extreme_days_pct: float | None
     is_diverging: bool
     setup: str | None
+    setup_label: str | None = None
     percentile_score: float | None
 
 
@@ -453,6 +482,7 @@ class SectorPeerResponse(BaseModel):
     rs_rating: int | None
     trend: str
     setup: str | None
+    setup_label: str | None = None
     percentile_score: float | None
 
 

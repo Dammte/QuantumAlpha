@@ -8,6 +8,7 @@ import pytest
 from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.services import premium_watchlist_service as pws
 from app.services import technical_analysis as ta
+from app.services import watchlist_service as wl
 
 
 def _signals(verdict="comprar", score=6, has_sizing=False, entry_timing=None):
@@ -673,3 +674,30 @@ def test_daily_tier_keeps_a_candidate_whose_earnings_already_passed(monkeypatch)
     )
     results, _ = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
     assert [r.ticker for r in results] == ["JUST_REPORTED"]
+
+
+# --- PremiumWatchlistItem.setup_label / also_matched_setup_labels: cuarta
+# auditoría, recomendación FE-1 - mismo origen único de verdad que
+# WatchlistItem.setup_label.
+
+
+def test_premium_watchlist_item_setup_label_matches_watchlist_service_dict():
+    item = _premium_item("T", "Tech", setup=wl.BREAKOUT_VOLUME)
+    assert item.setup_label == wl.SETUP_LABELS[wl.BREAKOUT_VOLUME]
+
+
+def test_premium_watchlist_item_setup_label_none_when_no_setup():
+    item = _premium_item("T", "Tech", setup=None)
+    assert item.setup_label is None
+
+
+def test_premium_watchlist_item_also_matched_setup_labels_preserves_order():
+    item = pws.PremiumWatchlistItem(
+        ticker="T", sector="Tech", industry=None, cap_tier="mega", currency="USD", region="us",
+        tier=pws.DAILY, reasons=["r"], signals=_signals(score=6), premium_score=6.0, raw_score=6,
+        setup=wl.BREAKOUT_VOLUME, also_matched_setups=[wl.OVERSOLD_BOUNCE, wl.PULLBACK_TO_SUPPORT],
+    )
+    assert item.also_matched_setup_labels == [
+        wl.SETUP_LABELS[wl.OVERSOLD_BOUNCE],
+        wl.SETUP_LABELS[wl.PULLBACK_TO_SUPPORT],
+    ]

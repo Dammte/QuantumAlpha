@@ -100,3 +100,14 @@ class IndustryPerformance:
     change_1y: float | None
     avg_rs_rating: float | None
     leaders: list[TickerSnapshot]
+    # Cuarta auditoría, recomendación DEUDA-3: the returns above come from one
+    # of two genuinely incompatible sources - a real, cap-weighted ETF's own
+    # price history, or an equal-weight average of a handful of hand-curated
+    # constituents' returns (a synthetic index) when no liquid ETF proxy
+    # exists for this industry. Mixing both into one ranking with no way to
+    # tell which is which was flagged as pending since Bloque A-7 - this
+    # field is what actually happened for *this* row (not just whether an ETF
+    # is *configured*: a configured ETF with no OHLCV data still falls back
+    # to "basket_average"), so a caller can label each row honestly instead
+    # of presenting them as directly comparable.
+    performance_method: str  # "etf" | "basket_average"

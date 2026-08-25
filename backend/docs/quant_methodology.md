@@ -1204,3 +1204,124 @@ lecturas coincidan sin evidencia nueva que lo justifique.
    solo cuando ninguno de los dos sectores comparados tiene `rs_rank` (menos de 252 sesiones de
    historia). El valor de cada barra sigue siendo el retorno del periodo elegido - solo el orden cambia;
    el `rs_rank` de cada sector se añadió al tooltip para que la razón del orden sea visible, no implícita.
+
+## 24. Cuarta auditoría independiente — resolución de recomendaciones (agosto 2026, `ENGINE_VERSION` → v5)
+
+Un análisis independiente (publicado como artefacto, "Cuarta Auditoría Independiente") propuso 13
+hallazgos priorizados en 5 áreas. Por instrucción explícita del propietario se omitió la sección A
+(seguridad y operación - API sin autenticación, sin CI/CD, sin monitorización) de esta pasada; el resto
+se resolvió, incluyendo retomar los Bloques B/C/D/E del encargo original que habían quedado
+explícitamente fuera de alcance de la Tercera auditoría (decisión también explícita del propietario,
+entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
+
+1. **Bloque B (B-1.3): veto del par rápido EMA21/55**. El encargo original apuntaba a este veto como la
+   solución "correcta" a la contradicción de Bloque H-1 (cruce bajista inminente bajo un veredicto
+   COMPRAR) - no construido en su momento por estar fuera de alcance de esa pasada. Nuevo
+   `technical_analysis.detect_fast_pair_bearish_veto(close)`: un cruce bajista confirmado (o proyectado,
+   con R² ≥ 0,6 - el mismo umbral que `exit_engine.py` ya usa para su propio par rápido SMA20/50, reutilizado
+   en vez de inventado) en un par EMA21/55 deliberadamente distinto de cualquier otro que el sistema ya
+   siga (SMA20/50/200 del checklist, SMA50/200 de `ma_cross`, SMA21/50 de `multi_timeframe.py`). Cuando
+   dispara, `build_recommendation` degrada "comprar" a "esperar" (nunca a "evitar" - el checklist puede
+   seguir siendo genuinamente alcista, "esperar" es la lectura honesta de "todavía no, no de "esto es
+   malo"") y expone `veto_reason` como campo propio de `Recommendation`, separado de `factors` (nunca
+   entra en la puntuación) - mostrado en `RecommendationCard.jsx` como aviso explícito, distinto de los
+   badges de cruce inminente SMA50/200 y SMA21/50 que ya existían (ambos pares siguen sin veto propio,
+   por diseño - B-1.3 pidió específicamente este par nuevo). Cableado en los tres puntos donde
+   `build_recommendation` se llama de verdad: `compute_core_signals` y `_confirmed_recommendation`
+   (`ticker_analysis_service.py`) y `replay_recommendation_at` (`walk_forward_backtest.py`, para que el
+   backtest simule el sistema que de verdad corre en producción, no una versión sin el veto). `ENGINE_VERSION`
+   → v5 (ningún peso existente cambió, pero un "comprar" puede ahora volver "esperar" por una razón que
+   la puntuación nunca llevaba). Es un chequeo exclusivamente del lado de compra, evaluado dentro de la
+   propia decisión de comprar - nunca importa ni es importado por `exit_engine.py` (§8 sigue intacto:
+   comprar y vender siguen siendo preguntas distintas). Sin ejecutar todavía el estudio de ablación
+   específicamente contra este veto (la evidencia de que suprime más falsos positivos de los que cuesta
+   en oportunidades reales queda pendiente de una corrida dedicada) - construido porque el propio
+   encargo lo pidió explícitamente por nombre, no por intuición propia; documentado aquí como una
+   limitación honesta, no ocultada. 21 tests nuevos (5 en `test_technical_analysis.py` para la detección
+   en sí, 5 en `test_recommendation_engine.py` para la integración del veto, 1 en
+   `test_walk_forward_backtest.py` para el cableado del replay).
+
+2. **Bloques C/D: batería de escenarios dorados**. Nuevo `tests/unit/test_golden_scenarios.py` - series
+   de precio sintéticas con forma de patrón técnico reconocible (ruptura de Fase 2 con volumen, tendencia
+   bajista confirmada, lateral sin dirección clara, divergencia bajista de OBV) corridas de punta a punta
+   por el pipeline real (`technical_analysis.py` → `recommendation_engine.build_recommendation`, incluido
+   el veto nuevo de B-1.3), no contra una sola función aislada como hace el resto de `tests/unit/` a
+   propósito. Incluye el escenario dorado más directamente relevante para el punto 1: la misma serie
+   (tendencia alcista genuina, empezando a decaer con suavidad) puntúa idéntico con o sin el veto
+   aplicado - la prueba más clara de que el veto cambia el veredicto sin tocar la puntuación del
+   checklist. `exit_engine.py` (lado de venta) ya tenía esta clase de cobertura de escenario completo en
+   su propio archivo de 47 tests - esta batería es el equivalente del lado de compra que nunca existió.
+
+3. **Bloque E: reconstrucción del cuadrante RRG**. Nuevo `sector_rrg_service.py` (módulo nuevo,
+   explícitamente permitido) - Relative Rotation Graph: RS-Ratio (fuerza relativa normalizada frente al
+   benchmark, z-score móvil de 100 sesiones centrado en 100) cruzado con RS-Momentum (el ritmo de cambio
+   de ese RS-Ratio, mismo tipo de normalización) en los cuatro cuadrantes clásicos (leading/weakening/
+   lagging/improving). Complementa, no sustituye, a `sector_rotation_service.py` (que solo mira qué
+   sector lidera hoy contra el patrón de ciclo económico) - añade el eje de momentum que ese servicio
+   nunca tuvo, distinguiendo un líder que sigue acelerando de uno que ya está perdiendo fuelle. Nota de
+   honestidad explícita en el propio módulo: la normalización exacta que StockCharts/JdK usa en su
+   producto comercial no es pública - esto reproduce el comportamiento cualitativo del RRG con una
+   normalización estándar de implementaciones abiertas, no pretende ser un clon numérico exacto. Nuevo
+   endpoint `GET /api/v1/market/sectors/rrg` y tarjeta `SectorRrgCard.jsx`/`SectorRrgChart.jsx` (gráfico de
+   dispersión con la cola de trayectoria de cada sector, coloreado por cuadrante - no por sector, con
+   hasta 11 sectores distinguir por color de identidad obligaría a más matices de los que un vistazo puede
+   separar). 15 tests unitarios (`test_sector_rrg_service.py`) + 3 de la capa de caché en
+   `market_screener_service.py` (mismo patrón de `get_sector_forecast`: fetch propio de OHLCV, no
+   reutiliza `_ohlcv_cache`) + 1 de integración.
+
+4. **DEUDA-1: calibración del Chandelier Exit, medida por primera vez**. Nuevo
+   `scripts/chandelier_calibration_study.py` (sibling script, no una extensión de
+   `factor_ablation_study.py`: ese script fija `vol_regime=None` en cada muestra por coste - un refit de
+   GARCH por ticker a escala de universo completo sería prohibitivo - así que estructuralmente nunca
+   ejercita los multiplicadores por régimen; este script paga ese coste a propósito, sobre una muestra
+   pequeña deliberada de 60 tickers, el mismo compromiso que el estudio de ablación original tomó a
+   ~217 tickers antes de que el universo creciera). Requirió un refactor puro y verificado de
+   `backtest_engine.py` (`find_triple_barrier_entries`, extraído de `run_triple_barrier_backtest` sin
+   cambiar su comportamiento - 35/35 tests existentes en verde) para poder agrupar etiquetas de muchos
+   tickers antes de agregar una sola vez, en vez de un `TradingMetrics` ya promediado por ticker.
+   **Resultado real de la corrida** (`docs/chandelier_calibration_report.csv`, 60 tickers, horizonte 21
+   días): desplazar los cuatro multiplicadores +0,5 mejora win_rate (0,436 vs. 0,408), expectancy (+0,23%
+   vs. +0,14%), profit_factor (1,10 vs. 1,06) y reduce el drawdown (-0,89% vs. -0,93%) frente a los
+   valores actuales; desplazarlos -0,5 empeora los cuatro. El multiplicador de profit-lock (1,75/2,0/2,25)
+   no mostró ninguna diferencia - probablemente porque las operaciones de esta muestra rara vez alcanzan
+   +2R antes de resolverse por otra vía. **No se ha tocado ningún valor en `trade_manager.py`** - esto es
+   evidencia real y direccional, sobre una muestra pequeña y una sola corrida, no autorización para
+   recalibrar; queda documentado para que el propietario decida, con el mismo estándar que cualquier otro
+   peso de este sistema.
+
+5. **DEUDA-3: método de cálculo visible en el ranking de industrias**. Nuevo campo
+   `IndustryPerformance.performance_method` ("etf" | "basket_average") - refleja lo que realmente pasó
+   para esa fila (un ETF *configurado* sin datos también cae a la media de la cesta curada), no solo si
+   `industry.etf` está poblado. `IndustryCards.jsx` ahora etiqueta cada fila "· XLK" (vía ETF real) o
+   "· cesta curada" (promedio equiponderado) en vez de mostrar el símbolo del ETF incluso cuando los
+   números en realidad vinieron del promedio.
+
+6. **TEST-1: cobertura de `market_screener_service.py`**. 9 tests nuevos cubriendo las tres rutas de
+   caché (fría / en proceso / durable) de `get_industry_performance` y `get_sector_rrg` - exactamente la
+   clase de ruta que el bug real de `_ohlcv_cache` (commit `7388ddc`, ver §22) demostró que ningún test
+   existente ejercitaba.
+
+7. **FE-1: `setup_label` como origen único de verdad**. El backend ya mantenía su propio
+   `watchlist_service.SETUP_LABELS` en español para los textos de `reasons` - completamente
+   desconectado del `SETUP_LABELS` que el frontend mantenía por su cuenta en `format.js` (que ya se
+   había desincronizado una vez, ver §21 punto 10). En vez de solo añadir un test que detecte la próxima
+   desincronización, se eliminó la clase de bug: `WatchlistItem`/`PremiumWatchlistItem`/
+   `StatisticalRelation`/`SectorPeer` ganan una propiedad `setup_label` (y `PremiumWatchlistItem` un
+   `also_matched_setup_labels`) calculada desde el único diccionario del backend; expuesta en las cuatro
+   respuestas de API correspondientes. El frontend ahora prefiere `item.setup_label` y solo cae al mapa
+   local como red de seguridad (`item.setup_label ?? SETUP_LABELS[item.setup] ?? item.setup`), nunca
+   como fuente de verdad. Incluye un test que falla en cuanto un setup nuevo no tenga entrada en
+   `SETUP_LABELS` - la comprobación real que sustituye la necesidad de un test de contrato aparte.
+
+8. **FE-2: riesgo agregado visible en "Acciones requeridas hoy"**. `TodayActionsPanel` solo miraba
+   señales por posición; ahora recibe `construction` (ya obtenido para `PortfolioConstructionPanel`,
+   Segunda auditoría Bloque 2) y, cuando `aggregate_risk.exceeds_limit` es verdadero, añade una entrada
+   de "Cartera completa" al principio de la lista con el mismo tono `exit_now` - el límite del 6% deja de
+   ser algo que solo se ve si el usuario baja hasta el panel secundario.
+
+**Tests**: ~50 tests nuevos/actualizados en total a través de `test_technical_analysis.py`,
+`test_recommendation_engine.py`, `test_walk_forward_backtest.py`, `test_golden_scenarios.py` (nuevo),
+`test_sector_rrg_service.py` (nuevo), `test_chandelier_calibration_study.py` (nuevo),
+`test_market_screener_service.py`, `test_watchlist_service.py`, `test_premium_watchlist_service.py`,
+`test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
+`test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.

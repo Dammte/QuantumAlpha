@@ -85,6 +85,28 @@ def test_replay_recommendation_at_carries_a_stop_loss_for_a_comprar_verdict():
         assert rec.take_profit is not None
 
 
+def test_replay_recommendation_at_applies_the_fast_pair_veto(monkeypatch):
+    # Cuarta auditoría, Bloque B (B-1.3): the backtest replay must reflect
+    # the same veto the live system now applies, or a backtest would keep
+    # simulating a system that no longer exists. Monkeypatches the veto
+    # detector itself (already unit-tested on its own in
+    # test_technical_analysis.py) rather than hand-constructing a series
+    # that happens to satisfy both "replay score clears BUY_THRESHOLD" and
+    # "genuine EMA21/55 bearish signal" at once - this test is about the
+    # wiring, not re-proving the veto's own detection logic.
+    close = _synthetic_regime_series(n=800, block=800)  # verdict is "comprar" at bar 700 with no veto
+    bundle = _indicator_bundle(close)
+    baseline = wf.replay_recommendation_at(700, **bundle)
+    assert baseline is not None and baseline.verdict == "comprar" and baseline.veto_reason is None
+
+    monkeypatch.setattr(wf, "detect_fast_pair_bearish_veto", lambda close: "señal bajista simulada")
+    vetoed = wf.replay_recommendation_at(700, **bundle)
+    assert vetoed is not None
+    assert vetoed.verdict == "esperar"
+    assert vetoed.veto_reason == "señal bajista simulada"
+    assert vetoed.score == baseline.score  # the checklist's own number is untouched
+
+
 def test_replay_recommendation_at_matches_replay_verdict_at():
     # _replay_verdict_at is now a thin wrapper - confirms it stays consistent
     # with the fuller function it delegates to.

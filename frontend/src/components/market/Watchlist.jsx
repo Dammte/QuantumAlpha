@@ -47,7 +47,7 @@ function WatchlistCard({ item }) {
       </div>
       {item.setup && (
         <span className="setup-badge">
-          {SETUP_LABELS[item.setup] ?? item.setup}
+          {item.setup_label ?? SETUP_LABELS[item.setup] ?? item.setup}
           {item.percentile_score !== null && item.percentile_score !== undefined && (
             <> · percentil {Math.round(item.percentile_score)} del universo hoy</>
           )}

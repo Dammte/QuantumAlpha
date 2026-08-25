@@ -276,6 +276,7 @@ def _confirmed_recommendation(
         garch=garch,
         obv_divergence=obv_div,
         revenue_growth=revenue_growth,
+        fast_pair_bearish_signal=ta.detect_fast_pair_bearish_veto(close),
         profit_margins=profit_margins,
         debt_to_equity=debt_to_equity,
         mean_reverting_structure=mean_reverting_structure,
@@ -441,6 +442,7 @@ def compute_core_signals(
     market_trend, vix_regime_label = ta.market_regime_inputs(benchmark_close, vix_close)
     structure = compute_statistical_structure(close)
     mean_reverting_structure = structure.regime == stats_structure.REGIME_MEAN_REVERTING
+    fast_pair_veto = ta.detect_fast_pair_bearish_veto(close)
 
     recommendation = build_recommendation(
         price=price,
@@ -462,6 +464,7 @@ def compute_core_signals(
         garch=garch,
         obv_divergence=obv_div,
         revenue_growth=revenue_growth,
+        fast_pair_bearish_signal=fast_pair_veto,
         profit_margins=profit_margins,
         debt_to_equity=debt_to_equity,
         mean_reverting_structure=mean_reverting_structure,

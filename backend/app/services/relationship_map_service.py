@@ -86,6 +86,12 @@ class StatisticalRelation:
     setup: str | None  # this ticker's own current watchlist setup, if it has one today
     percentile_score: float | None
 
+    @property
+    def setup_label(self) -> str | None:
+        """See `watchlist_service.WatchlistItem.setup_label` - same root-cause
+        fix (recomendación FE-1 de la cuarta auditoría independiente)."""
+        return wl.SETUP_LABELS.get(self.setup) if self.setup else None
+
 
 def _lead_lag(aligned: pd.DataFrame) -> tuple[int | None, float | None]:
     """Best (lag_days, correlation) - lag_days > 0 means column "a" (the
@@ -224,6 +230,10 @@ class SectorPeer:
     trend: str
     setup: str | None
     percentile_score: float | None
+
+    @property
+    def setup_label(self) -> str | None:
+        return wl.SETUP_LABELS.get(self.setup) if self.setup else None
 
 
 def compute_sector_peers(ticker: str, region: str, universe_snapshot: list[TickerSnapshot]) -> list[SectorPeer]:

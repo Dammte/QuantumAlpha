@@ -92,8 +92,10 @@ from app.services.volatility_model import GarchResult
 # bumped again for v4 even though no buy-side factor/weight changed, because
 # exit_engine.py's trigger set changed materially again (see
 # docs/quant_methodology.md §13: stalled-position ceiling, unified weekly
-# bias with an explicit "unknown" state).
-ENGINE_VERSION = "2026-08-audit-v4"
+# bias with an explicit "unknown" state). v5: the fast-pair (EMA21/55) veto
+# below - no existing factor/weight touched, but a "comprar" verdict can now
+# come back "esperar" for a reason the score itself never carried before.
+ENGINE_VERSION = "2026-08-audit-v5"
 
 BUY_THRESHOLD = 5
 AVOID_THRESHOLD = -3
@@ -124,6 +126,13 @@ class Recommendation:
     take_profit: float | None
     take_profit_method: str | None
     risk_reward: float | None
+    # Cuarta auditoría, Bloque B (B-1.3): non-`None` only when a bearish
+    # EMA21/55 signal downgraded what would otherwise have been "comprar" to
+    # "esperar" - see `technical_analysis.detect_fast_pair_bearish_veto`.
+    # Never touches `score` (the checklist's own number stays honest about
+    # what it actually found) - shown separately in the UI, exactly like
+    # `entry_timing`/`imminent_cross` already are, never folded into `factors`.
+    veto_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +220,7 @@ def build_recommendation(
     profit_margins: float | None = None,
     debt_to_equity: float | None = None,
     mean_reverting_structure: bool = False,
+    fast_pair_bearish_signal: str | None = None,
 ) -> Recommendation:
     factors: list[RecommendationFactor] = []
 
@@ -359,6 +369,18 @@ def build_recommendation(
     else:
         verdict = "esperar"
 
+    # Cuarta auditoría, Bloque B (B-1.3): a genuine bearish signal on the fast
+    # EMA21/55 pair downgrades "comprar" to "esperar" - never to "evitar"
+    # (the checklist itself may still show real bullish evidence; "esperar"
+    # is the honest state, "the setup looks good, but not to enter right this
+    # moment", not a claim that the setup itself is bad). Only ever fires
+    # against a verdict that was actually "comprar" - it has nothing to add
+    # to "esperar"/"evitar", which already aren't buy signals.
+    veto_reason = None
+    if verdict == "comprar" and fast_pair_bearish_signal is not None:
+        verdict = "esperar"
+        veto_reason = fast_pair_bearish_signal
+
     stop_loss = take_profit = take_profit_method = risk_reward = None
     if verdict == "comprar":
         stop_target = compute_stop_and_target(price, atr14, nearest_support, nearest_resistance)
@@ -375,4 +397,5 @@ def build_recommendation(
         take_profit=take_profit,
         take_profit_method=take_profit_method,
         risk_reward=risk_reward,
+        veto_reason=veto_reason,
     )

@@ -428,6 +428,41 @@ def test_run_triple_barrier_backtest_empty_metrics_when_no_comprar_signals_fire(
     assert result.strategy_trailing.n_trades == 0
 
 
+# --- find_triple_barrier_entries: cuarta auditoría, DEUDA-1 - extracted from
+# run_triple_barrier_backtest (pure refactor) so scripts/
+# chandelier_calibration_study.py can reuse the exact same "what would the
+# system have proposed here" replay without duplicating it. Distinguishes
+# `None` (too little history to attempt even one window) from `[]` (enough
+# history, but no "comprar" signal ever fired) - the same distinction
+# run_triple_barrier_backtest itself relies on.
+
+
+def _entries_kwargs(bundle: dict) -> dict:
+    return {k: v for k, v in bundle.items() if k not in ("high", "low", "open_")}
+
+
+def test_find_triple_barrier_entries_none_with_too_little_history():
+    close = pd.Series(np.linspace(100, 110, 50))
+    bundle = _full_bundle(close)
+    assert be.find_triple_barrier_entries(horizon_days=21, **_entries_kwargs(bundle)) is None
+
+
+def test_find_triple_barrier_entries_empty_list_when_no_comprar_signals_fire():
+    n = 1500
+    close = pd.Series(500 - np.arange(n) * 0.2)  # unbroken downtrend
+    bundle = _full_bundle(close)
+    assert be.find_triple_barrier_entries(horizon_days=21, **_entries_kwargs(bundle)) == []
+
+
+def test_find_triple_barrier_entries_matches_run_triple_barrier_backtest_signal_count():
+    close = _synthetic_regime_series(n=1500, block=1500)
+    bundle = _full_bundle(close)
+    entries = be.find_triple_barrier_entries(horizon_days=21, **_entries_kwargs(bundle))
+    result = be.run_triple_barrier_backtest(horizon_days=21, **bundle)
+    assert entries is not None and result is not None
+    assert len(entries) == result.n_signals_evaluated
+
+
 def test_run_triple_barrier_backtest_samples_on_a_non_overlapping_grid():
     # Regression guard: the number of "comprar" signals actually evaluated
     # can never exceed the non-overlapping grid's own size (stride ==

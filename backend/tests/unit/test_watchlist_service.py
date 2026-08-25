@@ -301,3 +301,37 @@ def test_setup_percentile_scores_skips_missing_fields_without_crashing():
         atr_ratio_50d=None, atr_multiple_sma21=None, range_position_20d=None, mansfield_rs_4w=None,
     )
     assert wl.setup_percentile_scores([thin_data], wl.OVERSOLD_BOUNCE) == {}
+
+
+# --- WatchlistItem.setup_label: cuarta auditoría, recomendación FE-1 - un
+# único origen de verdad para la etiqueta en español, para que el frontend
+# nunca vuelva a mantener su propia copia desincronizada de este mapa.
+
+
+def test_watchlist_item_setup_label_matches_setup_labels_dict():
+    item = wl.WatchlistItem(
+        ticker="T", sector="Tecnología", industry=None, cap_tier="large", horizon="short",
+        reasons=[], snapshot=_snap(), setup=wl.OVERSOLD_BOUNCE,
+    )
+    assert item.setup_label == wl.SETUP_LABELS[wl.OVERSOLD_BOUNCE]
+
+
+def test_watchlist_item_setup_label_none_when_no_setup():
+    item = wl.WatchlistItem(
+        ticker="T", sector="Tecnología", industry=None, cap_tier="large", horizon="long",
+        reasons=[], snapshot=_snap(), setup=None,
+    )
+    assert item.setup_label is None
+
+
+def test_watchlist_item_setup_label_covers_every_setup_constant():
+    # A setup with no entry in SETUP_LABELS would silently render as raw
+    # snake_case in the UI (exactly the bug this property exists to prevent) -
+    # this test fails loudly instead if a future setup constant is added
+    # without also adding its label.
+    for setup in (*wl.SHORT_TERM_SETUPS, *wl.MEDIUM_TERM_SETUPS):
+        item = wl.WatchlistItem(
+            ticker="T", sector="Tecnología", industry=None, cap_tier="large", horizon="short",
+            reasons=[], snapshot=_snap(), setup=setup,
+        )
+        assert item.setup_label is not None, f"{setup} has no entry in SETUP_LABELS"

@@ -70,7 +70,25 @@ function IndustryCards({ region }) {
                   <p className="industry-card__name">{industry.industry}</p>
                   <p className="industry-card__sector">
                     {industry.sector}
-                    {industry.etf && <span className="industry-card__etf"> · {industry.etf}</span>}
+                    {/* Cuarta auditoría, DEUDA-3: un ETF *configurado* (industry.etf)
+                        no es lo mismo que un ETF que de verdad respalda estos
+                        números - performance_method dice qué pasó realmente para
+                        esta fila, así que nunca se etiqueta un promedio de cesta
+                        curada como si viniera de un ETF real. */}
+                    {industry.performance_method === 'etf' ? (
+                      <span className="industry-card__etf" title="Retornos del ETF real de esta industria">
+                        {' '}
+                        · {industry.etf}
+                      </span>
+                    ) : (
+                      <span
+                        className="industry-card__etf industry-card__etf--basket"
+                        title="Sin ETF líquido disponible - promedio equiponderado de los nombres curados de esta industria"
+                      >
+                        {' '}
+                        · cesta curada
+                      </span>
+                    )}
                   </p>
                 </div>
                 <span className={`industry-card__change ${isUp ? 'delta-up' : 'delta-down'}`}>

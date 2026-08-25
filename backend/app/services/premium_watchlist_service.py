@@ -162,6 +162,16 @@ class PremiumWatchlistItem:
     # a reason to exclude.
     days_to_earnings: int | None = None
 
+    @property
+    def setup_label(self) -> str | None:
+        """See `watchlist_service.WatchlistItem.setup_label` - same root-cause
+        fix (recomendación FE-1), same single source of truth."""
+        return wl.SETUP_LABELS.get(self.setup) if self.setup else None
+
+    @property
+    def also_matched_setup_labels(self) -> list[str]:
+        return [wl.SETUP_LABELS.get(s, s) for s in self.also_matched_setups]
+
 
 def _approval_score(
     signals: CoreTickerSignals, sector_rs_rank: int | None = None, setup_percentile: float | None = None

@@ -24,6 +24,10 @@ class RecommendationResponse(BaseModel):
     take_profit: float | None
     take_profit_method: str | None
     risk_reward: float | None
+    # Cuarta auditoría, Bloque B (B-1.3): non-None only when a bearish
+    # EMA21/55 signal downgraded "comprar" to "esperar" - see
+    # recommendation_engine.Recommendation.veto_reason.
+    veto_reason: str | None = None
 
 
 class MarkovChainResponse(BaseModel):

@@ -355,6 +355,51 @@ class TripleBarrierBacktestResult:
     random_entries: TradingMetrics  # honest benchmark: random entries, same ATR-based sizing
 
 
+def find_triple_barrier_entries(
+    close: pd.Series,
+    sma20: pd.Series,
+    sma50: pd.Series,
+    sma150: pd.Series,
+    sma200: pd.Series,
+    rsi14: pd.Series,
+    adx14: pd.Series,
+    plus_di: pd.Series,
+    minus_di: pd.Series,
+    atr14: pd.Series,
+    horizon_days: int,
+    volume: pd.Series | None = None,
+    warmup_bars: int = WARMUP_BARS,
+) -> list[tuple[int, float, float]] | None:
+    """Extracted from `run_triple_barrier_backtest` (pure refactor, identical
+    behavior, verified against its existing tests) so a caller that needs the
+    entry points themselves - not just the pre-aggregated metrics that
+    function returns - can reuse the exact same "what would the system have
+    proposed here" replay instead of duplicating it. `scripts/
+    chandelier_calibration_study.py` (cuarta auditoría, DEUDA-1) is the
+    reason this exists: it needs raw trailing-strategy labels pooled across
+    many tickers for one combined `TradingMetrics`, not one already-aggregated
+    result per ticker.
+
+    Returns `None` when there isn't enough history to even attempt a single
+    non-overlapping window (distinct from an empty list, which means the
+    history was long enough but no "comprar" signal with a resolvable
+    stop/target ever fired)."""
+    n = len(close)
+    last_valid_start = n - horizon_days - 1
+    if last_valid_start <= warmup_bars:
+        return None
+
+    entries: list[tuple[int, float, float]] = []
+    for i in range(warmup_bars, last_valid_start, horizon_days):
+        rec = replay_recommendation_at(
+            i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, volume
+        )
+        if rec is None or rec.verdict != "comprar" or rec.stop_loss is None or rec.take_profit is None:
+            continue
+        entries.append((i, rec.stop_loss, rec.take_profit))
+    return entries
+
+
 def run_triple_barrier_backtest(
     close: pd.Series,
     high: pd.Series,
@@ -395,19 +440,12 @@ def run_triple_barrier_backtest(
     the tail-risk trades this backtest exists to be honest about (Segunda
     auditoría, Bloque 2).
     """
-    n = len(close)
-    last_valid_start = n - horizon_days - 1
-    if last_valid_start <= warmup_bars:
+    entries = find_triple_barrier_entries(
+        close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, horizon_days,
+        volume=volume, warmup_bars=warmup_bars,
+    )
+    if entries is None:
         return None
-
-    entries: list[tuple[int, float, float]] = []
-    for i in range(warmup_bars, last_valid_start, horizon_days):
-        rec = replay_recommendation_at(
-            i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, volume
-        )
-        if rec is None or rec.verdict != "comprar" or rec.stop_loss is None or rec.take_profit is None:
-            continue
-        entries.append((i, rec.stop_loss, rec.take_profit))
 
     if not entries:
         return TripleBarrierBacktestResult(

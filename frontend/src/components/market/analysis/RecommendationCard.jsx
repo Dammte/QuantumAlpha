@@ -83,6 +83,18 @@ function RecommendationCard({
 
       <ScoreGauge score={recommendation.score} />
 
+      {recommendation.veto_reason && (
+        <div className="recommendation-card__veto-warning">
+          <strong>⚠️ Puntuación de compra ({recommendation.score}), pero el veredicto quedó en ESPERAR</strong>
+          <p>
+            {recommendation.veto_reason}. El par EMA21/EMA55 es un chequeo propio y aparte de los cruces que se
+            muestran abajo (SMA50/200 y SMA21/50) - cuando dispara en contra justo antes de entrar, se pospone la
+            compra sin tocar la puntuación del checklist: el veredicto vuelve a ser COMPRAR en cuanto la señal se
+            resuelva.
+          </p>
+        </div>
+      )}
+
       {recommendation.verdict === 'comprar' && (
         <EntryTimingBadge entryTiming={entryTiming} showDescription />
       )}

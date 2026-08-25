@@ -7,11 +7,11 @@ import TrendBadge from '../TrendBadge'
 // a label. Three layers, ordered and labeled by decreasing reliability - see
 // `relationship_map_service.py`'s module docstring for the full reasoning.
 
-function SetupTag({ setup, percentileScore }) {
+function SetupTag({ setup, setupLabel, percentileScore }) {
   if (!setup) return <span className="relationship-map__no-setup">—</span>
   return (
     <span className="setup-badge">
-      {SETUP_LABELS[setup] ?? setup}
+      {setupLabel ?? SETUP_LABELS[setup] ?? setup}
       {percentileScore !== null && percentileScore !== undefined && <> · p{Math.round(percentileScore)}</>}
     </span>
   )
@@ -75,7 +75,7 @@ function StatisticalRelationsTable({ ticker, relations, onSelectTicker }) {
               <td>{leadLagLabel(ticker, r.ticker, r.lead_lag_days)}</td>
               <td className="num">{formatPercent(r.comovement_extreme_days_pct)}</td>
               <td>
-                <SetupTag setup={r.setup} percentileScore={r.percentile_score} />
+                <SetupTag setup={r.setup} setupLabel={r.setup_label} percentileScore={r.percentile_score} />
               </td>
             </tr>
           ))}
@@ -124,7 +124,7 @@ function SectorPeersTable({ peers, onSelectTicker }) {
                 <TrendBadge trend={p.trend} />
               </td>
               <td>
-                <SetupTag setup={p.setup} percentileScore={p.percentile_score} />
+                <SetupTag setup={p.setup} setupLabel={p.setup_label} percentileScore={p.percentile_score} />
               </td>
             </tr>
           ))}

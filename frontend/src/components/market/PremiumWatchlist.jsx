@@ -55,12 +55,15 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
 
       {item.setup && (
         <span className="setup-badge">
-          {SETUP_LABELS[item.setup] ?? item.setup}
+          {item.setup_label ?? SETUP_LABELS[item.setup] ?? item.setup}
         </span>
       )}
       {item.also_matched_setups?.length > 0 && (
         <span className="setup-badge setup-badge--secondary">
-          también: {item.also_matched_setups.map((s) => SETUP_LABELS[s] ?? s).join(', ')}
+          también:{' '}
+          {item.also_matched_setups
+            .map((s, i) => item.also_matched_setup_labels?.[i] ?? SETUP_LABELS[s] ?? s)
+            .join(', ')}
         </span>
       )}
       {item.setup_outcome_stats && (

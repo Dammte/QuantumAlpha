@@ -740,6 +740,63 @@ def detect_imminent_cross(fast: pd.Series, slow: pd.Series) -> ImminentCross | N
     return ImminentCross(direction=direction, bars_until=max(1, round(bars_until)), r_squared=round(r_squared, 3))
 
 
+# Cuarta auditoría independiente, Bloque B (B-1.3): a fast pair deliberately
+# distinct from every other MA pair this system already tracks - SMA20/50/200
+# for the core trend factors above, SMA50/200 for the medium/long `ma_cross`,
+# SMA21/50 for `multi_timeframe.py`'s own short-term pair (Panel Tendencia,
+# §19). EMA (not SMA) on purpose: a veto meant to catch a fast momentum
+# rollover reacts faster to the last few sessions with an exponential weight
+# than a simple average would, the same reasoning `technical_analysis.py`
+# already applies wherever "fast-reacting" actually matters (GARCH's own
+# EWM, `relative_volume_trend`).
+FAST_PAIR_VETO_FAST_PERIOD = 21
+FAST_PAIR_VETO_SLOW_PERIOD = 55
+# Same confidence bar exit_engine.py's own fast-pair (SMA20/50) imminent-cross
+# trigger already uses (IMMINENT_CROSS_20_50_MIN_R2) - reused rather than
+# invented, for the conceptually identical question of "is a projected cross
+# on a fast MA pair reliable enough to act on", just on the buy side instead
+# of the sell side.
+FAST_PAIR_VETO_MIN_R2 = 0.6
+
+
+def detect_fast_pair_bearish_veto(close: pd.Series) -> str | None:
+    """A human-readable veto reason for `recommendation_engine.build_recommendation`
+    - `None` unless there's a genuine bearish signal on the EMA21/55 pair
+    above: either a cross already confirmed within the last
+    `CROSS_QUALITY_LOOKBACK` bars, or one projected with enough confidence
+    (R² >= `FAST_PAIR_VETO_MIN_R2`) to trust the projection. Deliberately
+    conservative - a weak/noisy projection (R² below the bar, same as
+    `detect_imminent_cross` itself already screens for below its own laxer
+    `IMMINENT_CROSS_MIN_R2`) never vetoes anything, so ordinary short-term
+    chop doesn't suppress a genuinely well-scored buy signal.
+
+    This is a *buy-side* check, evaluated as part of the buy decision itself
+    - it never imports or is imported by `exit_engine.py`, and never receives
+    or returns anything about an existing position. "Comprar y vender son
+    preguntas distintas" (docs/quant_methodology.md §8) still holds: this
+    doesn't borrow a sell-side signal, it's a new, independent buy-side
+    check using its own computation, same as every other factor already in
+    `build_recommendation`."""
+    if len(close.dropna()) < FAST_PAIR_VETO_SLOW_PERIOD + 1:
+        return None
+    ema_fast = ema(close, FAST_PAIR_VETO_FAST_PERIOD)
+    ema_slow = ema(close, FAST_PAIR_VETO_SLOW_PERIOD)
+
+    if detect_recent_cross(ema_fast, ema_slow, lookback=CROSS_QUALITY_LOOKBACK) == "death":
+        return (
+            f"Cruce bajista confirmado en el par rápido EMA{FAST_PAIR_VETO_FAST_PERIOD}/"
+            f"EMA{FAST_PAIR_VETO_SLOW_PERIOD} en los últimos {CROSS_QUALITY_LOOKBACK} días"
+        )
+
+    imminent = detect_imminent_cross(ema_fast, ema_slow)
+    if imminent is not None and imminent.direction == "death" and imminent.r_squared >= FAST_PAIR_VETO_MIN_R2:
+        return (
+            f"Cruce bajista proyectado en el par rápido EMA{FAST_PAIR_VETO_FAST_PERIOD}/"
+            f"EMA{FAST_PAIR_VETO_SLOW_PERIOD} en ~{imminent.bars_until} sesiones (R²={imminent.r_squared:.2f})"
+        )
+    return None
+
+
 # A body at least this much bigger than the prior one's, in the *same*
 # direction as the engulf, filters out a technically-qualifying but trivial
 # one-tick engulf (a barely-bigger body on a low-volatility day) that pattern

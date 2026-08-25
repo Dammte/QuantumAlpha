@@ -34,6 +34,7 @@ from app.schemas.market import (
     SectorPeerResponse,
     SectorPerformanceResponse,
     SectorRotationResponse,
+    SectorRrgResponse,
     SetupOutcomeStatsResponse,
     StatisticalRelationResponse,
     SupportResistanceResponse,
@@ -147,7 +148,9 @@ def _premium_item_to_response(item: PremiumWatchlistItem) -> PremiumWatchlistIte
         premium_score=item.premium_score,
         signals=_core_signals_to_response(item.signals),
         setup=item.setup,
+        setup_label=item.setup_label,
         also_matched_setups=item.also_matched_setups,
+        also_matched_setup_labels=item.also_matched_setup_labels,
         setup_outcome_stats=_setup_outcome_response(item.setup),
         days_to_earnings=item.days_to_earnings,
     )
@@ -274,6 +277,22 @@ def get_sector_rotation(
     return SectorRotationResponse(**asdict(rotation)) if rotation is not None else None
 
 
+@router.get("/sectors/rrg", response_model=list[SectorRrgResponse])
+def get_sector_rrg(
+    service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
+    db: DbSession,
+    region: str = RegionQuery,
+    refresh: bool = False,
+) -> list[SectorRrgResponse]:
+    """Cuarta auditoría, Bloque E: Relative Rotation Graph reading per sector
+    - fuerza relativa (RS-Ratio) cruzada con su propio ritmo de cambio
+    (RS-Momentum), en cuatro cuadrantes. Ver `sector_rrg_service.py` para la
+    metodología completa y `/sectors/rotation` para el patrón de ciclo
+    económico (complementario, no sustituido por esto)."""
+    readings = service.get_sector_rrg(region=region, force_refresh=refresh, db=db)
+    return [SectorRrgResponse(**asdict(r)) for r in readings]
+
+
 @router.get("/industries", response_model=list[IndustryPerformanceResponse])
 def get_industry_performance(
     service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
@@ -339,6 +358,7 @@ def get_watchlist(
                 snapshot=_to_response(item.snapshot),
                 sector_rs_rank=sector_rank_by_name.get(item.sector),
                 setup=item.setup,
+                setup_label=item.setup_label,
                 percentile_score=item.percentile_score,
                 setup_outcome_stats=_setup_outcome_response(item.setup),
             )
@@ -461,8 +481,10 @@ def get_relationship_map(
     return RelationshipMapResponse(
         ticker=result.ticker,
         region=result.region,
-        statistical=[StatisticalRelationResponse(**asdict(r)) for r in result.statistical],
-        sector_peers=[SectorPeerResponse(**asdict(p)) for p in result.sector_peers],
+        statistical=[
+            StatisticalRelationResponse(**asdict(r), setup_label=r.setup_label) for r in result.statistical
+        ],
+        sector_peers=[SectorPeerResponse(**asdict(p), setup_label=p.setup_label) for p in result.sector_peers],
         disclosed=(
             [DisclosedRelationResponse(**asdict(d)) for d in result.disclosed]
             if result.disclosed is not None

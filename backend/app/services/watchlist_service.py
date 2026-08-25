@@ -93,6 +93,20 @@ class WatchlistItem:
     setup: str | None = None
     percentile_score: float | None = None
 
+    @property
+    def setup_label(self) -> str | None:
+        """Root-cause fix for a real drift bug (Tercera auditoría, recomendación
+        FE-1 de la cuarta auditoría independiente): the frontend used to keep
+        its own copy of this Spanish label in `format.js`'s `SETUP_LABELS`,
+        completely disconnected from this module's own `SETUP_LABELS` - it
+        silently fell behind by three setups (Bloque F-2's weekly tier) until
+        someone happened to notice raw snake_case in the UI. Computing the
+        label server-side, from this single source of truth, and sending it
+        over the wire makes that whole class of bug structurally impossible -
+        the frontend's own map becomes a defensive fallback, never the source
+        of truth."""
+        return SETUP_LABELS.get(self.setup) if self.setup else None
+
 
 def _oversold_bounce_reason(s: TickerSnapshot) -> str | None:
     if s.rsi14 is not None and s.rsi14 <= 35 and s.change_1d is not None and s.change_1d > 0:
