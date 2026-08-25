@@ -9,8 +9,11 @@ Imported as `scripts.factor_ablation_study` - pytest's `pythonpath = ["."]`
 `__init__.py`, so this relies on Python's implicit namespace packages (works
 the same way the script's own `sys.path.insert` + `from app...` imports do)."""
 
+from datetime import date
+
 import numpy as np
 import pandas as pd
+import pytest
 
 import scripts.factor_ablation_study as fas
 from app.services import technical_analysis as ta
@@ -115,12 +118,16 @@ _ALL_TRIGGER_KEYS = (
 )
 
 
-def _sample(ticker: str, date_str: str, fwd_return: float = 0.0, **trigger_overrides: bool) -> fas.FactorSample:
+def _sample(
+    ticker: str, date_str: str, fwd_return: float = 0.0, exit_reason: str = "vertical", bars_held: int = 21,
+    mae_pct: float = -0.01, mfe_pct: float = 0.01, risk_pct: float = 0.02, **trigger_overrides: bool
+) -> fas.FactorSample:
     triggers = dict.fromkeys(_ALL_TRIGGER_KEYS, False)
     triggers.update(trigger_overrides)
     return fas.FactorSample(
         ticker=ticker, date=pd.Timestamp(date_str), fwd_return=fwd_return, demeaned_return=fwd_return,
-        triggers=triggers,
+        triggers=triggers, exit_reason=exit_reason, bars_held=bars_held, mae_pct=mae_pct, mfe_pct=mfe_pct,
+        risk_pct=risk_pct,
     )
 
 
@@ -171,6 +178,87 @@ def test_split_samples_by_date_empty_input_returns_two_empty_lists():
     assert fas.split_samples_by_date([]) == ([], [])
 
 
+# --- compute_setup_outcome_stats (Tercera auditoría, Bloque F-6) -----------
+
+
+def _outcome_sample(
+    ticker: str, exit_reason: str, bars_held: int, mae_pct: float, fwd_return: float, risk_pct: float = 0.02,
+    **trigger_overrides: bool,
+) -> fas.FactorSample:
+    return _sample(
+        ticker, "2024-01-01", fwd_return=fwd_return, exit_reason=exit_reason, bars_held=bars_held,
+        mae_pct=mae_pct, mfe_pct=abs(fwd_return), risk_pct=risk_pct, **trigger_overrides,
+    )
+
+
+def test_compute_setup_outcome_stats_win_rate_counts_target_exits_only():
+    # 18 winners (exit_reason="target"), 12 losers (exit_reason="stop") - a
+    # clean, hand-countable 60% win rate for oversold_bounce.
+    winners = [
+        _outcome_sample(f"W{i}", "target", bars_held=6, mae_pct=-0.01, fwd_return=0.08, setup_oversold_bounce=True)
+        for i in range(18)
+    ]
+    losers = [
+        _outcome_sample(f"L{i}", "stop", bars_held=4, mae_pct=-0.04, fwd_return=-0.04, setup_oversold_bounce=True)
+        for i in range(12)
+    ]
+    stats = fas.compute_setup_outcome_stats(winners + losers)
+    assert stats["oversold_bounce"].n == 30
+    assert stats["oversold_bounce"].win_rate == pytest.approx(0.6)
+
+
+def test_compute_setup_outcome_stats_expectancy_r_uses_each_samples_own_risk_pct():
+    # fwd_return=0.04, risk_pct=0.02 -> exactly +2R for every sample.
+    samples = [
+        _outcome_sample(f"T{i}", "target", bars_held=5, mae_pct=-0.005, fwd_return=0.04, risk_pct=0.02,
+                        setup_breakout_volume=True)
+        for i in range(35)
+    ]
+    stats = fas.compute_setup_outcome_stats(samples)
+    assert stats["breakout_volume"].expectancy_r == pytest.approx(2.0)
+
+
+def test_compute_setup_outcome_stats_median_bars_held():
+    samples = [
+        _outcome_sample(f"T{i}", "vertical", bars_held=bars, mae_pct=-0.01, fwd_return=0.01,
+                        setup_trend_continuation=True)
+        for i, bars in enumerate([3] * 15 + [21] * 15)  # even split -> median exactly between 3 and 21
+    ]
+    stats = fas.compute_setup_outcome_stats(samples)
+    assert stats["trend_continuation"].median_bars_held == pytest.approx(12.0)
+
+
+def test_compute_setup_outcome_stats_mae_p80_reflects_the_tail_not_the_average():
+    # 24 samples with a small MAE, 6 with a much larger one - the 80th
+    # percentile index falls exactly at the boundary between the two groups
+    # (interpolated, so strictly between them), not a plain average.
+    small_mae = [
+        _outcome_sample(f"S{i}", "target", bars_held=5, mae_pct=-0.01, fwd_return=0.02,
+                        setup_pullback_to_support=True)
+        for i in range(24)
+    ]
+    big_mae = [
+        _outcome_sample(f"B{i}", "stop", bars_held=5, mae_pct=-0.15, fwd_return=-0.05,
+                        setup_pullback_to_support=True)
+        for i in range(6)
+    ]
+    stats = fas.compute_setup_outcome_stats(small_mae + big_mae)
+    assert stats["pullback_to_support"].mae_p80_pct > 0.01  # pulled up by the tail
+    assert stats["pullback_to_support"].mae_p80_pct < 0.15  # but not all the way to the extreme
+
+
+def test_compute_setup_outcome_stats_omits_a_setup_with_too_few_samples():
+    samples = [
+        _outcome_sample(f"T{i}", "target", bars_held=5, mae_pct=-0.01, fwd_return=0.02, setup_oversold_bounce=True)
+        for i in range(fas.MIN_GROUP_SIZE - 1)
+    ]
+    assert fas.compute_setup_outcome_stats(samples) == {}
+
+
+def test_compute_setup_outcome_stats_empty_input():
+    assert fas.compute_setup_outcome_stats([]) == {}
+
+
 # --- resolve_universe_tickers ---
 
 
@@ -180,8 +268,12 @@ class _FakeSession:
 
 
 def test_resolve_universe_tickers_default_uses_the_curated_dict():
+    # Tercera auditoría, Bloque F-1: returns ticker -> region now, not a flat
+    # list - filter_samples_by_point_in_time_membership needs to know which
+    # region's snapshot history to check each ticker against.
     result = fas.resolve_universe_tickers(["us"], use_dynamic_universe=False)
-    assert result == sorted(set(universe_tickers("us")))
+    assert set(result) == set(universe_tickers("us"))
+    assert all(region == "us" for region in result.values())
 
 
 def test_resolve_universe_tickers_dynamic_uses_the_point_in_time_snapshot_when_present(monkeypatch):
@@ -189,7 +281,7 @@ def test_resolve_universe_tickers_dynamic_uses_the_point_in_time_snapshot_when_p
     monkeypatch.setattr(fas, "UniverseMembershipRepository", lambda db: object())
     monkeypatch.setattr(fas.dus, "read_dynamic_universe", lambda repo, region: {"AAPL": "Technology"})
     result = fas.resolve_universe_tickers(["us"], use_dynamic_universe=True)
-    assert result == ["AAPL"]
+    assert result == {"AAPL": "us"}
 
 
 def test_resolve_universe_tickers_dynamic_falls_back_to_curated_per_region_with_no_snapshot(monkeypatch):
@@ -202,5 +294,60 @@ def test_resolve_universe_tickers_dynamic_falls_back_to_curated_per_region_with_
         lambda repo, region: {"AAPL": "Technology"} if region == "us" else None,
     )
     result = fas.resolve_universe_tickers(["us", "europe"], use_dynamic_universe=True)
-    assert "AAPL" in result
+    assert result["AAPL"] == "us"
     assert set(universe_tickers("europe")) <= set(result)
+    assert all(result[t] == "europe" for t in universe_tickers("europe"))
+
+
+# --- _resolve_as_of_snapshot_date / filter_samples_by_point_in_time_membership ---
+
+
+def test_resolve_as_of_snapshot_date_picks_the_latest_on_or_before():
+    dates = [date(2024, 1, 1), date(2024, 6, 1), date(2025, 1, 1)]
+    assert fas._resolve_as_of_snapshot_date(dates, date(2024, 7, 1)) == date(2024, 6, 1)
+
+
+def test_resolve_as_of_snapshot_date_exact_match():
+    dates = [date(2024, 1, 1), date(2024, 6, 1)]
+    assert fas._resolve_as_of_snapshot_date(dates, date(2024, 6, 1)) == date(2024, 6, 1)
+
+
+def test_resolve_as_of_snapshot_date_falls_back_to_earliest_when_sample_predates_everything():
+    # The honest limitation: a 2016 sample with the only snapshot on file
+    # dated 2026 gets that 2026 snapshot - no worse than the pre-fix bug,
+    # and correct once earlier snapshots eventually exist.
+    dates = [date(2026, 8, 1)]
+    assert fas._resolve_as_of_snapshot_date(dates, date(2016, 1, 1)) == date(2026, 8, 1)
+
+
+def test_resolve_as_of_snapshot_date_none_when_no_snapshots_at_all():
+    assert fas._resolve_as_of_snapshot_date([], date(2020, 1, 1)) is None
+
+
+def test_filter_samples_by_point_in_time_membership_is_a_no_op_for_curated_universe():
+    samples = [_sample("AAPL", "2020-01-01"), _sample("MSFT", "2020-01-01")]
+    result = fas.filter_samples_by_point_in_time_membership(samples, {}, use_dynamic_universe=False)
+    assert result == samples
+
+
+def test_filter_samples_by_point_in_time_membership_empty_input():
+    assert fas.filter_samples_by_point_in_time_membership([], {"AAPL": "us"}, use_dynamic_universe=True) == []
+
+
+def test_filter_samples_by_point_in_time_membership_drops_a_non_member_ticker(monkeypatch):
+    # AAPL was a member as of the snapshot on/before the sample date; MSFT
+    # was not (e.g. dropped from the index by then, per that snapshot).
+    monkeypatch.setattr(fas, "SessionLocal", lambda: _FakeSession())
+
+    class _FakeRepo:
+        def all_as_of_dates(self, region):
+            return [date(2020, 1, 1)]
+
+    monkeypatch.setattr(fas, "UniverseMembershipRepository", lambda db: _FakeRepo())
+    monkeypatch.setattr(fas.dus, "read_dynamic_universe", lambda repo, region, as_of_date=None: {"AAPL": "Tech"})
+
+    samples = [_sample("AAPL", "2020-06-01"), _sample("MSFT", "2020-06-01")]
+    result = fas.filter_samples_by_point_in_time_membership(
+        samples, {"AAPL": "us", "MSFT": "us"}, use_dynamic_universe=True
+    )
+    assert [s.ticker for s in result] == ["AAPL"]

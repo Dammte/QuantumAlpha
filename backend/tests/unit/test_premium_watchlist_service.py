@@ -1,6 +1,8 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from app.domain.models.ticker_snapshot import TickerSnapshot
@@ -144,15 +146,24 @@ def _snapshot(ticker: str, rs_rating: int = 80, sector: str = "Tecnología") -> 
 
 
 class _StubMarketData:
-    def __init__(self, tickers_with_data: set[str]) -> None:
+    def __init__(
+        self, tickers_with_data: set[str], days_to_earnings_by_ticker: dict[str, int] | None = None
+    ) -> None:
         self.tickers_with_data = tickers_with_data
         self.requested: list[str] = []
+        self._days_to_earnings_by_ticker = days_to_earnings_by_ticker or {}
 
     def get_bulk_ohlcv(self, tickers, start, end):
         self.requested = list(tickers)
         # Minimal stand-in for a DataFrame: subscriptable by column name only.
         fake_frame = {"close": None, "high": None, "low": None, "volume": None, "open": None}
         return {t: fake_frame for t in tickers if t in self.tickers_with_data}
+
+    def get_next_earnings_date(self, ticker):
+        days = self._days_to_earnings_by_ticker.get(ticker)
+        if days is None:
+            return None
+        return date.today() + timedelta(days=days)
 
 
 def test_build_premium_watchlist_caps_candidates_and_approved_per_tier(monkeypatch):
@@ -215,7 +226,9 @@ def test_build_premium_watchlist_isolates_a_candidate_whose_compute_raises(monke
 
     def flaky_compute(close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None,
                       ticker=None):
-        if rs_rating == 99:
+        # Triggered by ticker, not rs_rating (Tercera auditoría, Bloque F-3:
+        # the daily tier no longer passes rs_rating through unconverted).
+        if ticker == "BAD":
             raise ValueError("simulated GARCH/backtest numerical failure")
         return _signals(score=10)
 
@@ -277,6 +290,107 @@ def test_build_premium_watchlist_discards_the_excess_beyond_max_candidates_per_t
     stats = discard_stats[pws.WEEKLY]
     assert stats.prefilter_matches == pws.MAX_CANDIDATES_PER_TIER + 5
     assert stats.analyzed == pws.MAX_CANDIDATES_PER_TIER  # the pre-filter cut, not silently swallowed
+
+
+# --- _dedupe_by_ticker / analyzed-count: Tercera auditoría, Bloque A-5/A-7 --
+
+
+def _watchlist_item(ticker: str, setup: str | None, percentile_score: float | None = 80.0):
+    from app.services import watchlist_service as wl
+
+    return wl.WatchlistItem(
+        ticker=ticker, sector="Tecnología", industry=None, cap_tier="mega", horizon=wl.SHORT_TERM,
+        reasons=[f"reason for {setup}"], snapshot=_snapshot(ticker), setup=setup,
+        percentile_score=percentile_score,
+    )
+
+
+def test_dedupe_by_ticker_keeps_the_first_occurrence_and_collects_the_rest_as_secondary_labels():
+    # `items` arrives already sorted best-first by watchlist_service._sort_key
+    # - the first AAPL entry (breakout_volume) is its highest-scoring match.
+    aapl_primary = _watchlist_item("AAPL", "breakout_volume")
+    aapl_secondary = _watchlist_item("AAPL", "trend_continuation")
+    msft = _watchlist_item("MSFT", "pullback_to_support")
+    deduped = pws._dedupe_by_ticker([aapl_primary, aapl_secondary, msft])
+    assert [item.ticker for item, _ in deduped] == ["AAPL", "MSFT"]
+    aapl_item, aapl_others = deduped[0]
+    assert aapl_item is aapl_primary
+    assert aapl_others == ["trend_continuation"]
+    _, msft_others = deduped[1]
+    assert msft_others == []
+
+
+def test_dedupe_by_ticker_never_duplicates_the_same_setup_twice():
+    # Same setup twice - shouldn't happen in practice, but must not double up.
+    a1 = _watchlist_item("AAPL", "breakout_volume")
+    a2 = _watchlist_item("AAPL", "breakout_volume")
+    deduped = pws._dedupe_by_ticker([a1, a2])
+    assert deduped[0][1] == []
+
+
+def test_dedupe_by_ticker_empty_input_returns_empty():
+    assert pws._dedupe_by_ticker([]) == []
+
+
+def test_build_premium_watchlist_analyzes_a_multi_setup_ticker_only_once(monkeypatch):
+    # The exact production bug: a ticker matching 3 setups (deliberate,
+    # watchlist_service.py's own docstring) used to consume 3 of the
+    # candidate slots and run the entire expensive pipeline 3 times over
+    # identical OHLCV. After dedup it must be analyzed exactly once, and the
+    # other setups it matched must survive as secondary labels, not vanish.
+    multi = [
+        _watchlist_item("AAPL", "breakout_volume", percentile_score=95.0),
+        _watchlist_item("AAPL", "trend_continuation", percentile_score=95.0),
+        _watchlist_item("AAPL", "oversold_bounce", percentile_score=95.0),
+        _watchlist_item("MSFT", "pullback_to_support", percentile_score=70.0),
+    ]
+    monkeypatch.setattr(pws.wl, "build_watchlist", lambda snapshots, horizon=None: multi)
+
+    calls: list[str] = []
+
+    def counting_compute(close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None,
+                          ticker=None):
+        calls.append(ticker)
+        return _signals(score=6)
+
+    monkeypatch.setattr(pws, "compute_core_signals", counting_compute)
+    market_data = _StubMarketData({"AAPL", "MSFT", pws.benchmark_for_region("us")})
+
+    results, discard_stats = pws.build_premium_watchlist([], market_data, tiers=[pws.DAILY])
+
+    assert calls.count("AAPL") == 1  # analyzed once, not 3 times
+    assert calls.count("MSFT") == 1
+    aapl_result = next(r for r in results if r.ticker == "AAPL")
+    assert aapl_result.setup == "breakout_volume"
+    assert set(aapl_result.also_matched_setups) == {"trend_continuation", "oversold_bounce"}
+    stats = discard_stats[pws.DAILY]
+    assert stats.prefilter_matches == 2  # 2 unique tickers, not 4 (ticker, setup) pairs
+    assert stats.analyzed == 2
+
+
+def test_build_premium_watchlist_analyzed_count_excludes_candidates_that_actually_failed(monkeypatch):
+    # Tercera auditoría, Bloque A-7: `analyzed` must reflect candidates that
+    # actually got a usable signal, not every pre-filter candidate fed into
+    # the loop - a compute failure or missing OHLCV must not be silently
+    # counted as "analyzed".
+    good = _snapshot("GOOD", rs_rating=50)
+    bad = _snapshot("BAD", rs_rating=99)
+    missing = _snapshot("MISSING", rs_rating=60)
+    market_data = _StubMarketData({"GOOD", "BAD", pws.benchmark_for_region("us")})  # MISSING absent from OHLCV
+
+    def flaky_compute(close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None,
+                       ticker=None):
+        # Triggered by ticker, not rs_rating (Tercera auditoría, Bloque F-3:
+        # the daily tier no longer passes rs_rating through unconverted).
+        if ticker == "BAD":
+            raise ValueError("simulated failure")
+        return _signals(score=10)
+
+    monkeypatch.setattr(pws, "compute_core_signals", flaky_compute)
+    _, discard_stats = pws.build_premium_watchlist([good, bad, missing], market_data, tiers=[pws.DAILY])
+    stats = discard_stats[pws.DAILY]
+    assert stats.prefilter_matches == 3
+    assert stats.analyzed == 1  # only GOOD actually produced a signal
 
 
 # --- PremiumWatchlistService: per-tier cache TTL -----------------------------
@@ -367,3 +481,195 @@ def test_service_get_premium_watchlist_with_stats_recomputes_only_once(monkeypat
     assert items == []
     assert {s.tier for s in stats} == set(pws.TIERS)
     assert len(calls) == 1  # one recompute, not one per accessor
+
+
+# --- Tercera auditoría, Bloque F-2: weekly tier Monte Carlo horizon --------
+
+
+def test_weekly_tier_uses_the_1m_monte_carlo_horizon_not_3m(monkeypatch):
+    # The weekly tier's own setups (fast-pair cross/imminent cross/Stage 2
+    # leadership) are weeks-not-months signals now - its stop/target
+    # simulation horizon must match that, not the old "3m" (63 sessions) it
+    # ran at when the tier's rules were still months-scale.
+    snapshots = [_snapshot("AAPL")]
+    market_data = _StubMarketData({"AAPL", pws.benchmark_for_region("us")})
+    horizons_seen = []
+
+    def capturing_compute(close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None,
+                           ticker=None):
+        horizons_seen.append(horizon)
+        return _signals(score=6)
+
+    monkeypatch.setattr(pws, "compute_core_signals", capturing_compute)
+    pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.WEEKLY])
+    assert horizons_seen == ["1m"]
+
+
+def test_daily_tier_uses_mansfield_rs_4w_percentile_not_rs_rating(monkeypatch):
+    # Tercera auditoría, Bloque F-3: a candidate with an extreme rs_rating
+    # (3-12 month momentum) but a middling mansfield_rs_4w (4-week relative
+    # strength) must have the *latter* reach compute_core_signals for the
+    # daily tier - the whole point of replacing it.
+    high_rs_weak_mansfield = _snapshot("HIGHRS", rs_rating=99)
+    # Give it a below-average mansfield_rs_4w relative to a second ticker.
+    from dataclasses import replace
+
+    weak_mansfield = replace(high_rs_weak_mansfield, mansfield_rs_4w=-5.0)
+    strong_mansfield = replace(_snapshot("OTHER", rs_rating=10), mansfield_rs_4w=5.0)
+    market_data = _StubMarketData({"HIGHRS", "OTHER", pws.benchmark_for_region("us")})
+
+    rs_rating_seen = {}
+
+    def capturing_compute(close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None,
+                           ticker=None):
+        rs_rating_seen[ticker] = rs_rating
+        return _signals(score=6)
+
+    monkeypatch.setattr(pws, "compute_core_signals", capturing_compute)
+    pws.build_premium_watchlist([weak_mansfield, strong_mansfield], market_data, tiers=[pws.DAILY])
+
+    # HIGHRS has rs_rating=99 but the *weaker* mansfield_rs_4w of the two -
+    # if rs_rating were still being used, it would score higher, not lower.
+    assert rs_rating_seen["HIGHRS"] < rs_rating_seen["OTHER"]
+
+
+def test_weekly_tier_still_uses_rs_rating_unchanged(monkeypatch):
+    from dataclasses import replace
+
+    # rs_rating=42 alone wouldn't qualify for any weekly setup (STAGE2_LEADER
+    # needs >=80) - ma_cross_short="golden" is the qualifying condition here;
+    # rs_rating is only along for the ride, to confirm it passes through.
+    snapshots = [replace(_snapshot("AAPL", rs_rating=42), ma_cross_short="golden")]
+    market_data = _StubMarketData({"AAPL", pws.benchmark_for_region("us")})
+    rs_rating_seen = []
+
+    def capturing_compute(close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None,
+                           ticker=None):
+        rs_rating_seen.append(rs_rating)
+        return _signals(score=6)
+
+    monkeypatch.setattr(pws, "compute_core_signals", capturing_compute)
+    pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.WEEKLY])
+    assert rs_rating_seen == [42]
+
+
+# --- _select_diversified (Tercera auditoría, Bloque F-8) --------------------
+
+
+def _premium_item(ticker, sector, score=6.0, setup=None):
+    return pws.PremiumWatchlistItem(
+        ticker=ticker, sector=sector, industry=None, cap_tier="mega", currency="USD", region="us",
+        tier=pws.DAILY, reasons=["r"], signals=_signals(score=int(score)), premium_score=score,
+        raw_score=int(score), setup=setup,
+    )
+
+
+def test_select_diversified_caps_at_max_per_sector():
+    scored = [
+        (10.0, _premium_item("A", "Tech")),
+        (9.0, _premium_item("B", "Tech")),
+        (8.0, _premium_item("C", "Tech")),
+        (7.0, _premium_item("D", "Tech")),  # 4th Tech name - over the cap, skipped
+        (6.0, _premium_item("E", "Utilities")),
+    ]
+    approved = pws._select_diversified(scored, close_by_ticker={}, max_approved=10, max_per_sector=3)
+    assert [i.ticker for i in approved] == ["A", "B", "C", "E"]
+
+
+def test_select_diversified_skips_a_highly_correlated_candidate():
+    dates = pd.bdate_range("2024-01-01", periods=90)
+    base = pd.Series(100 + np.cumsum(np.random.RandomState(0).normal(0, 1, 90)), index=dates)
+    twin = base * 1.001  # a scalar multiple - identical % returns, correlation exactly 1.0
+    independent = pd.Series(100 + np.cumsum(np.random.RandomState(1).normal(0, 1, 90)), index=dates)
+    close_by_ticker = {"A": base, "B": twin, "C": independent}
+    scored = [
+        (10.0, _premium_item("A", "Tech")),
+        (9.0, _premium_item("B", "Tech")),  # near-identical to A - skipped despite a real score
+        (8.0, _premium_item("C", "Utilities")),
+    ]
+    approved = pws._select_diversified(scored, close_by_ticker, max_approved=10, max_per_sector=3)
+    assert [i.ticker for i in approved] == ["A", "C"]
+
+
+def test_select_diversified_keeps_uncorrelated_names_from_the_same_sector():
+    dates = pd.bdate_range("2024-01-01", periods=90)
+    a = pd.Series(100 + np.cumsum(np.random.RandomState(0).normal(0, 1, 90)), index=dates)
+    b = pd.Series(100 + np.cumsum(np.random.RandomState(2).normal(0, 1, 90)), index=dates)
+    close_by_ticker = {"A": a, "B": b}
+    scored = [(10.0, _premium_item("A", "Tech")), (9.0, _premium_item("B", "Tech"))]
+    approved = pws._select_diversified(scored, close_by_ticker, max_approved=10, max_per_sector=3)
+    assert [i.ticker for i in approved] == ["A", "B"]
+
+
+def test_select_diversified_stops_at_max_approved():
+    scored = [(10.0 - i, _premium_item(f"T{i}", "Tech")) for i in range(5)]
+    approved = pws._select_diversified(scored, close_by_ticker={}, max_approved=2, max_per_sector=10)
+    assert [i.ticker for i in approved] == ["T0", "T1"]
+
+
+def test_select_diversified_missing_close_data_still_counts_against_sector_cap():
+    scored = [(10.0, _premium_item("A", "Tech")), (9.0, _premium_item("B", "Tech"))]
+    approved = pws._select_diversified(scored, close_by_ticker={}, max_approved=10, max_per_sector=1)
+    assert [i.ticker for i in approved] == ["A"]
+
+
+# --- Earnings exclusion (Tercera auditoría, Bloque F-9) ---------------------
+
+
+def test_daily_tier_excludes_a_candidate_with_earnings_inside_the_holding_horizon(monkeypatch):
+    snapshots = [_snapshot("SOON"), _snapshot("SAFE")]
+    market_data = _StubMarketData(
+        {"SOON", "SAFE", pws.benchmark_for_region("us")},
+        days_to_earnings_by_ticker={"SOON": 5, "SAFE": 60},  # SOON inside the 21-day horizon, SAFE well outside
+    )
+    monkeypatch.setattr(
+        pws, "compute_core_signals",
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None, ticker=None:
+        _signals(score=6),
+    )
+    results, _ = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
+    assert [r.ticker for r in results] == ["SAFE"]
+
+
+def test_weekly_tier_keeps_a_candidate_with_earnings_soon_but_marks_it(monkeypatch):
+    from dataclasses import replace
+
+    snapshot = replace(_snapshot("SOON", rs_rating=80), ma_cross_short="golden")
+    market_data = _StubMarketData(
+        {"SOON", pws.benchmark_for_region("us")}, days_to_earnings_by_ticker={"SOON": 5}
+    )
+    monkeypatch.setattr(
+        pws, "compute_core_signals",
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None, ticker=None:
+        _signals(score=6),
+    )
+    results, _ = pws.build_premium_watchlist([snapshot], market_data, tiers=[pws.WEEKLY])
+    assert len(results) == 1
+    assert results[0].days_to_earnings == 5
+
+
+def test_daily_tier_keeps_a_candidate_with_no_earnings_data_at_all(monkeypatch):
+    snapshots = [_snapshot("UNKNOWN_DATE")]
+    market_data = _StubMarketData({"UNKNOWN_DATE", pws.benchmark_for_region("us")})  # no override -> None
+    monkeypatch.setattr(
+        pws, "compute_core_signals",
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None, ticker=None:
+        _signals(score=6),
+    )
+    results, _ = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
+    assert [r.ticker for r in results] == ["UNKNOWN_DATE"]
+    assert results[0].days_to_earnings is None
+
+
+def test_daily_tier_keeps_a_candidate_whose_earnings_already_passed(monkeypatch):
+    snapshots = [_snapshot("JUST_REPORTED")]
+    market_data = _StubMarketData(
+        {"JUST_REPORTED", pws.benchmark_for_region("us")}, days_to_earnings_by_ticker={"JUST_REPORTED": -3}
+    )
+    monkeypatch.setattr(
+        pws, "compute_core_signals",
+        lambda close, high, low, volume, open_, benchmark_close, rs_rating, horizon, vix_close=None, ticker=None:
+        _signals(score=6),
+    )
+    results, _ = pws.build_premium_watchlist(snapshots, market_data, tiers=[pws.DAILY])
+    assert [r.ticker for r in results] == ["JUST_REPORTED"]

@@ -5,7 +5,10 @@ import { formatNumber, formatPercent } from '../../../format'
 // huecos de apertura), trailing Chandelier real, y neto de costes (ver
 // backtest_engine.py). Distinto de BacktestCard.jsx (el walk-forward legacy,
 // que ignora el stop/objetivo) - se muestran juntos, cada uno etiquetado por
-// lo que realmente es, nunca uno sustituyendo al otro en silencio.
+// lo que realmente es, nunca uno sustituyendo al otro en silencio. Tercera
+// auditoría, Bloque H: se renderiza antes que BacktestCard.jsx en
+// TickerAnalysisPanel.jsx (es el método principal), no después - el orden
+// visual ahora coincide con lo que ambos textos ya afirmaban.
 const STRATEGY_LABELS = {
   strategy_fixed: 'Estrategia (stop/objetivo fijos)',
   strategy_trailing: 'Estrategia (trailing Chandelier real)',

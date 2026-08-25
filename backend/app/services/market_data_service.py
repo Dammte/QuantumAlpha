@@ -63,3 +63,6 @@ class MarketDataService:
 
     def get_holders(self, ticker: str) -> HoldersSummary | None:
         return self.provider.get_holders(ticker)
+
+    def get_next_earnings_date(self, ticker: str) -> date | None:
+        return self.provider.get_next_earnings_date(ticker)

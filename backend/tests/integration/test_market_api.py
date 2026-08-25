@@ -1,10 +1,13 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from app.infrastructure.db.models import ComputationCacheORM
+from app.infrastructure.db.models import ComputationCacheORM, UniverseMembershipORM
+from app.services import relationship_map_service as rms
+from app.services import watchlist_service as wl
 from app.services.market_universe import INDUSTRIES, SECTOR_ETFS, universe_tickers
 
 
@@ -246,6 +249,33 @@ def test_watchlist_returns_items_with_reasons(client: TestClient) -> None:
         assert item["sector_rs_rank"] is None or 1 <= item["sector_rs_rank"] <= 99
 
 
+def test_watchlist_items_carry_setup_outcome_stats_when_measured(
+    client: TestClient, monkeypatch, tmp_path
+) -> None:
+    # Tercera auditoría, Bloque F-6: whichever setup a real item matched
+    # (deterministic fake universe - which ticker matches which setup isn't
+    # pinned down here, so this seeds stats for every possible setup and
+    # checks whatever comes back is wired through correctly).
+    from app.services import ablation_report_service as ars
+
+    header = "setup,n,win_rate,expectancy_r,median_bars_held,mae_p80_pct"
+    rows = [f"{setup},50,0.55,0.3,7.0,2.5" for setup in wl.SHORT_TERM_SETUPS + wl.MEDIUM_TERM_SETUPS]
+    (tmp_path / "factor_ablation_report_v3_h21_setup_outcomes.csv").write_text(
+        "\n".join([header, *rows]) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ars, "DOCS_DIR", tmp_path)
+
+    response = client.get("/api/v1/market/watchlist")
+    assert response.status_code == 200
+    items_with_setup = [item for item in response.json()["items"] if item["setup"] is not None]
+    assert items_with_setup  # the fake universe must produce at least one setup match
+    for item in items_with_setup:
+        stats = item["setup_outcome_stats"]
+        assert stats is not None
+        assert stats["setup"] == item["setup"]
+        assert stats["win_rate"] == 0.55
+
+
 def test_watchlist_filters_by_horizon(client: TestClient) -> None:
     response = client.get("/api/v1/market/watchlist", params={"horizon": "short"})
     assert response.status_code == 200
@@ -292,6 +322,11 @@ def test_premium_watchlist_reports_discard_stats_and_setup_type(client: TestClie
             assert item["setup"] in {
                 "oversold_bounce", "breakout_volume", "trend_continuation", "pullback_to_support",
             }
+        elif item["tier"] == "weekly":
+            # Tercera auditoría, Bloque F-2: the weekly tier is now
+            # setup-based too (fast-pair cross/imminent cross/Stage 2
+            # leadership), not the old single blended reasons list.
+            assert item["setup"] in {"fast_golden_cross", "fast_cross_imminent", "stage2_leader"}
         else:
             assert item["setup"] is None
 
@@ -333,6 +368,83 @@ def test_support_resistance_for_known_ticker(client: TestClient) -> None:
 def test_support_resistance_unknown_ticker_returns_404(client: TestClient) -> None:
     response = client.get("/api/v1/market/tickers/UNKNOWN/levels")
     assert response.status_code == 404
+
+
+def test_relationship_map_for_us_ticker_has_all_three_layers(client: TestClient, monkeypatch) -> None:
+    # Layer 3 (EDGAR) hits `rms.requests.get` directly, not the fake yfinance
+    # provider - mocked here the same way test_relationship_map_service.py
+    # mocks it, so this test never touches the real network.
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {
+        "hits": {
+            "hits": [
+                {
+                    "_source": {
+                        "display_names": ["SUPPLIER CORP (0001234567)"],
+                        "file_date": "2025-03-01",
+                        "form": "10-K",
+                    }
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(rms.requests, "get", lambda *a, **k: mock_response)
+
+    response = client.get("/api/v1/market/tickers/AAPL/relationships")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ticker"] == "AAPL"
+    assert body["region"] == "us"
+    assert isinstance(body["statistical"], list)
+    assert isinstance(body["sector_peers"], list)
+    for relation in body["statistical"]:
+        assert relation["ticker"] != "AAPL"
+    for peer in body["sector_peers"]:
+        assert peer["ticker"] != "AAPL"
+    assert body["disclosed_available"] is True
+    assert body["disclosed"] == [
+        {
+            "filer_name": "SUPPLIER CORP (0001234567)",
+            "filer_ticker": None,
+            "form": "10-K",
+            "filing_date": "2025-03-01",
+        }
+    ]
+
+
+def test_relationship_map_europe_region_has_disclosed_unavailable(client: TestClient) -> None:
+    # EDGAR (Layer 3) only runs for region == "us" - no mocking needed here,
+    # a real network call would be a bug if one happened.
+    response = client.get("/api/v1/market/tickers/SAP.DE/relationships", params={"region": "europe"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ticker"] == "SAP.DE"
+    assert body["region"] == "europe"
+    assert body["disclosed"] is None
+    assert body["disclosed_available"] is False
+    assert any(peer["ticker"] != "SAP.DE" for peer in body["sector_peers"])
+
+
+def test_relationship_map_auto_resolves_region_for_a_ticker_searched_without_one(client: TestClient) -> None:
+    # No `region` query param at all - "Analizar activo" style search. Must
+    # infer "europe" from the ticker itself (market_universe.region_of), not
+    # silently default to "us" and look SAP.DE up in the wrong universe.
+    response = client.get("/api/v1/market/tickers/SAP.DE/relationships")
+    assert response.status_code == 200
+    assert response.json()["region"] == "europe"
+
+
+def test_relationship_map_unknown_ticker_returns_empty_layers_not_an_error(client: TestClient) -> None:
+    # UNKNOWN isn't in the universe or in FakeMarketDataProvider.get_ticker_info -
+    # the endpoint should degrade to empty layers, never a 500 or a fabricated result.
+    response = client.get("/api/v1/market/tickers/UNKNOWN/relationships")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["statistical"] == []
+    assert body["sector_peers"] == []
+    assert body["disclosed"] is None
+    assert body["disclosed_available"] is False
 
 
 def test_market_context_has_indices_vix_fear_greed_and_liquidity(client: TestClient) -> None:
@@ -421,3 +533,59 @@ def test_universe_snapshot_recomputes_when_cached_payload_shape_is_stale(
     response = client.get("/api/v1/market/screener", params={"region": "us"})
     assert response.status_code == 200
     assert len(response.json()) > 0  # recomputed the real ~170-ticker universe, not an empty/broken list
+
+
+def test_sector_performance_recomputes_when_cached_payload_shape_is_stale(
+    client: TestClient, db_session: Session
+) -> None:
+    # Tercera auditoría, Bloque A-7: get_sector_performance had no durable
+    # cache at all before this - the only heavy method in
+    # MarketScreenerService without one - so this mirrors the same
+    # stale-shape regression test the sibling caches already have.
+    db_session.add(
+        ComputationCacheORM(
+            cache_key="sector_performance:us",
+            computed_at=datetime.now(UTC),
+            payload=[{"sector": "NOT_ENOUGH_FIELDS"}],  # not a valid SectorPerformance dict
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/market/sectors", params={"region": "us"})
+    assert response.status_code == 200
+    assert len(response.json()) == len(SECTOR_ETFS)  # recomputed the real 11 sectors, not an empty/broken list
+
+
+def test_screener_uses_the_dynamic_universe_when_a_snapshot_is_on_file(
+    client: TestClient, db_session: Session
+) -> None:
+    # Tercera auditoría, Bloque F-1: get_universe_snapshot used to always
+    # read the curated ~216-ticker dict, no matter what
+    # universe_memberships held - the one real consumer of the dynamic,
+    # point-in-time universe was an offline script. Seeding a snapshot with
+    # tickers that don't exist in the curated dict at all is the only way to
+    # prove the live endpoint actually reads it now.
+    db_session.add_all(
+        [
+            UniverseMembershipORM(
+                region="us", ticker=f"DYNTICK{i}", sector="Tecnología", as_of_date=date.today(), source="live"
+            )
+            for i in range(5)
+        ]
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/market/screener", params={"region": "us"})
+    assert response.status_code == 200
+    tickers = {row["ticker"] for row in response.json()}
+    assert "DYNTICK0" in tickers
+    assert not (set(universe_tickers("us")) & tickers)  # the curated list was never consulted
+
+
+def test_sector_performance_persists_to_the_durable_cache(client: TestClient, db_session: Session) -> None:
+    response = client.get("/api/v1/market/sectors", params={"region": "us"})
+    assert response.status_code == 200
+
+    cached = db_session.query(ComputationCacheORM).filter_by(cache_key="sector_performance:us").one_or_none()
+    assert cached is not None
+    assert len(cached.payload) == len(SECTOR_ETFS)

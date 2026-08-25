@@ -8,11 +8,13 @@ from app.api.deps import (
     DbSession,
     get_macro_data_service,
     get_market_context_service,
+    get_market_data_service,
     get_market_screener_service,
     get_premium_watchlist_service,
 )
 from app.domain.models.ticker_snapshot import IndustryPerformance, TickerSnapshot
 from app.schemas.market import (
+    DisclosedRelationResponse,
     FearGreedResponse,
     IndexSnapshotResponse,
     IndustryPerformanceResponse,
@@ -27,9 +29,13 @@ from app.schemas.market import (
     PremiumWatchlistResponse,
     PriceLevelResponse,
     ProximityItemResponse,
+    RelationshipMapResponse,
     SectorForecastResponse,
+    SectorPeerResponse,
     SectorPerformanceResponse,
     SectorRotationResponse,
+    SetupOutcomeStatsResponse,
+    StatisticalRelationResponse,
     SupportResistanceResponse,
     TickerSnapshotResponse,
     TierDiscardStatsResponse,
@@ -41,9 +47,11 @@ from app.schemas.market import (
     WatchlistResponse,
 )
 from app.schemas.quant_analysis import CoreSignalsResponse
+from app.services import ablation_report_service as ars
 from app.services import durable_cache
 from app.services.macro_data_service import MacroDataService
 from app.services.market_context_service import MarketContextService, assess_market_regime
+from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import (
     MarketScreenerService,
     ScreenerFilters,
@@ -52,7 +60,7 @@ from app.services.market_screener_service import (
     get_trend_breadth,
     get_trend_detail,
 )
-from app.services.market_universe import currency_of, industries_by_sector, region_config
+from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of
 from app.services.premium_watchlist_service import (
     DAILY,
     MONTHLY,
@@ -60,8 +68,9 @@ from app.services.premium_watchlist_service import (
     PremiumWatchlistItem,
     PremiumWatchlistService,
 )
+from app.services.relationship_map_service import build_relationship_map
 from app.services.sector_rotation_service import assess_sector_rotation
-from app.services.ticker_analysis_service import CoreTickerSignals
+from app.services.ticker_analysis_service import SIGN_CHECK_HORIZON_DAYS, CoreTickerSignals
 from app.services.watchlist_service import build_watchlist
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -98,6 +107,19 @@ def _to_response(snapshot: TickerSnapshot) -> TickerSnapshotResponse:
     return TickerSnapshotResponse(**data)
 
 
+def _setup_outcome_response(setup: str | None) -> SetupOutcomeStatsResponse | None:
+    """Tercera auditoría, Bloque F-6: the setup's own historical trading
+    outcome (win rate/expectancy in R/median duration/MAE p80), at this
+    portfolio's real 21-session holding horizon (SIGN_CHECK_HORIZON_DAYS,
+    same fixed reference the sign-contradiction check already uses) - `None`
+    for a medium/long-term item (no setup) or a setup the v3 study run
+    hasn't measured (yet)."""
+    if setup is None:
+        return None
+    stats = ars.setup_outcome_by_name(SIGN_CHECK_HORIZON_DAYS).get(setup)
+    return SetupOutcomeStatsResponse(**asdict(stats)) if stats is not None else None
+
+
 def _industry_to_response(perf: IndustryPerformance) -> IndustryPerformanceResponse:
     data = asdict(perf)
     data["leaders"] = [_to_response(leader) for leader in perf.leaders]
@@ -125,6 +147,9 @@ def _premium_item_to_response(item: PremiumWatchlistItem) -> PremiumWatchlistIte
         premium_score=item.premium_score,
         signals=_core_signals_to_response(item.signals),
         setup=item.setup,
+        also_matched_setups=item.also_matched_setups,
+        setup_outcome_stats=_setup_outcome_response(item.setup),
+        days_to_earnings=item.days_to_earnings,
     )
 
 
@@ -210,10 +235,11 @@ def get_market_movers(
 @router.get("/sectors", response_model=list[SectorPerformanceResponse])
 def get_sector_performance(
     service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
+    db: DbSession,
     region: str = RegionQuery,
     refresh: bool = False,
 ) -> list[SectorPerformanceResponse]:
-    performance = service.get_sector_performance(region=region, force_refresh=refresh)
+    performance = service.get_sector_performance(region=region, force_refresh=refresh, db=db)
     return [SectorPerformanceResponse(**asdict(p)) for p in performance]
 
 
@@ -234,6 +260,7 @@ def get_sector_forecast(
 @router.get("/sectors/rotation", response_model=SectorRotationResponse | None)
 def get_sector_rotation(
     service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
+    db: DbSession,
     region: str = RegionQuery,
     refresh: bool = False,
 ) -> SectorRotationResponse | None:
@@ -242,7 +269,7 @@ def get_sector_rotation(
     The cycle-phase model itself was built around the US business cycle; applied
     to Europe it's a reasonable, disclosed approximation (the two cycles are
     closely correlated), not a separately-researched European model."""
-    performance = service.get_sector_performance(region=region, force_refresh=refresh)
+    performance = service.get_sector_performance(region=region, force_refresh=refresh, db=db)
     rotation = assess_sector_rotation(performance)
     return SectorRotationResponse(**asdict(rotation)) if rotation is not None else None
 
@@ -297,7 +324,7 @@ def get_watchlist(
     snapshots = service.get_universe_snapshot(region=region, force_refresh=refresh, db=db)
     items = build_watchlist(snapshots, horizon=horizon)
     sector_rank_by_name = {
-        s.sector: s.rs_rank for s in service.get_sector_performance(region=region, force_refresh=refresh)
+        s.sector: s.rs_rank for s in service.get_sector_performance(region=region, force_refresh=refresh, db=db)
     }
     computed_at = service.get_snapshot_computed_at(region) or datetime.now(UTC)
     return WatchlistResponse(
@@ -313,6 +340,7 @@ def get_watchlist(
                 sector_rs_rank=sector_rank_by_name.get(item.sector),
                 setup=item.setup,
                 percentile_score=item.percentile_score,
+                setup_outcome_stats=_setup_outcome_response(item.setup),
             )
             for item in items
         ],
@@ -405,6 +433,43 @@ def get_support_resistance(
         currency=currency_of(ticker.upper()),
         price=price,
         levels=[PriceLevelResponse(**asdict(lv)) for lv in levels],
+    )
+
+
+@router.get("/tickers/{ticker}/relationships", response_model=RelationshipMapResponse)
+def get_relationship_map(
+    ticker: str,
+    screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
+    market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
+    db: DbSession,
+    region: str | None = Query(default=None, pattern="^(us|europe)$"),
+) -> RelationshipMapResponse:
+    """Tercera auditoría, Bloque G: "que se muestren acciones relacionadas...
+    un mapa completo del proceso para buscar nuevas opciones" - tres capas de
+    fiabilidad decreciente (estadística, sector/industria, menciones en
+    documentos SEC), ver `relationship_map_service.py`.
+
+    Unlike every other market/ endpoint, `region` has no hardcoded default
+    here: this is reached from a free-text "Analizar activo" search (same as
+    `GET /tickers/{ticker}/analysis`), which doesn't necessarily know which
+    universe the ticker belongs to. When the caller omits it, fall back to
+    `market_universe.region_of` - the same best-effort guess already used for
+    exactly this "ticker typed directly, region unknown" case elsewhere
+    (`technical_analysis.closed_bars`, `benchmark_for_ticker`)."""
+    resolved_region = region or region_of(ticker.upper())
+    result = build_relationship_map(ticker.upper(), resolved_region, screener, market_data, db=db)
+    return RelationshipMapResponse(
+        ticker=result.ticker,
+        region=result.region,
+        statistical=[StatisticalRelationResponse(**asdict(r)) for r in result.statistical],
+        sector_peers=[SectorPeerResponse(**asdict(p)) for p in result.sector_peers],
+        disclosed=(
+            [DisclosedRelationResponse(**asdict(d)) for d in result.disclosed]
+            if result.disclosed is not None
+            else None
+        ),
+        disclosed_available=result.disclosed_available,
+        computed_at=result.computed_at,
     )
 
 

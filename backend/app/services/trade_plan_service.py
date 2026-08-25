@@ -123,13 +123,28 @@ def ensure_trade_plan(
     # trailed current_stop, which could easily sit above the new lot's own
     # entry price. Closed explicitly (not just ignored) so it doesn't sit
     # around as a second, orphaned "open" row.
-    if existing is not None:
-        if existing.entry_date == entry_date:
-            return existing
-        repo.close(portfolio_id, ticker)
+    if existing is not None and existing.entry_date == entry_date:
+        return existing
+
     as_of_entry = ohlcv[ohlcv.index.date <= entry_date]
     if as_of_entry.empty:
+        # Tercera auditoría, Bloque A-3: this used to close() the stale
+        # `existing` plan (if any) *before* this check - if the OHLCV history
+        # provided doesn't reach back to entry_date (a DCA'd position whose
+        # earlier lot predates HISTORY_YEARS, or any entry_date/history
+        # mismatch), the stale plan was destroyed and nothing replaced it.
+        # And it never recovered: the next call finds no open plan at all
+        # (already closed), still can't build a replacement (same history
+        # gap), and returns None again - forever. With `plan is None`,
+        # portfolio_risk_service.py skips the entire exit-engine block for
+        # that position - no stop, no trailing, no exit_urgency, invisible to
+        # the exit system. Closing a plan we cannot actually replace is worse
+        # than leaving the stale one in place, so confirm the replacement is
+        # buildable *first*.
         return None
+
+    if existing is not None:
+        repo.close(portfolio_id, ticker)
 
     stop_target = reconstruct_stop_and_target(entry_tx.price, as_of_entry)
     # The quantity held *right now*, not just entry_tx's own quantity - a

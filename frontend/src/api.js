@@ -117,6 +117,12 @@ export const api = {
   getTickerAnalysis: (ticker, { horizon } = {}) =>
     request(`/api/v1/market/tickers/${ticker}/analysis${toQueryString({ horizon })}`),
 
+  // No `region` default here on purpose - omitting it lets the backend infer
+  // the ticker's region itself (`market_universe.region_of`), same as the
+  // free-text "Analizar activo" search this is always called from.
+  getRelationshipMap: (ticker, { region } = {}) =>
+    request(`/api/v1/market/tickers/${ticker}/relationships${toQueryString({ region })}`),
+
   getSignalPerformance: () => request('/api/v1/system/signal-performance'),
 
   getFactorAblation: ({ horizonDays } = {}) =>

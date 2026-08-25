@@ -124,6 +124,7 @@ class TickerAnalysisResponse(BaseModel):
     industry: str | None
     currency: str | None
     market_cap: float | None
+    days_to_earnings: int | None
     price: float
     change_1d: float | None
     change_1w: float | None

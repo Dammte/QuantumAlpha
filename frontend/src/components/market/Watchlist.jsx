@@ -45,7 +45,24 @@ function WatchlistCard({ item }) {
         </div>
         <span className="badge badge--buy">{HORIZON_LABELS[item.horizon]}</span>
       </div>
-      {item.setup && <span className="setup-badge">{SETUP_LABELS[item.setup] ?? item.setup}</span>}
+      {item.setup && (
+        <span className="setup-badge">
+          {SETUP_LABELS[item.setup] ?? item.setup}
+          {item.percentile_score !== null && item.percentile_score !== undefined && (
+            <> · percentil {Math.round(item.percentile_score)} del universo hoy</>
+          )}
+        </span>
+      )}
+      {item.setup_outcome_stats && (
+        <p className="watchlist-card__setup-outcome">
+          Histórico de este setup ({item.setup_outcome_stats.n} casos):{' '}
+          {formatPercent(item.setup_outcome_stats.win_rate)} aciertos, expectancy{' '}
+          {item.setup_outcome_stats.expectancy_r >= 0 ? '+' : ''}
+          {item.setup_outcome_stats.expectancy_r.toFixed(2)}R, duración mediana{' '}
+          {item.setup_outcome_stats.median_bars_held} sesiones, MAE p80 −
+          {item.setup_outcome_stats.mae_p80_pct.toFixed(1)}%
+        </p>
+      )}
       <div className="watchlist-card__stats">
         <span>{formatCurrency(item.snapshot.price, item.snapshot.currency)}</span>
         <span className={item.snapshot.change_1d >= 0 ? 'delta-up' : 'delta-down'}>
@@ -146,7 +163,7 @@ function GeneralWatchlist({ region }) {
               </h4>
               <div className="watchlist-grid">
                 {aligned.map((item) => (
-                  <WatchlistCard key={`${item.ticker}-${item.horizon}`} item={item} />
+                  <WatchlistCard key={`${item.ticker}-${item.horizon}-${item.setup ?? 'none'}`} item={item} />
                 ))}
               </div>
             </section>
@@ -156,7 +173,7 @@ function GeneralWatchlist({ region }) {
             {aligned.length > 0 && <h4 className="watchlist-section__title">Resto de candidatos</h4>}
             <div className="watchlist-grid">
               {rest.map((item) => (
-                <WatchlistCard key={`${item.ticker}-${item.horizon}`} item={item} />
+                <WatchlistCard key={`${item.ticker}-${item.horizon}-${item.setup ?? 'none'}`} item={item} />
               ))}
             </div>
           </section>

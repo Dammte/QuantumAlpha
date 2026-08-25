@@ -136,6 +136,18 @@ class FactorSample:
     fwd_return: float  # raw triple-barrier return, pre-demeaning
     demeaned_return: float  # fwd_return minus its own calendar-month bucket's cross-sectional mean
     triggers: dict[str, bool]
+    # Tercera auditoría, Bloque F-6: backtest_engine.TripleBarrierLabel's own
+    # per-sample fields, propagated instead of discarded - segment_by_setup_type
+    # partitions samples by setup, but until now every statistic computed
+    # within a segment was a recommendation_engine *factor* stat (mean_difference,
+    # IC, ...), never the setup's own realized outcome ("how much do I
+    # typically make with this setup" - see compute_setup_outcome_stats).
+    exit_reason: str  # "stop" | "target" | "vertical" -> win rate
+    bars_held: int  # -> median holding period
+    mae_pct: float  # Maximum Adverse Excursion, <=0 -> where a stop routinely gets tested
+    mfe_pct: float  # Maximum Favorable Excursion, >=0
+    risk_pct: float  # (entry_price - stop) / entry_price at this sample's own entry - "1R" in % terms,
+    # so fwd_return/risk_pct is this sample's own return expressed in R multiples (expectancy_r's input)
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,8 +379,12 @@ def collect_samples_for_ticker(
         if label is None:
             continue
         samples.append(
-            FactorSample(ticker=ticker, date=close.index[i], fwd_return=label.return_pct, demeaned_return=0.0,
-                         triggers=triggers)
+            FactorSample(
+                ticker=ticker, date=close.index[i], fwd_return=label.return_pct, demeaned_return=0.0,
+                triggers=triggers, exit_reason=label.exit_reason, bars_held=label.bars_held,
+                mae_pct=label.mae_pct, mfe_pct=label.mfe_pct,
+                risk_pct=(entry_price - stop) / entry_price,
+            )
         )
     return samples
 
@@ -475,6 +491,48 @@ def segment_by_setup_type(samples: list[FactorSample]) -> dict[str, list[FactorS
     }
 
 
+@dataclass(frozen=True, slots=True)
+class SetupOutcomeStats:
+    """Tercera auditoría, Bloque F-6: "how much do I typically make with this
+    setup", not another read of recommendation_engine's own factors. Every
+    field comes straight from `backtest_engine.label_triple_barrier`'s own
+    per-sample output (`FactorSample.exit_reason`/`bars_held`/`mae_pct`/`risk_pct`),
+    which `segment_by_setup_type`'s samples always had - just never
+    aggregated into this before. Not demeaned (unlike FactorResult) - a win
+    rate/expectancy is meant to read as the setup's own real-world number,
+    not relative to the cross-section's mean that day."""
+
+    setup: str
+    n: int
+    win_rate: float  # fraction with exit_reason == "target" (stop/vertical both count as not-a-win)
+    expectancy_r: float  # mean(fwd_return / risk_pct) - this sample's own ATR-based "1R", not a shared constant
+    median_bars_held: float
+    mae_p80_pct: float  # 80th percentile of |mae_pct| - where a stop this size routinely gets tested
+
+
+def compute_setup_outcome_stats(samples: list[FactorSample]) -> dict[str, SetupOutcomeStats]:
+    """One `SetupOutcomeStats` per setup segment with at least `MIN_GROUP_SIZE`
+    samples - thinner segments are omitted rather than reported on too little
+    data to trust."""
+    stats: dict[str, SetupOutcomeStats] = {}
+    for setup_name, setup_samples in segment_by_setup_type(samples).items():
+        if len(setup_samples) < MIN_GROUP_SIZE:
+            continue
+        wins = sum(1 for s in setup_samples if s.exit_reason == "target")
+        r_multiples = np.array([s.fwd_return / s.risk_pct for s in setup_samples if s.risk_pct > 0])
+        bars_held = np.array([s.bars_held for s in setup_samples])
+        mae_abs_pct = np.abs(np.array([s.mae_pct for s in setup_samples]))
+        stats[setup_name] = SetupOutcomeStats(
+            setup=setup_name,
+            n=len(setup_samples),
+            win_rate=wins / len(setup_samples),
+            expectancy_r=float(np.mean(r_multiples)) if len(r_multiples) else 0.0,
+            median_bars_held=float(np.median(bars_held)),
+            mae_p80_pct=float(np.percentile(mae_abs_pct, 80)),
+        )
+    return stats
+
+
 def split_samples_by_date(
     samples: list[FactorSample], cutoff: pd.Timestamp = TEMPORAL_SPLIT_CUTOFF
 ) -> tuple[list[FactorSample], list[FactorSample]]:
@@ -548,18 +606,24 @@ def analyze_factor(factor: str, samples: list[FactorSample]) -> _RawFactorStats 
     )
 
 
-def resolve_universe_tickers(regions: list[str], use_dynamic_universe: bool) -> list[str]:
-    """The curated `market_universe.py` dict (default, unchanged behavior) or
+def resolve_universe_tickers(regions: list[str], use_dynamic_universe: bool) -> dict[str, str]:
+    """ticker -> region (Tercera auditoría, Bloque F-1: used to return a flat,
+    region-erased list - `filter_samples_by_point_in_time_membership` below
+    needs to know which region's own snapshot history to check each ticker
+    against, since US/Europe are separate, never-blended universes).
+
+    The curated `market_universe.py` dict (default, unchanged behavior) or
     the point-in-time `universe_memberships` table (Segunda auditoría,
     Bloque 5 - `--use-dynamic-universe`) per region, with an explicit,
     logged fallback to the curated list for any region that hasn't been
     refreshed yet (`scripts/refresh_universe_membership.py`) rather than
     silently returning nothing for it."""
-    tickers: list[str] = []
+    ticker_region: dict[str, str] = {}
     if not use_dynamic_universe:
         for region in regions:
-            tickers.extend(universe_tickers(region))
-        return sorted(set(tickers))
+            for ticker in universe_tickers(region):
+                ticker_region[ticker] = region
+        return ticker_region
 
     db = SessionLocal()
     try:
@@ -568,22 +632,27 @@ def resolve_universe_tickers(regions: list[str], use_dynamic_universe: bool) -> 
             dynamic = dus.read_dynamic_universe(repo, region)
             if dynamic is None:
                 print(f"[{region}] no point-in-time snapshot on file - falling back to the curated universe")
-                tickers.extend(universe_tickers(region))
+                for ticker in universe_tickers(region):
+                    ticker_region[ticker] = region
             else:
                 print(f"[{region}] using point-in-time universe: {len(dynamic)} tickers")
-                tickers.extend(dynamic.keys())
+                for ticker in dynamic:
+                    ticker_region[ticker] = region
     finally:
         db.close()
-    return sorted(set(tickers))
+    return ticker_region
 
 
 def download_universe_ohlcv(
     regions: list[str], use_dynamic_universe: bool = False
-) -> tuple[dict[str, pd.DataFrame], dict[str, str], pd.Series | None]:
-    """Returns (ohlcv_by_ticker, benchmark_ticker_by_ticker, vix_close) - the
-    benchmark map and VIX series are shared, single-fetch inputs every
-    ticker's factor computation reuses for the market-regime factors."""
-    tickers = resolve_universe_tickers(regions, use_dynamic_universe)
+) -> tuple[dict[str, pd.DataFrame], dict[str, str], pd.Series | None, dict[str, str]]:
+    """Returns (ohlcv_by_ticker, benchmark_ticker_by_ticker, vix_close,
+    ticker_region) - the benchmark map and VIX series are shared,
+    single-fetch inputs every ticker's factor computation reuses for the
+    market-regime factors. `ticker_region` (new, Bloque F-1) is threaded
+    through to `filter_samples_by_point_in_time_membership`."""
+    ticker_region = resolve_universe_tickers(regions, use_dynamic_universe)
+    tickers = sorted(ticker_region)
     print(f"Universe: {len(tickers)} tickers across {regions}")
 
     benchmark_ticker_by_ticker = {ticker: benchmark_for_ticker(ticker) for ticker in tickers}
@@ -600,7 +669,73 @@ def download_universe_ohlcv(
 
     vix_df = ohlcv_by_ticker.get(VIX_TICKER)
     vix_close = vix_df["close"] if vix_df is not None else None
-    return ohlcv_by_ticker, benchmark_ticker_by_ticker, vix_close
+    return ohlcv_by_ticker, benchmark_ticker_by_ticker, vix_close, ticker_region
+
+
+def _resolve_as_of_snapshot_date(available_dates: list[date], sample_date: date) -> date | None:
+    """The latest snapshot date on or before `sample_date` - or, if the
+    sample predates every snapshot on file (the honest limitation this
+    module's own docstring already discloses: point-in-time data only
+    exists from whenever the first refresh ran forward), the *earliest*
+    available snapshot instead of none at all. Using the earliest known
+    snapshot for a pre-history sample is never worse than the bug this
+    replaces (today's snapshot applied blindly to 10 years of samples) and,
+    unlike that, becomes genuinely point-in-time-correct for every sample
+    date once enough monthly snapshots have accumulated going forward.
+    `None` only when the region has no snapshot on file at all yet."""
+    if not available_dates:
+        return None
+    on_or_before = [d for d in available_dates if d <= sample_date]
+    return max(on_or_before) if on_or_before else min(available_dates)
+
+
+def filter_samples_by_point_in_time_membership(
+    samples: list[FactorSample], ticker_region: dict[str, str], use_dynamic_universe: bool
+) -> list[FactorSample]:
+    """Drops any sample whose ticker was not, per the closest available
+    point-in-time snapshot, a universe member as of that *sample's own*
+    date (Tercera auditoría, Bloque F-1). Without this,
+    `--use-dynamic-universe` only ever checked *today's* snapshot against
+    10 years of historical samples - a ticker dropped from the index in
+    2020 still validated every 2016-2019 sample via today's 2026 snapshot,
+    which reduces survivorship bias by exactly zero. A no-op when
+    `use_dynamic_universe` is False - the curated universe makes no
+    point-in-time claim to check samples against."""
+    if not use_dynamic_universe or not samples:
+        return samples
+
+    db = SessionLocal()
+    try:
+        repo = UniverseMembershipRepository(db)
+        dates_by_region = {region: repo.all_as_of_dates(region) for region in set(ticker_region.values())}
+        members_cache: dict[tuple[str, date], dict[str, str | None]] = {}
+
+        def members_as_of(region: str, sample_date: date) -> dict[str, str | None] | None:
+            as_of = _resolve_as_of_snapshot_date(dates_by_region.get(region, []), sample_date)
+            if as_of is None:
+                return None
+            key = (region, as_of)
+            if key not in members_cache:
+                members_cache[key] = dus.read_dynamic_universe(repo, region, as_of_date=as_of) or {}
+            return members_cache[key]
+
+        kept = []
+        dropped = 0
+        for sample in samples:
+            region = ticker_region.get(sample.ticker)
+            if region is None:
+                kept.append(sample)  # unknown region (shouldn't happen) - never drop blind
+                continue
+            members = members_as_of(region, sample.date.date())
+            if members is None or sample.ticker in members:
+                kept.append(sample)
+            else:
+                dropped += 1
+        if dropped:
+            print(f"  Point-in-time membership filter: dropped {dropped}/{len(samples)} samples")
+        return kept
+    finally:
+        db.close()
 
 
 def _build_results(samples: list[FactorSample], factor_names: list[str]) -> list[FactorResult]:
@@ -720,18 +855,41 @@ def collect_all_samples(
     return all_samples
 
 
+def _setup_outcome_stats_to_frame(stats: dict[str, SetupOutcomeStats]) -> pd.DataFrame:
+    if not stats:
+        return pd.DataFrame(columns=["setup", "n", "win_rate", "expectancy_r", "median_bars_held", "mae_p80_pct"])
+    return pd.DataFrame(
+        [
+            {
+                "setup": s.setup,
+                "n": s.n,
+                "win_rate": round(s.win_rate, 4),
+                "expectancy_r": round(s.expectancy_r, 4),
+                "median_bars_held": s.median_bars_held,
+                "mae_p80_pct": round(s.mae_p80_pct * 100, 3),
+            }
+            for s in stats.values()
+        ]
+    )
+
+
 def build_reports(
     samples: list[FactorSample], horizon_days: int, label: str = ""
-) -> tuple[pd.DataFrame, dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
-    """(pooled_report, regime_reports, setup_reports) for one already-
-    collected sample set - demeans internally, using only this set's own
-    cross-section (see `collect_all_samples`'s docstring on why that must
-    never mix with samples outside the set being measured). Empty frame/dicts
-    when `samples` is empty (e.g. a temporal split with too little history
-    on one side) rather than raising - a thin split is a real, reportable
-    result, not a script failure."""
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame], dict[str, pd.DataFrame], pd.DataFrame]:
+    """(pooled_report, regime_reports, setup_reports, setup_outcome_report)
+    for one already-collected sample set - demeans internally, using only
+    this set's own cross-section (see `collect_all_samples`'s docstring on
+    why that must never mix with samples outside the set being measured).
+    `setup_outcome_report` (Bloque F-6) is the setup's own realized trading
+    outcome (win rate/expectancy in R/median duration/MAE p80) - distinct
+    from `setup_reports`, which measures recommendation_engine *factors*
+    within each setup segment, never the setup's own outcome. Empty
+    frame/dicts when `samples` is empty (e.g. a temporal split with too
+    little history on one side) rather than raising - a thin split is a
+    real, reportable result, not a script failure."""
     if not samples:
-        return _results_to_frame([]), {}, {}
+        empty_outcomes = _setup_outcome_stats_to_frame({})
+        return _results_to_frame([]), {}, {}, empty_outcomes
 
     samples = demean_cross_sectionally(samples)
     # setup_* keys are membership flags for segment_by_setup_type, not
@@ -755,27 +913,9 @@ def build_reports(
             setup_reports[setup_name] = _results_to_frame(results)
         print(f"  [horizon={horizon_days}]{label} setup '{setup_name}': {len(setup_samples)} samples")
 
-    return pooled_report, regime_reports, setup_reports
+    setup_outcome_report = _setup_outcome_stats_to_frame(compute_setup_outcome_stats(samples))
 
-
-def run_study_for_horizon(
-    ohlcv_by_ticker: dict[str, pd.DataFrame],
-    benchmark_ticker_by_ticker: dict[str, str],
-    vix_close: pd.Series | None,
-    horizon_days: int,
-) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
-    """Returns (pooled_report, regime_reports) - the main cross-sectional
-    report (demeaned, with IC and the multivariate coefficient alongside the
-    univariate one), plus one additional report per regime segment (see
-    `segment_by_regime`). Kept as the simple two-tuple existing callers
-    expect; see `__main__` for the fuller version that also saves per-setup
-    and calibrate/validate temporal-split reports (Segunda auditoría,
-    Bloque 5)."""
-    all_samples = collect_all_samples(ohlcv_by_ticker, benchmark_ticker_by_ticker, vix_close, horizon_days)
-    if not all_samples:
-        raise SystemExit("No samples collected - check ticker universe / data availability")
-    pooled_report, regime_reports, _setup_reports = build_reports(all_samples, horizon_days)
-    return pooled_report, regime_reports
+    return pooled_report, regime_reports, setup_reports, setup_outcome_report
 
 
 def _save_report(report: pd.DataFrame, path: str, description: str) -> None:
@@ -814,13 +954,24 @@ if __name__ == "__main__":
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", None)
 
-    ohlcv, benchmark_by_ticker, vix_close = download_universe_ohlcv(args.regions, args.use_dynamic_universe)
+    ohlcv, benchmark_by_ticker, vix_close, ticker_region = download_universe_ohlcv(
+        args.regions, args.use_dynamic_universe
+    )
     for horizon in args.horizons:
         all_samples = collect_all_samples(ohlcv, benchmark_by_ticker, vix_close, horizon)
         if not all_samples:
             raise SystemExit("No samples collected - check ticker universe / data availability")
+        # Tercera auditoría, Bloque F-1: without this, --use-dynamic-universe
+        # only ever checked *today's* snapshot against every historical
+        # sample - see filter_samples_by_point_in_time_membership's own
+        # docstring for why that reduced survivorship bias by exactly zero.
+        all_samples = filter_samples_by_point_in_time_membership(
+            all_samples, ticker_region, args.use_dynamic_universe
+        )
+        if not all_samples:
+            raise SystemExit("No samples survived the point-in-time membership filter")
 
-        pooled_report, regime_reports, setup_reports = build_reports(all_samples, horizon)
+        pooled_report, regime_reports, setup_reports, setup_outcome_report = build_reports(all_samples, horizon)
         print("\n" + "=" * 100)
         print(f"HORIZON = {horizon} trading days (pooled, cross-sectionally demeaned)")
         print("=" * 100)
@@ -840,6 +991,12 @@ if __name__ == "__main__":
                 f"setup segment '{setup_name}'",
             )
 
+        print("\nSetup outcome stats (win rate / expectancy in R / median duration / MAE p80):")
+        print(setup_outcome_report.to_string(index=False))
+        _save_report(
+            setup_outcome_report, f"{args.out_prefix}_h{horizon}_setup_outcomes.csv", "setup outcome stats"
+        )
+
         if args.temporal_split:
             calibrate_samples, validate_samples = split_samples_by_date(all_samples)
             print(
@@ -847,7 +1004,7 @@ if __name__ == "__main__":
                 f"(< {TEMPORAL_SPLIT_CUTOFF.date()}), {len(validate_samples)} validate (>= same date)"
             )
             for split_name, split_samples in (("calibrate", calibrate_samples), ("validate", validate_samples)):
-                split_pooled, split_regime, split_setup = build_reports(
+                split_pooled, split_regime, split_setup, split_outcomes = build_reports(
                     split_samples, horizon, label=f" {split_name}"
                 )
                 _save_report(
@@ -865,3 +1022,8 @@ if __name__ == "__main__":
                         f"{args.out_prefix}_h{horizon}_{split_name}_setup_{setup_name}.csv",
                         f"{split_name} setup segment '{setup_name}'",
                     )
+                _save_report(
+                    split_outcomes,
+                    f"{args.out_prefix}_h{horizon}_{split_name}_setup_outcomes.csv",
+                    f"{split_name} setup outcome stats",
+                )

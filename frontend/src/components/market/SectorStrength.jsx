@@ -37,8 +37,24 @@ function SectorStrength({ region }) {
     () =>
       [...sectors]
         .filter((s) => s[period] !== null && s[period] !== undefined)
-        .sort((a, b) => b[period] - a[period])
-        .map((s) => ({ sector: s.sector, etf: s.etf, value: s[period] * 100 })),
+        .sort((a, b) => {
+          // Tercera auditoría, Bloque H: "fuerza relativa" debe ordenar por
+          // fuerza relativa real (rs_rank - el mismo percentil de periodos
+          // combinados que decide qué sector lidera en el resto de la app),
+          // no por el retorno absoluto del periodo elegido en los botones -
+          // los dos pueden divergir (un sector +5% en un mercado +8% es un
+          // rezagado en RS aunque su barra absoluta sea positiva). El valor
+          // de cada barra sigue siendo el retorno del periodo elegido; solo
+          // el ORDEN cambia. Sin rs_rank en ninguno de los dos (menos de 252
+          // sesiones de historia), se cae de vuelta al retorno absoluto en
+          // vez de un orden arbitrario.
+          const aHasRank = a.rs_rank !== null && a.rs_rank !== undefined
+          const bHasRank = b.rs_rank !== null && b.rs_rank !== undefined
+          if (aHasRank !== bHasRank) return aHasRank ? -1 : 1
+          if (aHasRank && bHasRank) return b.rs_rank - a.rs_rank
+          return b[period] - a[period]
+        })
+        .map((s) => ({ sector: s.sector, etf: s.etf, value: s[period] * 100, rsRank: s.rs_rank })),
     [sectors, period],
   )
 
@@ -47,6 +63,11 @@ function SectorStrength({ region }) {
 
   return (
     <div>
+      <p className="empty-state" style={{ marginBottom: 12 }}>
+        Ordenado por fuerza relativa (RS, percentil combinando varios periodos - visible en el tooltip de cada
+        barra), no por el retorno absoluto del periodo que elijas abajo: pueden divergir, y RS es lo que el resto
+        de la app usa para decidir qué sector lidera.
+      </p>
       <div className="filters-row">
         {PERIODS.map((p) => (
           <button
@@ -88,7 +109,9 @@ function SectorStrength({ region }) {
                     payload.map((p) => ({
                       label: `${p.payload.sector} (${p.payload.etf})`,
                       color: p.value >= 0 ? 'var(--series-1)' : 'var(--series-critical)',
-                      value: formatPercent(p.value / 100, { signed: true }),
+                      value: `${formatPercent(p.value / 100, { signed: true })}${
+                        p.payload.rsRank !== null && p.payload.rsRank !== undefined ? ` · RS ${p.payload.rsRank}` : ''
+                      }`,
                     }))
                   }
                 />

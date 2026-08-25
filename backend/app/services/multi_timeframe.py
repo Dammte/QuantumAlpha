@@ -258,14 +258,19 @@ def combine_timeframes(weekly: TimeframeRead | None, daily: TimeframeRead) -> tu
     conflicts: list[str] = []
     weekly_bias_read = timeframe_bias(weekly)
     if weekly_bias_read == "unknown":
-        # No weekly read at all, or one that exists but isn't confirmed yet -
-        # the daily read stands alone, honestly labeled as such rather than
-        # guessing a bias from too little (or no) weekly data.
-        daily_bias = timeframe_bias(daily)
-        if daily_bias == "bullish":
-            return "bullish_aligned", 1.0, conflicts
-        if daily_bias == "bearish":
-            return "bearish_aligned", -1.0, conflicts
+        # Tercera auditoría, Bloque A-2: no weekly read at all, or one that
+        # exists but isn't confirmed yet - this used to hand the daily read's
+        # own bias straight through as "bullish_aligned"/"bearish_aligned",
+        # the exact same literal string a *genuine* two-timeframe confirmation
+        # produces. exit_engine.py's EXIT_NOW trigger compares that string
+        # directly (`alignment == "bearish_aligned"`), so a daily downtrend on
+        # a ticker with ~1.15-3.85 years of history (an unconfirmed weekly,
+        # not a bearish one) fired a false "alineación bajista total" - the
+        # exact "unknown treated as known-bad" mistake `timeframe_bias`'s own
+        # docstring warns against, just one level up. "Aligned" asserts *two*
+        # timeframes agree; with the weekly unconfirmed there's only one
+        # opinion, so this never returns an aligned label in either
+        # direction, regardless of how confident the lone daily read is.
         return "transitioning", 0.0, conflicts
 
     # weekly_bias_read != "unknown" guarantees weekly is not None from here on.

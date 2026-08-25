@@ -24,18 +24,14 @@ const TIER_META = {
 }
 const TIER_ORDER = ['daily', 'weekly', 'monthly']
 
-function backtestBadge(backtest) {
-  if (!backtest) return { label: 'Historial insuficiente', tone: 'neutral' }
-  const test = backtest.significance_tests.find((t) => t.comparison === 'comprar vs evitar')
-  if (!test) return { label: 'Historial insuficiente', tone: 'neutral' }
-  if (test.significant_at_5pct && test.mean_difference > 0) return { label: 'Ventaja confirmada', tone: 'up' }
-  if (test.significant_at_5pct && test.mean_difference <= 0) return { label: 'Sin ventaja aquí', tone: 'down' }
-  return { label: 'Sin diferencia significativa', tone: 'neutral' }
-}
-
 function PremiumWatchlistCard({ item, onNavigateToTicker }) {
   const { signals } = item
-  const badge = backtestBadge(signals.backtest)
+  // Tercera auditoría, Bloque F-10: the card used to show
+  // signals.recommendation.score (the raw checklist score) - premium_score
+  // is what actually ranks and cuts this list (setup percentile/sector/
+  // entry-timing adjustments folded in), so it's what should be on the
+  // badge. isExceptionalScore's own threshold is calibrated against the raw
+  // score, not the adjusted one - kept as-is on purpose.
   const exceptional = isExceptionalScore(signals.recommendation.score)
 
   return (
@@ -46,10 +42,37 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
           <span className="positions-table__ticker">{item.ticker}</span>
           <span className="watchlist-card__industry">{item.industry ?? item.sector}</span>
         </div>
-        <span className="badge badge--buy">COMPRAR ({signals.recommendation.score >= 0 ? '+' : ''}{signals.recommendation.score})</span>
+        <span className="badge badge--buy">
+          COMPRAR ({item.premium_score >= 0 ? '+' : ''}{item.premium_score.toFixed(1)})
+        </span>
       </div>
 
-      {item.setup && <span className="setup-badge">{SETUP_LABELS[item.setup] ?? item.setup}</span>}
+      {item.days_to_earnings !== null && item.days_to_earnings !== undefined && item.days_to_earnings >= 0 && (
+        <p className="premium-watchlist-card__earnings-warning">
+          ⚠️ Resultados en {item.days_to_earnings} sesiones - riesgo de evento dentro de la ventana del trade
+        </p>
+      )}
+
+      {item.setup && (
+        <span className="setup-badge">
+          {SETUP_LABELS[item.setup] ?? item.setup}
+        </span>
+      )}
+      {item.also_matched_setups?.length > 0 && (
+        <span className="setup-badge setup-badge--secondary">
+          también: {item.also_matched_setups.map((s) => SETUP_LABELS[s] ?? s).join(', ')}
+        </span>
+      )}
+      {item.setup_outcome_stats && (
+        <p className="watchlist-card__setup-outcome">
+          Histórico de este setup ({item.setup_outcome_stats.n} casos):{' '}
+          {formatPercent(item.setup_outcome_stats.win_rate)} aciertos, expectancy{' '}
+          {item.setup_outcome_stats.expectancy_r >= 0 ? '+' : ''}
+          {item.setup_outcome_stats.expectancy_r.toFixed(2)}R, duración mediana{' '}
+          {item.setup_outcome_stats.median_bars_held} sesiones, MAE p80 −
+          {item.setup_outcome_stats.mae_p80_pct.toFixed(1)}%
+        </p>
+      )}
 
       <div className="watchlist-card__stats">
         <span>{formatCurrency(signals.price, item.currency)}</span>
@@ -65,11 +88,6 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
       <ImminentCrossBadge imminentCross={signals.imminent_cross_short_term} shortTerm />
       <CandlestickPatternBadge pattern={signals.candlestick_pattern} />
 
-      <p className="premium-watchlist-card__backtest">
-        <span className={`sector-tier-badge sector-tier-badge--${badge.tone}`}>{badge.label}</span>
-        {signals.backtest && <span className="premium-watchlist-card__backtest-text"> {signals.backtest.interpretation}</span>}
-      </p>
-
       {signals.position_sizing && (
         <p className="premium-watchlist-card__kelly">
           Tamaño de posición sugerido: <strong>{formatPercent(signals.position_sizing.recommended_position_pct)}</strong> de la cartera
@@ -84,7 +102,7 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
 
       {onNavigateToTicker && (
         <button type="button" className="premium-watchlist-card__cta" onClick={() => onNavigateToTicker(item.ticker)}>
-          Ver análisis completo →
+          Ver análisis completo → (incluye el backtest de barrera triple)
         </button>
       )}
     </div>
@@ -141,10 +159,13 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
     <div>
       <p className="empty-state" style={{ marginBottom: 16 }}>
         Una selección reducida (hasta 10 por horizonte) de activos que no solo cumplen una regla técnica, sino que
-        pasaron el mismo análisis completo de "Analizar activo" - GARCH, cadena de Markov, Monte Carlo, backtest
-        walk-forward y tamaño de posición Kelly - y salieron respaldados. No es lo mismo revisar 150 activos que
-        revisar 10 excelentes. Las marcadas con <strong>★ Señal excepcional</strong> tienen una puntuación de 10 o
-        más - muy pocas llegan ahí, y son las que más factores independientes confirman a la vez.
+        pasaron el mismo análisis completo de "Analizar activo" (GARCH, cadena de Markov, Monte Carlo) y superaron el
+        veredicto "comprar". El orden y el corte los decide <strong>premium_score</strong> (el badge superior): la
+        puntuación del checklist ajustada por el percentil del setup, el sector y el momento de entrada - no el
+        tamaño de posición Kelly (que se muestra igual, pero ya no puntúa esta selección) ni el backtest walk-forward
+        (retirado de aquí - ver "Analizar activo" para el backtest de barrera triple). Las marcadas con{' '}
+        <strong>★ Señal excepcional</strong> tienen una puntuación base de 10 o más - muy pocas llegan ahí, y son las
+        que más factores independientes confirman a la vez.
       </p>
 
       <div className="filters-row">
@@ -169,10 +190,26 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
       ) : error ? (
         <div className="banner banner--error">{error}</div>
       ) : sections.length === 0 ? (
-        <p className="empty-state">
-          Ningún activo pasó la barra "premium" ahora mismo para este horizonte - eso es normal y esperado: la lista
-          es selectiva a propósito.
-        </p>
+        <div>
+          <p className="empty-state">
+            Ningún activo pasó la barra "premium" ahora mismo para este horizonte - eso es normal y esperado: la
+            lista es selectiva a propósito.
+          </p>
+          {(() => {
+            // Tercera auditoría, Bloque F-10: exactly the case where knowing
+            // how many were even looked at matters most - "0 aprobados" reads
+            // very differently next to "0 de 0 candidatos" than next to
+            // "0 de 15 candidatos".
+            const stats = discardStats.find((s) => s.tier === tier)
+            if (!stats) return null
+            return (
+              <p className="premium-watchlist__discard-note">
+                {stats.analyzed} de {stats.prefilter_matches} candidatos del prefiltro fueron analizados en
+                detalle - ninguno superó la barra "premium".
+              </p>
+            )
+          })()}
+        </div>
       ) : (
         sections.map((section) => {
           const stats = discardStats.find((s) => s.tier === section.tier)
@@ -190,7 +227,11 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
             )}
             <div className="watchlist-grid">
               {section.items.map((item) => (
-                <PremiumWatchlistCard key={`${item.tier}-${item.ticker}`} item={item} onNavigateToTicker={onNavigateToTicker} />
+                <PremiumWatchlistCard
+                  key={`${item.tier}-${item.ticker}-${item.setup ?? 'none'}`}
+                  item={item}
+                  onNavigateToTicker={onNavigateToTicker}
+                />
               ))}
             </div>
           </section>

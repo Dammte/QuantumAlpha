@@ -71,23 +71,50 @@ def test_no_short_term_match_when_nothing_qualifies():
     assert wl.build_watchlist([snap], horizon=wl.SHORT_TERM) == []
 
 
-def test_medium_term_minervini_pass():
-    snap = _snap(minervini_pass=True)
+# Tercera auditoría, Bloque F-2: the "weekly" tier used to run on Minervini
+# 8/8 + Stage 2/RS>=80 + a golden cross on SMA50/SMA200 - all months-scale
+# signals on a tier meant for a weekly review cadence. Rebuilt on the short
+# pair (ma_cross_short/imminent_cross_short_term), split by setup like the
+# daily tier - see MEDIUM_TERM_SETUPS.
+
+
+def test_medium_term_fast_golden_cross():
+    snap = _snap(ma_cross_short="golden")
     items = wl.build_watchlist([snap], horizon=wl.MEDIUM_TERM)
     assert len(items) == 1
-    assert "Minervini" in items[0].reasons[0]
+    assert items[0].setup == wl.FAST_GOLDEN_CROSS
+    assert "corto plazo" in items[0].reasons[0] or "corto" in items[0].reasons[0]
+
+
+def test_medium_term_fast_cross_imminent():
+    snap = _snap(imminent_cross_short_term=ta.ImminentCross(direction="golden", bars_until=3, r_squared=0.75))
+    items = wl.build_watchlist([snap], horizon=wl.MEDIUM_TERM)
+    assert len(items) == 1
+    assert items[0].setup == wl.FAST_CROSS_IMMINENT
+    assert "3" in items[0].reasons[0]
+
+
+def test_medium_term_no_fast_cross_imminent_when_direction_is_bearish():
+    snap = _snap(imminent_cross_short_term=ta.ImminentCross(direction="death", bars_until=3, r_squared=0.75))
+    assert wl.build_watchlist([snap], horizon=wl.MEDIUM_TERM) == []
 
 
 def test_medium_term_stage2_with_high_rs():
     snap = _snap(stage=ta.Stage.STAGE_2, rs_rating=85)
     items = wl.build_watchlist([snap], horizon=wl.MEDIUM_TERM)
     assert len(items) == 1
+    assert items[0].setup == wl.STAGE2_LEADER
 
 
-def test_medium_term_golden_cross():
-    snap = _snap(ma_cross="golden")
+def test_medium_term_no_match_when_nothing_qualifies():
+    snap = _snap()
+    assert wl.build_watchlist([snap], horizon=wl.MEDIUM_TERM) == []
+
+
+def test_medium_term_ticker_matching_two_setups_appears_twice():
+    snap = _snap(ma_cross_short="golden", stage=ta.Stage.STAGE_2, rs_rating=85)
     items = wl.build_watchlist([snap], horizon=wl.MEDIUM_TERM)
-    assert len(items) == 1
+    assert {i.setup for i in items} == {wl.FAST_GOLDEN_CROSS, wl.STAGE2_LEADER}
 
 
 def test_long_term_sustained_rs_leader():
@@ -103,18 +130,38 @@ def test_long_term_mansfield_positive_in_stage2():
 
 
 def test_ticker_can_appear_in_multiple_horizons():
-    snap = _snap(minervini_pass=True, rsi14=30.0, change_1d=0.02)
+    snap = _snap(ma_cross_short="golden", rsi14=30.0, change_1d=0.02)
     items = wl.build_watchlist([snap])  # all horizons
     horizons_matched = {item.horizon for item in items}
     assert wl.SHORT_TERM in horizons_matched
     assert wl.MEDIUM_TERM in horizons_matched
 
 
-def test_sorted_by_rs_rating_descending():
-    weak = _snap(ticker="WEAK", minervini_pass=True, rs_rating=20)
-    strong = _snap(ticker="STRONG", minervini_pass=True, rs_rating=95)
+def test_medium_term_sorted_by_percentile_score_descending():
+    # Tercera auditoría, Bloque F-2: medium-term items now carry a real
+    # percentile_score (same architecture as the daily tier) - _sort_key
+    # uses it in preference to rs_rating, so ordering is driven by the
+    # cross-sectional percentile fields, not rs_rating directly.
+    weak = _snap(ticker="WEAK", ma_cross_short="golden", mansfield_rs_4w=-5.0)
+    strong = _snap(ticker="STRONG", ma_cross_short="golden", mansfield_rs_4w=5.0)
     items = wl.build_watchlist([weak, strong], horizon=wl.MEDIUM_TERM)
     assert [i.ticker for i in items] == ["STRONG", "WEAK"]
+
+
+def test_medium_term_items_with_no_score_at_all_sort_last_not_first():
+    # Tercera auditoría, Bloque A-4: `sorted(..., reverse=True)` flips a
+    # tuple's leading bool too, so a ticker with neither percentile_score nor
+    # rs_rating used to land at the *top* of the watchlist - rewarding
+    # missing data over a real, if weak, score.
+    no_score = _snap(
+        ticker="NO_SCORE", ma_cross_short="golden", rs_rating=None, change_1w=None, relative_volume=None,
+        relative_volume_trend=None, atr_ratio_50d=None, atr_multiple_sma21=None, range_position_20d=None,
+        mansfield_rs_4w=None, adx14=None,
+    )
+    weak = _snap(ticker="WEAK", ma_cross_short="golden", mansfield_rs_4w=-5.0)
+    strong = _snap(ticker="STRONG", ma_cross_short="golden", mansfield_rs_4w=5.0)
+    items = wl.build_watchlist([no_score, weak, strong], horizon=wl.MEDIUM_TERM)
+    assert [i.ticker for i in items] == ["STRONG", "WEAK", "NO_SCORE"]
 
 
 # --- Segunda auditoría, Bloque 3: setup separation + percentile scoring --------
@@ -167,11 +214,36 @@ def test_short_term_items_carry_a_setup_and_percentile_score():
     assert items[0].percentile_score is not None
 
 
-def test_medium_and_long_term_items_carry_no_setup_or_percentile_score():
-    snap = _snap(minervini_pass=True)
+def test_medium_term_items_carry_a_setup_and_percentile_score():
+    # Tercera auditoría, Bloque F-2: rebuilt on the same setup-type
+    # architecture as the daily tier - no longer the "no setup, no
+    # percentile_score" blended-reasons item medium/long term items used to
+    # both be.
+    snap = _snap(ma_cross_short="golden")
     items = wl.build_watchlist([snap], horizon=wl.MEDIUM_TERM)
+    assert items[0].setup == wl.FAST_GOLDEN_CROSS
+    assert items[0].percentile_score is not None
+
+
+def test_long_term_items_carry_no_setup_or_percentile_score():
+    snap = _snap(rs_rating=95, trend=ta.TrendState.UPTREND, dist_52w_high=-0.05)
+    items = wl.build_watchlist([snap], horizon=wl.LONG_TERM)
     assert items[0].setup is None
     assert items[0].percentile_score is None
+
+
+def test_percentile_rank_by_ticker_ranks_the_given_field():
+    weak = _snap(ticker="WEAK", mansfield_rs_4w=-5.0)
+    strong = _snap(ticker="STRONG", mansfield_rs_4w=5.0)
+    ranks = wl.percentile_rank_by_ticker([weak, strong], "mansfield_rs_4w")
+    assert ranks["STRONG"] > ranks["WEAK"]
+
+
+def test_percentile_rank_by_ticker_skips_tickers_with_a_none_field():
+    has_value = _snap(ticker="HAS_VALUE", mansfield_rs_4w=5.0)
+    missing = _snap(ticker="MISSING", mansfield_rs_4w=None)
+    ranks = wl.percentile_rank_by_ticker([has_value, missing], "mansfield_rs_4w")
+    assert set(ranks) == {"HAS_VALUE"}
 
 
 def test_setup_percentile_scores_ranks_within_the_given_snapshots():
@@ -183,13 +255,44 @@ def test_setup_percentile_scores_ranks_within_the_given_snapshots():
 
 def test_setup_percentile_scores_inverts_change_1w_for_oversold_bounce():
     # A deeper recent drop sets up a bigger bounce - scores *higher* for
-    # oversold_bounce specifically, the opposite of every other setup.
+    # oversold_bounce specifically, unlike a plain (non-inverted) percentile.
     dropped_more = _snap(ticker="DROPPED", change_1w=-0.10, relative_volume=1.0)
     dropped_less = _snap(ticker="FLAT", change_1w=-0.01, relative_volume=1.0)
     oversold_scores = wl.setup_percentile_scores([dropped_more, dropped_less], wl.OVERSOLD_BOUNCE)
-    breakout_scores = wl.setup_percentile_scores([dropped_more, dropped_less], wl.BREAKOUT_VOLUME)
     assert oversold_scores["DROPPED"] > oversold_scores["FLAT"]
-    assert breakout_scores["DROPPED"] < breakout_scores["FLAT"]
+
+
+# --- Tercera auditoría, Bloque F-4: each setup its own field combo/sign ------
+
+
+def test_setup_percentile_scores_breakout_volume_and_trend_continuation_differ():
+    # The exact bug: before this, every setup but oversold_bounce shared the
+    # same 7-field composite, so a ticker matching two of them scored
+    # identically in both (measured: AAPL at 82.14 in both). Built from
+    # genuinely distinct fields now (relative_volume_trend/range_position_20d
+    # for breakout_volume vs. adx14/atr_multiple_sma21/mansfield_rs_4w for
+    # trend_continuation), so differing on fields one setup cares about but
+    # the other doesn't must produce different scores.
+    snap = _snap(ticker="T", relative_volume_trend=2.0, range_position_20d=0.95, adx14=10.0,
+                 atr_multiple_sma21=3.0, mansfield_rs_4w=-5.0)
+    other = _snap(ticker="OTHER")
+    breakout = wl.setup_percentile_scores([snap, other], wl.BREAKOUT_VOLUME)
+    trend = wl.setup_percentile_scores([snap, other], wl.TREND_CONTINUATION)
+    assert breakout["T"] != trend["T"]
+
+
+def test_setup_percentile_scores_trend_continuation_rewards_adx_and_penalizes_overextension():
+    strong_trend = _snap(ticker="STRONG", adx14=35.0, atr_multiple_sma21=0.5)
+    weak_overextended = _snap(ticker="WEAK", adx14=15.0, atr_multiple_sma21=4.0)
+    scores = wl.setup_percentile_scores([strong_trend, weak_overextended], wl.TREND_CONTINUATION)
+    assert scores["STRONG"] > scores["WEAK"]
+
+
+def test_setup_percentile_scores_pullback_rewards_shallow_dip_and_relative_strength():
+    orderly = _snap(ticker="ORDERLY", atr_multiple_sma21=0.3, mansfield_rs_4w=8.0)
+    blown_out = _snap(ticker="BLOWN_OUT", atr_multiple_sma21=5.0, mansfield_rs_4w=-8.0)
+    scores = wl.setup_percentile_scores([orderly, blown_out], wl.PULLBACK_TO_SUPPORT)
+    assert scores["ORDERLY"] > scores["BLOWN_OUT"]
 
 
 def test_setup_percentile_scores_skips_missing_fields_without_crashing():

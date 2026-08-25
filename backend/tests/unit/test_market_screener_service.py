@@ -178,6 +178,7 @@ def _snapshot(
     stage=None,
     minervini_pass=False,
     adx14=None,
+    change_1d=0.0,
 ):
     from app.domain.models.ticker_snapshot import TickerSnapshot
 
@@ -187,7 +188,7 @@ def _snapshot(
         industry=None,
         cap_tier="large",
         price=100.0,
-        change_1d=0.0,
+        change_1d=change_1d,
         change_1w=0.0,
         change_1m=0.0,
         change_3m=0.0,
@@ -302,3 +303,27 @@ def test_snapshot_from_dict_handles_a_snapshot_cached_before_this_field_existed(
     rebuilt = mss._snapshot_from_dict(data)
     assert rebuilt.imminent_cross_short_term is None
     assert rebuilt.ma_cross_short is None
+
+
+# --- apply_filters: None-valued sort field must sort last, not first --------
+
+
+def test_apply_filters_sorts_none_change_1d_last_under_the_default_descending_sort():
+    # Tercera auditoría, Bloque A-4: `sorted(..., reverse=reverse)` flipped
+    # the "is None" boolean too whenever `sort_dir == "desc"` (the dataclass
+    # default) - a row whose sort field is None used to land at the *top* of
+    # the screener instead of the bottom, in front of every real value.
+    no_value = _snapshot("NO_VALUE", change_1d=None)
+    weak = _snapshot("WEAK", change_1d=0.01)
+    strong = _snapshot("STRONG", change_1d=0.05)
+    # default ScreenerFilters: sort_by=change_1d, sort_dir=desc
+    results = mss.apply_filters([no_value, weak, strong], mss.ScreenerFilters())
+    assert [s.ticker for s in results] == ["STRONG", "WEAK", "NO_VALUE"]
+
+
+def test_apply_filters_sorts_none_change_1d_last_under_ascending_sort_too():
+    no_value = _snapshot("NO_VALUE", change_1d=None)
+    weak = _snapshot("WEAK", change_1d=0.01)
+    strong = _snapshot("STRONG", change_1d=0.05)
+    results = mss.apply_filters([no_value, weak, strong], mss.ScreenerFilters(sort_dir="asc"))
+    assert [s.ticker for s in results] == ["WEAK", "STRONG", "NO_VALUE"]

@@ -17,7 +17,7 @@
 // a scored factor) - the badge says so explicitly rather than implying it does.
 const MIN_R2_BY_TERM = { long: 0.7, short: 0.6 }
 
-function ImminentCrossBadge({ imminentCross, shortTerm = false }) {
+function ImminentCrossBadge({ imminentCross, shortTerm = false, verdict = null }) {
   if (!imminentCross) return null
   const isDeath = imminentCross.direction === 'death'
   const tone = isDeath ? 'warn' : 'up'
@@ -32,6 +32,14 @@ function ImminentCrossBadge({ imminentCross, shortTerm = false }) {
     ? `confianza suficiente (R²=${imminentCross.r_squared.toFixed(2)}) para que el motor de salida actuase si ya mantuvieras esta posición`
     : `confianza todavía baja (R²=${imminentCross.r_squared.toFixed(2)}, por debajo de ${minR2.toFixed(2)}) - proyección a vigilar, no a actuar todavía`
 
+  // Tercera auditoría, Bloque H: comprar y vender son preguntas distintas
+  // (docs/quant_methodology.md §8) - un cruce bajista proyectado nunca resta
+  // puntos al veredicto de compra, y eso sigue siendo correcto. Pero cuando
+  // ya tiene confianza suficiente para que el motor de salida actuase, un
+  // lector viendo "COMPRAR" justo encima merece que la tensión se declare
+  // explícitamente, no que quede implícita en un badge separado.
+  const contradictsBuyVerdict = isDeath && clearsActionBar && verdict === 'comprar'
+
   return (
     <p className="entry-timing imminent-cross-badge">
       <span
@@ -45,6 +53,12 @@ function ImminentCrossBadge({ imminentCross, shortTerm = false }) {
       {clearsActionBar && (
         <span className="imminent-cross-badge__action-hint" title={confidenceHint}>
           {isDeath ? '· ya bastaría para subir el stop en una posición abierta' : '· proyección ya fiable'}
+        </span>
+      )}
+      {contradictsBuyVerdict && (
+        <span className="imminent-cross-badge__conflict-note">
+          · el veredicto de compra es por puntuación técnica (checklist), esto es una señal del motor de salida -
+          preguntas distintas, pero con la posición todavía sin abrir vale la pena esperar a que se resuelva
         </span>
       )}
     </p>

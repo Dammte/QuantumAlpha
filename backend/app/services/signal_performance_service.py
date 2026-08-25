@@ -118,15 +118,25 @@ def _stats_for(
 
 
 def _deduplicate_latest_per_ticker_and_day(snapshots: list) -> list:
-    """One snapshot per (ticker, calendar day) - the most recent of that
-    day's - before anything gets aggregated. Without this, every dashboard
-    reload or manual "Actualizar ahora" that lands on a cache miss appends
-    another observation for the exact same ticker/day, so `n` measures how
-    often the page got reloaded, not how many genuinely distinct calls the
-    system made."""
-    latest_by_key: dict[tuple[str, object], object] = {}
+    """One snapshot per (portfolio, ticker, calendar day) - the most recent of
+    that day's - before anything gets aggregated. Without this, every
+    dashboard reload or manual "Actualizar ahora" that lands on a cache miss
+    appends another observation for the exact same ticker/day, so `n`
+    measures how often the page got reloaded, not how many genuinely
+    distinct calls the system made.
+
+    Tercera auditoría, Bloque A-7: the key used to be `(ticker, day)` alone.
+    `PositionSignalSnapshot` is multi-portfolio (the same ticker can be held
+    in more than one portfolio at once) - two portfolios' genuinely distinct
+    snapshots for the same ticker on the same day used to collapse into a
+    single row, silently dropping one portfolio's observation entirely.
+    `RecommendationSnapshot` has no `portfolio_id` at all (it's a per-ticker
+    "Analizar activo" audit trail, never tied to one portfolio) -
+    `getattr(..., None)` keeps that type's original (ticker, day) grouping
+    unchanged."""
+    latest_by_key: dict[tuple, object] = {}
     for snap in snapshots:
-        key = (snap.ticker, snap.created_at.date())
+        key = (getattr(snap, "portfolio_id", None), snap.ticker, snap.created_at.date())
         existing = latest_by_key.get(key)
         if existing is None or snap.created_at > existing.created_at:
             latest_by_key[key] = snap
@@ -186,11 +196,18 @@ def find_false_negatives(
 ) -> list[FalseNegative]:
     """Every `hold` immediately followed by a drop of more than 5% within 10
     sessions - listed by ticker and date, not just counted, so each one can
-    actually be looked at."""
+    actually be looked at.
+
+    Tercera auditoría, Bloque A-7: filters to `hold` signals *before*
+    deduping, not after. Deduping first picks each (portfolio, ticker, day)'s
+    *latest* snapshot regardless of its signal - a `hold` at 09:00 followed
+    by a same-day `watch` at 17:00 used to have the `watch` win the dedupe
+    and then get discarded by the signal filter below, erasing the `hold`
+    reading this function exists to catch (0 false negatives detected for
+    that day, instead of the 1 real one)."""
+    hold_snapshots = [s for s in snapshots if s.signal == FALSE_NEGATIVE_SIGNAL]
     results = []
-    for snap in _deduplicate_latest_per_ticker_and_day(snapshots):
-        if snap.signal != FALSE_NEGATIVE_SIGNAL:
-            continue
+    for snap in _deduplicate_latest_per_ticker_and_day(hold_snapshots):
         close = price_by_ticker.get(snap.ticker)
         if close is None:
             continue

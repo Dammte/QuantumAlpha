@@ -24,7 +24,16 @@ codebase's hot paths, and "no llamadas de red por ticker en los caminos
 calientes" (CLAUDE.md) applies here too even though the cost is compute as
 much as network - a user should never be the one paying for this by chance.
 The read side (`read_dynamic_universe`) is a plain DB read, cheap enough for
-`premium_watchlist_service.py`/`watchlist_service.py` to call directly.
+`market_screener_service.get_universe_snapshot` to call directly - and
+(Tercera auditoría, Bloque F-1) it now actually does, which
+`premium_watchlist_service.py`/`watchlist_service.py` inherit for free since
+both build on that same shared snapshot. Connecting it in one step wasn't
+actually cheap: full indicator computation on the ~1000 constituents this
+table can hold is the real cost that blocked the decision (Segunda
+auditoría, Bloque 3's own note on this), so `get_universe_snapshot` cheaply
+screens the snapshot down to `CHEAP_SCREEN_KEEP_TOP_N` by price/volume alone
+(`apply_cheap_price_volume_screen`, no per-ticker network call) *before*
+computing indicators on any of it.
 """
 
 import io
@@ -177,6 +186,80 @@ def fetch_live_constituents(region: str) -> list[RawConstituent] | None:
         return None
 
 
+MAX_STALE_DAYS = 10  # comfortably covers a weekend + a holiday - beyond this, "still trading" is doubtful
+
+# Tercera auditoría, Bloque F-1: how many survivors the request-time cheap
+# screen below keeps out of the ~1000 dynamic-universe constituents, before
+# get_universe_snapshot runs full indicator computation on any of them - the
+# actual cost this was blocking on was computing SMA/RSI/ADX/etc. on ~1000
+# tickers per cache-miss request, not downloading their OHLCV (one already-
+# batched call either way).
+CHEAP_SCREEN_KEEP_TOP_N = 400
+
+
+def apply_cheap_price_volume_screen(
+    ohlcv_by_ticker: dict[str, pd.DataFrame], tickers: list[str], keep_top_n: int = CHEAP_SCREEN_KEEP_TOP_N
+) -> list[str]:
+    """Request-time (hot-path-safe) pre-screen: keeps the `keep_top_n`
+    tickers by 20-day $ volume among those clearing `MIN_PRICE`, using only
+    the bulk OHLCV every caller already has in memory - no per-ticker
+    network call (unlike `apply_liquidity_filter`'s own `get_ticker_info`
+    market-cap check, which is fine for the monthly *batch* script but would
+    reintroduce exactly the "network call per ticker in a hot path" CLAUDE.md
+    forbids if run here). This is the first of the two stages that make
+    connecting the ~1000-ticker dynamic universe to the live snapshot
+    affordable: full indicator computation (`_build_raw`) then only runs on
+    these survivors, not the full constituent list.
+
+    Known, disclosed limitation: this ranks by *raw local-currency* dollar
+    volume, not FX-normalized - unlike `apply_liquidity_filter` (Bloque A-6),
+    which already FX-corrected the absolute liquidity bar every one of these
+    tickers had to clear during the monthly refresh that put it in
+    `universe_memberships` to begin with. So this never lets an illiquid
+    name back in - it only affects *which* already-liquid 400 survive the
+    truncation when Europe's mixed currencies are ranked against each other
+    by a not-currency-normalized number. Full FX normalization here would
+    need a `get_fx_rate` call per distinct currency in the request path;
+    revisit if the truncation itself (not the liquidity bar) turns out to
+    matter in practice."""
+    candidates: list[tuple[str, float]] = []
+    for ticker in tickers:
+        df = ohlcv_by_ticker.get(ticker)
+        if df is None or df.empty or len(df) < 20:
+            continue
+        recent = df.iloc[-20:]
+        last_price = float(recent["close"].iloc[-1])
+        if last_price < MIN_PRICE:
+            continue
+        dollar_volume_20d = float((recent["close"] * recent["volume"]).mean())
+        if dollar_volume_20d < MIN_DOLLAR_VOLUME_20D:
+            continue
+        candidates.append((ticker, dollar_volume_20d))
+    candidates.sort(key=lambda pair: pair[1], reverse=True)
+    return [ticker for ticker, _ in candidates[:keep_top_n]]
+
+
+def usd_price_and_dollar_volume(
+    df: pd.DataFrame, currency: str, fx_rate: float | None
+) -> tuple[float, float] | None:
+    """Last close and 20-day mean $ volume, converted to USD via `fx_rate`
+    (already resolved by the caller, typically cached per-currency across a
+    whole batch - see `usd_rate` closures in `apply_liquidity_filter` and
+    `market_screener_service.get_universe_snapshot`). `None` when there
+    isn't `>= 20` bars of history, or `fx_rate` is `None` (couldn't be
+    resolved - fail safe, never silently assume USD). Shared by
+    `apply_liquidity_filter` (offline monthly batch, Bloque A-6) and the
+    live-path liquidity gate in `market_screener_service._build_raw`
+    (Tercera auditoría, Bloque F-9), so the two currency-conversion paths
+    never drift apart."""
+    if df is None or df.empty or len(df) < 20 or fx_rate is None:
+        return None
+    recent = df.iloc[-20:]
+    last_price_usd = float(recent["close"].iloc[-1]) * fx_rate
+    dollar_volume_20d_usd = float((recent["close"] * recent["volume"]).mean()) * fx_rate
+    return last_price_usd, dollar_volume_20d_usd
+
+
 def apply_liquidity_filter(
     constituents: list[RawConstituent], market_data: MarketDataService
 ) -> list[RawConstituent]:
@@ -184,26 +267,59 @@ def apply_liquidity_filter(
     market cap >= $1B. A name failing to even fetch (delisted since the
     Wikipedia snapshot, a ticker Yahoo Finance doesn't recognize, a data gap)
     fails the filter the same way a genuinely illiquid one does - it isn't
-    tradeable at this system's scale either way."""
+    tradeable at this system's scale either way.
+
+    Tercera auditoría, Bloque A-6, two real bugs fixed here:
+    - Price/volume were compared against these USD thresholds in whatever
+      currency the ticker itself quotes in - GBp (London Stock Exchange
+      pence) made the filter ~127x laxer (a stock priced in pence reads as a
+      100x larger raw number, on top of GBP itself being roughly 1:1 with
+      USD), SEK/NOK/DKK ~10x laxer, EUR/CHF a smaller but real ~10% gap. A
+      Swedish name doing 20M SEK/day (~$1.9M) used to clear the "$20M" bar
+      outright. `market_data.get_fx_rate` already normalizes GBp/GBX to a
+      proper GBP-based rate (see yfinance_provider.py) - this just has to
+      actually call it. Market cap is deliberately left unconverted here:
+      unlike price/volume, whether yfinance's own `marketCap` field is
+      already USD-normalized for a foreign listing isn't something this
+      audit verified against the live API, and guessing wrong in either
+      direction would silently corrupt the one number left alone - flagged,
+      not fixed blind.
+    - A ticker whose last available bar is stale (delisted or halted since
+      the 45-day window's start) used to pass with rancid prices as long as
+      it had `>= 20` bars *at some point* in that window - recency of the
+      *latest* bar was never checked."""
     if not constituents:
         return []
     tickers = [c.ticker for c in constituents]
     end = date.today()
     start = end - timedelta(days=LIQUIDITY_HISTORY_DAYS)
     ohlcv_by_ticker = market_data.get_bulk_ohlcv(tickers, start, end)
+    stale_cutoff = end - timedelta(days=MAX_STALE_DAYS)
+
+    fx_rate_cache: dict[str, float | None] = {}
+
+    def usd_rate(currency: str) -> float | None:
+        if currency not in fx_rate_cache:
+            fx_rate_cache[currency] = market_data.get_fx_rate(currency, "USD")
+        return fx_rate_cache[currency]
 
     survivors: list[RawConstituent] = []
     for constituent in constituents:
         df = ohlcv_by_ticker.get(constituent.ticker)
         if df is None or df.empty or len(df) < 20:
             continue
-        recent = df.iloc[-20:]
-        last_price = float(recent["close"].iloc[-1])
-        dollar_volume_20d = float((recent["close"] * recent["volume"]).mean())
-        if last_price < MIN_PRICE or dollar_volume_20d < MIN_DOLLAR_VOLUME_20D:
+        if df.index[-1].date() < stale_cutoff:
             continue
         info = market_data.get_ticker_info(constituent.ticker)
         if info is None or info.market_cap is None or info.market_cap < MIN_MARKET_CAP:
+            continue
+
+        fx_rate = usd_rate(info.currency or "USD")
+        usd_values = usd_price_and_dollar_volume(df, info.currency or "USD", fx_rate)
+        if usd_values is None:
+            continue  # can't confirm this clears a USD bar - fail safe, never assume USD silently
+        last_price_usd, dollar_volume_20d_usd = usd_values
+        if last_price_usd < MIN_PRICE or dollar_volume_20d_usd < MIN_DOLLAR_VOLUME_20D:
             continue
         survivors.append(constituent)
     return survivors

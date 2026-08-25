@@ -33,7 +33,11 @@ from app.domain.models.ticker_snapshot import (
     SectorPerformance,
     TickerSnapshot,
 )
+from app.infrastructure.db.repositories.universe_membership_repository import (
+    UniverseMembershipRepository,
+)
 from app.services import durable_cache
+from app.services import dynamic_universe_service as dus
 from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import (
@@ -52,6 +56,14 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL = timedelta(hours=3)
 HISTORY_DAYS = 400  # enough calendar days to cover a 252-trading-day lookback + SMA200
+# get_sector_performance's own window, wider than HISTORY_DAYS above (Tercera
+# auditoría, Bloque A-7): 400 calendar days only clears ~261-265 trading
+# sessions for a European sector ETF (more public holidays than the US, plus
+# whatever data gaps a given fund's own history has) - a ~10-session margin
+# over rs_raw_score's own >252 requirement, easily lost to one thin week and
+# silently dropping that sector from the ranking with no indication why. 500
+# days gives ~333-337 sessions even after holidays - comfortable margin.
+SECTOR_HISTORY_DAYS = 500
 MIN_BARS_REQUIRED = 60
 RS_LEADERS_PER_INDUSTRY = 3
 FORECAST_HISTORY_YEARS = 5  # Markov chain needs 300+ clean daily returns (see markov_chain_model.py) - a
@@ -370,6 +382,17 @@ class MarketScreenerService:
         cached = self._snapshot_cache.get(region)
         return cached[0] if cached is not None else None
 
+    def get_cached_ohlcv(self, region: str = DEFAULT_REGION) -> dict[str, pd.DataFrame]:
+        """Whatever `get_universe_snapshot`'s own OHLCV fetch last cached for
+        this region - `{}` until a real (non-durable-cache) recompute has
+        happened at least once in this process. `get_proximity_matches`
+        already relies on this same cache internally;
+        `relationship_map_service.py` (Tercera auditoría, Bloque G) uses this
+        public getter to compute cross-sectional correlation/lead-lag
+        without a second download."""
+        cached = self._ohlcv_cache.get(region)
+        return cached[1] if cached is not None else {}
+
     def get_universe_snapshot(
         self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
     ) -> list[TickerSnapshot]:
@@ -395,7 +418,26 @@ class MarketScreenerService:
                 self._snapshot_cache[region] = (datetime.now(UTC), snapshots)
                 return snapshots
 
+        # Tercera auditoría, Bloque F-1: the dynamic, point-in-time universe
+        # (dynamic_universe_service.py, Segunda auditoría Bloque 3) had
+        # exactly one caller in the whole repo (the offline ablation script)
+        # despite its own docstring already claiming this was "cheap enough
+        # for premium_watchlist_service.py/watchlist_service.py to call
+        # directly" - true now, false before this. Connected in the two
+        # stages that resolve the cost objection that blocked it: read the
+        # up-to-~1000-ticker snapshot (a plain DB read) if one is on file for
+        # this region, then cheaply screen it down to
+        # CHEAP_SCREEN_KEEP_TOP_N by price/volume alone (no per-ticker
+        # network call) *before* running full indicator computation - the
+        # cost that actually worried anyone was computing SMA/RSI/ADX/etc. on
+        # ~1000 tickers, never downloading them (one already-batched call
+        # either way). Falls back to the curated dict, exactly as before,
+        # when no snapshot exists yet for this region.
         ticker_sectors = all_sector_tickers(region)
+        if db is not None:
+            dynamic = dus.read_dynamic_universe(UniverseMembershipRepository(db), region)
+            if dynamic is not None:
+                ticker_sectors = dynamic
         ticker_industries = all_industry_tickers(region)
         benchmark_ticker = benchmark_for_region(region)
         start, end = self._date_range()
@@ -405,10 +447,41 @@ class MarketScreenerService:
         benchmark_close = ohlcv_by_ticker.get(benchmark_ticker)
         benchmark_close_series = benchmark_close["close"] if benchmark_close is not None else None
 
+        if len(ticker_sectors) > dus.CHEAP_SCREEN_KEEP_TOP_N:
+            survivors = dus.apply_cheap_price_volume_screen(ohlcv_by_ticker, list(ticker_sectors.keys()))
+            logger.info(
+                "Universe snapshot: cheap screen kept %d/%d dynamic-universe tickers (region=%s)",
+                len(survivors), len(ticker_sectors), region,
+            )
+            ticker_sectors = {t: ticker_sectors[t] for t in survivors}
+
+        # Tercera auditoría, Bloque F-9: until now, liquidity was only ever
+        # checked in the offline monthly refresh
+        # (dynamic_universe_service.apply_liquidity_filter) - which never
+        # ran at all for the curated-fallback case (no snapshot on file
+        # yet for this region), so a curated ticker that's gone illiquid
+        # since it was hand-picked had nothing checking it here. Reuses the
+        # OHLCV every ticker already has in memory - no new network call
+        # except a per-*currency* FX rate, cached once across this whole
+        # snapshot (not per ticker) exactly like apply_liquidity_filter's
+        # own cache.
+        fx_rate_cache: dict[str, float | None] = {}
+
+        def usd_rate(currency: str) -> float | None:
+            if currency == "USD":
+                return 1.0
+            if currency not in fx_rate_cache:
+                fx_rate_cache[currency] = self.market_data.get_fx_rate(currency, "USD")
+            return fx_rate_cache[currency]
+
         raw_tickers: list[_RawTicker] = []
         for ticker, sector in ticker_sectors.items():
             df = ohlcv_by_ticker.get(ticker)
             if df is None:
+                continue
+            currency = currency_of(ticker)
+            usd_values = dus.usd_price_and_dollar_volume(df, currency, usd_rate(currency))
+            if usd_values is None or usd_values[0] < dus.MIN_PRICE or usd_values[1] < dus.MIN_DOLLAR_VOLUME_20D:
                 continue
             # One ticker's malformed data (a NaN run, a stock split artifact,
             # an unexpected data shape from the provider) must never take the
@@ -482,7 +555,7 @@ class MarketScreenerService:
         return sorted(matches, key=lambda m: abs(m["level"].distance_pct))
 
     def get_sector_performance(
-        self, region: str = DEFAULT_REGION, force_refresh: bool = False
+        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
     ) -> list[SectorPerformance]:
         cached = self._sector_cache.get(region)
         if not force_refresh and cached is not None:
@@ -490,8 +563,25 @@ class MarketScreenerService:
             if datetime.now(UTC) - cached_at < CACHE_TTL:
                 return performance
 
+        # Tercera auditoría, Bloque A-7: this was the one heavy method in
+        # this class with no durable-cache fallback - every redeploy paid a
+        # synchronous 11-ETF download on the first /sectors, /sectors/rotation
+        # or watchlist sector_rs_rank call, unlike get_universe_snapshot right
+        # above, which already had this. `SectorPerformance`'s fields are all
+        # plain str/float/int/None - dataclasses.asdict/**kwargs round-trips
+        # it with no custom (de)serialization needed, unlike TickerSnapshot.
+        if db is not None and not force_refresh:
+            sector_key = f"sector_performance:{region}"
+            performance = durable_cache.load_fresh_as(
+                db, sector_key, CACHE_TTL, lambda payload: [SectorPerformance(**p) for p in payload]
+            )
+            if performance is not None:
+                self._sector_cache[region] = (datetime.now(UTC), performance)
+                return performance
+
         sector_etfs = region_config(region).sector_etfs
-        start, end = self._date_range()
+        end = date.today()
+        start = end - timedelta(days=SECTOR_HISTORY_DAYS)
         ohlcv_by_ticker = self.market_data.get_bulk_ohlcv(list(sector_etfs.values()), start, end)
 
         closes_by_sector: dict[str, pd.Series] = {}
@@ -506,6 +596,12 @@ class MarketScreenerService:
         # sectors are actually leading right now" read from price alone.
         rs_raw_by_sector = {sector: ta.rs_raw_score(close) for sector, close in closes_by_sector.items()}
         rs_candidates = [sector for sector, rs in rs_raw_by_sector.items() if rs is not None]
+        excluded = [sector for sector in closes_by_sector if sector not in rs_candidates]
+        if excluded:
+            logger.info(
+                "get_sector_performance: %s excluded from RS ranking (region=%s) - fewer than 252 trading "
+                "sessions of history within the %d-day window", excluded, region, SECTOR_HISTORY_DAYS,
+            )
         rs_percentiles = _percentile_rank([rs_raw_by_sector[sector] for sector in rs_candidates])
         rs_rank_by_sector = dict(zip(rs_candidates, rs_percentiles, strict=True))
 
@@ -526,6 +622,8 @@ class MarketScreenerService:
             )
 
         self._sector_cache[region] = (datetime.now(UTC), performance)
+        if db is not None:
+            durable_cache.save(db, f"sector_performance:{region}", [asdict(p) for p in performance])
         return performance
 
     def get_sector_forecast(
@@ -724,7 +822,22 @@ def apply_filters(snapshots: list[TickerSnapshot], filters: ScreenerFilters) -> 
 
     sort_key = filters.sort_by
     reverse = filters.sort_dir == "desc"
-    results = sorted(results, key=lambda s: (getattr(s, sort_key) is None, getattr(s, sort_key)), reverse=reverse)
+
+    def _sort_key(s: TickerSnapshot) -> tuple[bool, float]:
+        # Ascending key, direction encoded via negation instead of
+        # `sorted(reverse=...)` - reverse=True (the "desc" default) flips a
+        # tuple's leading bool too, which used to put every row with a None
+        # sort field at the *top* of the default descending screener instead
+        # of the bottom (Tercera auditoría, Bloque A-4, same bug as
+        # watchlist_service._sort_key). Missing data sorts last regardless of
+        # sort direction - never regardless of "desc" being the more
+        # dangerous default.
+        value = getattr(s, sort_key)
+        if value is None:
+            return (True, 0.0)
+        return (False, -value if reverse else value)
+
+    results = sorted(results, key=_sort_key)
     return results
 
 

@@ -92,3 +92,40 @@ def test_only_sectors_with_a_rank_are_considered():
 
     assert summary is not None
     assert set(summary.leaders) == {"Energía", "Materiales"}
+
+
+# --- Tercera auditoría, Bloque A-7 ------------------------------------------
+
+
+def test_leaders_and_laggards_never_overlap_with_a_thin_ranked_universe():
+    # Only 4 sectors have a rank at all (top_n=3) - a plain ranked[-3:] would
+    # re-include 2 of the 3 leaders as "laggards" too. The laggard slice
+    # must shrink instead of double-counting.
+    ranks = {"Tecnología": 90, "Financiero": 80, "Salud": 70, "Energía": 60}
+    summary = assess_sector_rotation(_performance(ranks), top_n=3)
+
+    assert summary is not None
+    assert summary.leaders == ["Tecnología", "Financiero", "Salud"]
+    assert summary.laggards == ["Energía"]
+    assert not (set(summary.leaders) & set(summary.laggards))
+
+
+def test_cycle_phase_is_none_on_a_genuine_three_way_tie_not_insertion_order():
+    # Tecnología (expansión media), Energía (expansión tardía) and
+    # Inmobiliario (recuperación temprana) each contribute exactly one
+    # sector to a *different* phase - a genuine 3-way tie at overlap=1. The
+    # old `>` comparison always resolved this to "recuperación temprana"
+    # (first in CYCLE_PHASE_LEADERS, and the only phase with 4 sectors in
+    # its set instead of 3 - a second, compounding bias) regardless of which
+    # phase the data actually favors.
+    ranks = {
+        "Tecnología": 90, "Energía": 80, "Inmobiliario": 70,
+        "Comunicación": 10, "Materiales": 8, "Financiero": 5,
+    }
+    summary = assess_sector_rotation(_performance(ranks), top_n=3)
+
+    assert summary is not None
+    assert set(summary.leaders) == {"Tecnología", "Energía", "Inmobiliario"}
+    assert summary.cycle_phase is None
+    assert summary.cycle_confidence == 0.0
+    assert summary.cycle_description is None

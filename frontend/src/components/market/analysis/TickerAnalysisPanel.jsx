@@ -19,6 +19,7 @@ import MonteCarloChart from './MonteCarloChart'
 import BacktestCard from './BacktestCard'
 import TripleBarrierBacktestCard from './TripleBarrierBacktestCard'
 import PositionSizingCard from './PositionSizingCard'
+import RelationshipMapCard from './RelationshipMapCard'
 
 const REGIME_LABELS = {
   tendencial: 'Tendencial',
@@ -37,6 +38,7 @@ const TABS = [
   { key: 'charts', label: 'Gráficos' },
   { key: 'fundamentals', label: 'Fundamentales' },
   { key: 'seasonality', label: 'Estacionalidad' },
+  { key: 'relationships', label: 'Relaciones' },
 ]
 
 function TickerAnalysisPanel({ presetTicker } = {}) {
@@ -46,6 +48,9 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [tab, setTab] = useState('summary')
+  const [relationshipMap, setRelationshipMap] = useState(null)
+  const [relLoading, setRelLoading] = useState(false)
+  const [relError, setRelError] = useState(null)
 
   const search = async (value, selectedHorizon = horizon) => {
     const symbol = value.trim().toUpperCase()
@@ -80,6 +85,33 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetTicker?.key])
 
+  // Lazy, per-ticker: the relationship map has its own (slower, EDGAR-backed)
+  // endpoint, so it's only fetched once the user actually opens that tab, not
+  // on every "Analizar" click - and cached per ticker so flipping tabs back
+  // and forth doesn't refetch.
+  useEffect(() => {
+    if (tab !== 'relationships' || !analysis) return
+    if (relationshipMap && relationshipMap.ticker === analysis.ticker) return
+    let cancelled = false
+    async function loadRelationships() {
+      setRelLoading(true)
+      setRelError(null)
+      try {
+        const map = await api.getRelationshipMap(analysis.ticker)
+        if (!cancelled) setRelationshipMap(map)
+      } catch (err) {
+        if (!cancelled) setRelError(err.message)
+      } finally {
+        if (!cancelled) setRelLoading(false)
+      }
+    }
+    loadRelationships()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, analysis?.ticker])
+
   const handleSubmit = (e) => {
     e.preventDefault()
     search(ticker)
@@ -89,6 +121,8 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
     setTicker('')
     setAnalysis(null)
     setError(null)
+    setRelationshipMap(null)
+    setRelError(null)
   }
 
   const handleHorizonChange = (value) => {
@@ -218,17 +252,24 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
                   currency={analysis.currency ?? 'USD'}
                   price={analysis.price}
                   stopLoss={analysis.recommendation.stop_loss}
+                  verdict={analysis.recommendation.verdict}
+                  monteCarlo={analysis.monte_carlo}
                 />
               </section>
 
+              {/* Tercera auditoría, Bloque H: el de triple-barrera es el método
+                  principal (stop/objetivo/trailing real, neto de costes) - va
+                  primero. El walk-forward legacy queda como referencia
+                  secundaria debajo, ya no antes del que el propio texto de
+                  BacktestCard.jsx llama "la lectura honesta". */}
               <section className="panel panel--nested">
-                <h3>Validación histórica del sistema (backtest walk-forward)</h3>
-                <BacktestCard backtest={analysis.backtest} />
+                <h3>Backtest de triple-barrera (método principal: stop/objetivo/trailing real, neto de costes)</h3>
+                <TripleBarrierBacktestCard backtest={analysis.triple_barrier_backtest} />
               </section>
 
               <section className="panel panel--nested">
-                <h3>Backtest de triple-barrera (stop/objetivo/trailing real, neto de costes)</h3>
-                <TripleBarrierBacktestCard backtest={analysis.triple_barrier_backtest} />
+                <h3>Validación histórica del sistema (backtest walk-forward, secundario)</h3>
+                <BacktestCard backtest={analysis.backtest} />
               </section>
             </>
           )}
@@ -325,6 +366,22 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
                 <HistoricalAnalogsCard analogs={analysis.historical_analogs} />
               </section>
             </div>
+          )}
+
+          {tab === 'relationships' && (
+            <section className="panel panel--nested">
+              <h3>Mapa de relaciones</h3>
+              <p className="ticker-analysis__section-hint">
+                Activos relacionados con {analysis.ticker}, en tres capas ordenadas de más a menos fiable - cada
+                nombre es un candidato en el que se puede entrar directamente, no solo una etiqueta.
+              </p>
+              <RelationshipMapCard
+                relationshipMap={relationshipMap}
+                loading={relLoading}
+                error={relError}
+                onSelectTicker={search}
+              />
+            </section>
           )}
         </div>
       )}

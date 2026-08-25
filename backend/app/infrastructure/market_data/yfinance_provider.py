@@ -214,3 +214,23 @@ class YFinanceProvider(MarketDataProvider):
             pct_held_by_insiders=pct_insiders,
             top_institutional_holders=top_holders,
         )
+
+    def get_next_earnings_date(self, ticker: str) -> date | None:
+        try:
+            calendar = yf.Ticker(ticker).calendar
+        except Exception:
+            logger.exception("Failed to fetch earnings calendar for %s", ticker)
+            return None
+        if not calendar:
+            return None
+        # yfinance's own shape has drifted across versions - a dict with an
+        # "Earnings Date" key (a list of one or two date/Timestamp objects,
+        # since an unconfirmed date is often reported as a range) is the
+        # current one; handled defensively rather than assumed.
+        raw_dates = calendar.get("Earnings Date") if isinstance(calendar, dict) else None
+        if not raw_dates:
+            return None
+        if not isinstance(raw_dates, list | tuple):
+            raw_dates = [raw_dates]
+        parsed = [d if isinstance(d, date) else pd.Timestamp(d).date() for d in raw_dates if d is not None]
+        return min(parsed) if parsed else None

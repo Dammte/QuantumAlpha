@@ -21,15 +21,19 @@ history barely moves it.
 """
 
 import logging
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
+import pandas as pd
+
 from app.domain.models.ticker_snapshot import TickerSnapshot
+from app.services import portfolio_construction_service as pcs
 from app.services import watchlist_service as wl
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import DEFAULT_REGION, VIX_TICKER, benchmark_for_region, currency_of
-from app.services.ticker_analysis_service import CoreTickerSignals, compute_core_signals
+from app.services.ticker_analysis_service import SIGN_CHECK_HORIZON_DAYS, CoreTickerSignals, compute_core_signals
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +53,13 @@ CACHE_TTL = {
 # Which cheap pre-filter horizon (watchlist_service.py) and which Monte Carlo
 # horizon preset (ticker_analysis_service.py) each premium tier maps onto.
 _PREFILTER_HORIZON = {DAILY: wl.SHORT_TERM, WEEKLY: wl.MEDIUM_TERM, MONTHLY: wl.LONG_TERM}
-_MONTE_CARLO_HORIZON = {DAILY: "1m", WEEKLY: "3m", MONTHLY: "6m"}
+# Tercera auditoría, Bloque F-2: WEEKLY used to run its Monte Carlo at "3m"
+# (63 sessions) - the weekly tier's own setups (fast-pair cross/imminent
+# cross/Stage 2 leadership, see watchlist_service.MEDIUM_TERM_SETUPS) are
+# now short-pair-driven, weeks-not-months signals, so its stop/target
+# simulation horizon should match that, not the old months-scale rules it
+# replaced.
+_MONTE_CARLO_HORIZON = {DAILY: "1m", WEEKLY: "1m", MONTHLY: "6m"}
 
 MAX_CANDIDATES_PER_TIER = 15  # how many cheap pre-filter matches get the expensive full analysis
 MAX_APPROVED_PER_TIER = 10  # size cap of the final "premium" list - a handful of excellent names, not a scan
@@ -78,6 +88,24 @@ SETUP_PERCENTILE_BONUS_WEIGHT = 2.0
 # EXTENDED_ENTRY_PENALTY, not the same rigor bar as the score itself.
 STRONG_SECTOR_RS_THRESHOLD = 70
 STRONG_SECTOR_BONUS = 1.0
+
+# Tercera auditoría, Bloque F-8: STRONG_SECTOR_BONUS actively rewards piling
+# into whichever sector is leading right now (+1 to *every* candidate in it)
+# with nothing on the other side capping how much of the final list that
+# sector could take - for a 5-21 day hold, 8 semiconductor names correlated
+# at 0.85 with each other are one position with eight tickers, not eight
+# independent bets. MAX_PER_SECTOR is the countervailing force
+# STRONG_SECTOR_BONUS needed and never had: a hard cap on the *approved*
+# list, applied in the same greedy pass as the correlation cut below, is a
+# clearer, more auditable "compensation" than a second soft score penalty
+# stacked on top of a bonus that already isn't ablation-calibrated.
+MAX_PER_SECTOR = 3
+# Stricter than portfolio_construction_service.HIGH_CORRELATION_THRESHOLD
+# (0.8) on purpose - that one flags an existing portfolio risk after the
+# fact; this one decides whether a *candidate* even earns a slot in the
+# first place, a higher bar for a name that hasn't been bought yet.
+MAX_CANDIDATE_CORRELATION = 0.7
+CORRELATION_RETURNS_WINDOW = 60  # trading days - matches portfolio_construction_service.CORRELATION_WINDOW
 # entry_timing.py is deliberately informational for the core recommendation -
 # "extended" doesn't mean "avoid", it means the easy, low-risk part of the
 # move likely already happened, which is a genuinely different question from
@@ -114,9 +142,25 @@ class PremiumWatchlistItem:
     # distinction matters.
     raw_score: int
     # The setup type this candidate matched (see watchlist_service.py) -
-    # `None` for the weekly/monthly tiers, which aren't split into setup
-    # types. Segunda auditoría, Bloque 3.
+    # `None` for the monthly tier only, which isn't split into setup types
+    # (Segunda auditoría, Bloque 3; the weekly tier got its own setups in
+    # Tercera auditoría, Bloque F-2).
     setup: str | None = None
+    # Every *other* setup this same ticker also matched, folded in here
+    # instead of each one consuming its own separate candidate slot and
+    # re-running the entire expensive pipeline again (Tercera auditoría,
+    # Bloque A-5) - see `_dedupe_by_ticker`.
+    also_matched_setups: list[str] = field(default_factory=list)
+    # Tercera auditoría, Bloque F-9: `None` when the provider has no
+    # earnings-calendar data for this ticker (never a fabricated "no
+    # earnings risk"). The daily tier excludes a candidate outright when
+    # this falls inside SIGN_CHECK_HORIZON_DAYS (see build_premium_watchlist)
+    # rather than just flagging it - a breakout 3 days before earnings is a
+    # different trade, not the same one with an asterisk. Other tiers keep
+    # the candidate and only mark it, since their own effective horizon is
+    # already long enough that one earnings print mid-trade is normal, not
+    # a reason to exclude.
+    days_to_earnings: int | None = None
 
 
 def _approval_score(
@@ -176,6 +220,84 @@ class TierDiscardStats:
     approved: int  # of the analyzed ones, how many made the final list (<= MAX_APPROVED_PER_TIER)
 
 
+def _dedupe_by_ticker(items: list[wl.WatchlistItem]) -> list[tuple[wl.WatchlistItem, list[str]]]:
+    """(best_item, other_setups_also_matched) per unique ticker - Tercera
+    auditoría, Bloque A-5. A ticker matching several setups is deliberate
+    (watchlist_service.py's own docstring: not mutually exclusive) and
+    `items` arrives already sorted best-first (`wl._sort_key`), so the first
+    occurrence of a ticker is its highest-scoring match; every subsequent
+    occurrence is the *same* ticker under a different setup label, not a
+    distinct candidate. Before this, each one consumed its own slot in
+    `MAX_CANDIDATES_PER_TIER`/`MAX_APPROVED_PER_TIER` and re-ran the entire
+    expensive per-ticker pipeline (GARCH+Markov+Monte Carlo+walk-forward+
+    Kelly) again on identical data - measured 3x on a real universe (one
+    ticker matching breakout_volume + trend_continuation + oversold_bounce).
+    The other setups aren't dropped, just folded into a secondary label list
+    instead of a separate row."""
+    order: list[str] = []
+    best: dict[str, wl.WatchlistItem] = {}
+    other_setups: dict[str, list[str]] = {}
+    for item in items:
+        if item.ticker not in best:
+            best[item.ticker] = item
+            other_setups[item.ticker] = []
+            order.append(item.ticker)
+        elif (
+            item.setup is not None
+            and item.setup != best[item.ticker].setup
+            and item.setup not in other_setups[item.ticker]
+        ):
+            other_setups[item.ticker].append(item.setup)
+    return [(best[ticker], other_setups[ticker]) for ticker in order]
+
+
+def _select_diversified(
+    scored: list[tuple[float, PremiumWatchlistItem]],
+    close_by_ticker: dict[str, pd.Series],
+    max_approved: int = MAX_APPROVED_PER_TIER,
+    max_per_sector: int = MAX_PER_SECTOR,
+) -> list[PremiumWatchlistItem]:
+    """Greedy, highest-score-first selection with two independent gates a
+    plain `scored[:MAX_APPROVED_PER_TIER]` slice never applied (Tercera
+    auditoría, Bloque F-8): a candidate is *skipped* (not swapped in for a
+    retry - the next-best candidate simply gets its slot instead) if
+    approving it would push its own sector past `max_per_sector` in this
+    tier's approved list, or if its trailing `CORRELATION_RETURNS_WINDOW`-day
+    returns correlate at or above `MAX_CANDIDATE_CORRELATION` with a name
+    already approved this same pass. A candidate missing close data (a
+    tickerless edge case that shouldn't happen in practice) skips the
+    correlation check but still counts against its sector's cap."""
+    approved: list[PremiumWatchlistItem] = []
+    per_sector_count: dict[str, int] = defaultdict(int)
+    returns_by_approved: dict[str, pd.Series] = {}
+
+    for _, item in scored:
+        if per_sector_count[item.sector] >= max_per_sector:
+            continue
+
+        candidate_close = close_by_ticker.get(item.ticker)
+        candidate_returns = candidate_close.pct_change().dropna() if candidate_close is not None else None
+        if candidate_returns is not None and returns_by_approved:
+            corr_matrix = pcs.compute_correlation_matrix(
+                {**returns_by_approved, item.ticker: candidate_returns}, window=CORRELATION_RETURNS_WINDOW
+            )
+            too_correlated = any(
+                pd.notna(corr_matrix.loc[item.ticker, other]) and abs(corr_matrix.loc[item.ticker, other])
+                >= MAX_CANDIDATE_CORRELATION
+                for other in returns_by_approved
+            )
+            if too_correlated:
+                continue
+
+        approved.append(item)
+        per_sector_count[item.sector] += 1
+        if candidate_returns is not None:
+            returns_by_approved[item.ticker] = candidate_returns
+        if len(approved) >= max_approved:
+            break
+    return approved
+
+
 def build_premium_watchlist(
     universe_snapshot: list[TickerSnapshot],
     market_data: MarketDataService,
@@ -186,19 +308,23 @@ def build_premium_watchlist(
     tiers = tiers if tiers else list(TIERS)
     sector_rs_rank = sector_rs_rank or {}
 
-    candidates_by_tier: dict[str, list[wl.WatchlistItem]] = {}
+    candidates_by_tier: dict[str, list[tuple[wl.WatchlistItem, list[str]]]] = {}
     prefilter_counts: dict[str, int] = {}
     all_candidate_tickers: set[str] = set()
     for t in tiers:
         items = wl.build_watchlist(universe_snapshot, horizon=_PREFILTER_HORIZON[t])
-        prefilter_counts[t] = len(items)
-        top = items[:MAX_CANDIDATES_PER_TIER]
+        deduped = _dedupe_by_ticker(items)
+        # Tickers passing the pre-filter, not (ticker, setup) pairs - counting
+        # pairs inflated this denominator ~1.5-2x (Bloque A-7) since a single
+        # ticker matching 2-3 setups used to count as 2-3 "candidates".
+        prefilter_counts[t] = len(deduped)
+        top = deduped[:MAX_CANDIDATES_PER_TIER]
         candidates_by_tier[t] = top
-        all_candidate_tickers.update(item.ticker for item in top)
-        if len(items) > MAX_CANDIDATES_PER_TIER:
+        all_candidate_tickers.update(item.ticker for item, _ in top)
+        if len(deduped) > MAX_CANDIDATES_PER_TIER:
             logger.info(
                 "Premium watchlist: %s tier pre-filter found %d candidates, analyzing only the top %d",
-                t, len(items), MAX_CANDIDATES_PER_TIER,
+                t, len(deduped), MAX_CANDIDATES_PER_TIER,
             )
 
     if not all_candidate_tickers:
@@ -219,11 +345,23 @@ def build_premium_watchlist(
     vix_df = ohlcv.get(VIX_TICKER)
     vix_close = vix_df["close"] if vix_df is not None else None
 
+    # Tercera auditoría, Bloque F-3: the daily (5-21 day) tier used to pass
+    # candidate.snapshot.rs_rating (a 3-12-month momentum percentile) into
+    # compute_core_signals - recommendation_engine.py turns rs_rating>=80
+    # into a flat +2, the same weight as the setup-specific percentile bonus
+    # (SETUP_PERCENTILE_BONUS_WEIGHT, max ±2) that's supposed to be the
+    # daily tier's actual ordering criterion. A 4-week relative-strength
+    # percentile (mansfield_rs_4w, already computed per snapshot) is the
+    # same-scale, same-cross-section substitute - a genuinely short-term
+    # momentum read instead of a 3-12-month one scoring a 5-21 day trade.
+    daily_rs_substitute = wl.percentile_rank_by_ticker(universe_snapshot, "mansfield_rs_4w")
+
     results: list[PremiumWatchlistItem] = []
     discard_stats: dict[str, TierDiscardStats] = {}
     for t in tiers:
         scored: list[tuple[float, PremiumWatchlistItem]] = []
-        for candidate in candidates_by_tier[t]:
+        actually_analyzed = 0
+        for candidate, also_matched_setups in candidates_by_tier[t]:
             df = ohlcv.get(candidate.ticker)
             if df is None:
                 continue
@@ -233,6 +371,11 @@ def build_premium_watchlist(
             # the list still ships with whatever *did* compute cleanly, which is
             # the whole reason this list exists ("premium" endorses individually
             # analyzed names, one bad name shouldn't erase the rest of the work).
+            if t == DAILY:
+                substitute = daily_rs_substitute.get(candidate.ticker)
+                rs_rating_input = int(round(substitute)) if substitute is not None else None
+            else:
+                rs_rating_input = candidate.snapshot.rs_rating
             try:
                 signals = compute_core_signals(
                     df["close"],
@@ -241,7 +384,7 @@ def build_premium_watchlist(
                     df["volume"],
                     df["open"],
                     benchmark_close,
-                    candidate.snapshot.rs_rating,
+                    rs_rating_input,
                     horizon=_MONTE_CARLO_HORIZON[t],
                     vix_close=vix_close,
                     ticker=candidate.ticker,
@@ -253,6 +396,27 @@ def build_premium_watchlist(
                 continue
             if signals is None:
                 continue
+            # Tercera auditoría, Bloque A-7: counted here, not before the
+            # OHLCV-missing/compute-failure `continue`s above - this used to
+            # report every pre-filter candidate fed into the loop as
+            # "analyzed", so "15 analizados" could mean 5 of them silently
+            # failed and never actually got a real signal.
+            actually_analyzed += 1
+
+            # Tercera auditoría, Bloque F-9: a breakout 3 days before
+            # earnings isn't the same trade as one with no event risk in
+            # the holding window. Only fetched here (a bounded, <=15/tier
+            # loop - never the whole universe screener, which would be a
+            # per-ticker network call in a hot path).
+            next_earnings = market_data.get_next_earnings_date(candidate.ticker)
+            days_to_earnings = (next_earnings - date.today()).days if next_earnings else None
+            if t == DAILY and days_to_earnings is not None and 0 <= days_to_earnings <= SIGN_CHECK_HORIZON_DAYS:
+                logger.info(
+                    "Premium watchlist: excluding %s (daily tier) - earnings in %d days, inside the "
+                    "%d-day holding horizon", candidate.ticker, days_to_earnings, SIGN_CHECK_HORIZON_DAYS,
+                )
+                continue
+
             score = _approval_score(signals, sector_rs_rank.get(candidate.sector), candidate.percentile_score)
             if score is None:
                 continue
@@ -272,16 +436,28 @@ def build_premium_watchlist(
                         premium_score=score,
                         raw_score=signals.recommendation.score,
                         setup=candidate.setup,
+                        also_matched_setups=also_matched_setups,
+                        days_to_earnings=days_to_earnings,
                     ),
                 )
             )
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        approved = scored[:MAX_APPROVED_PER_TIER]
-        results.extend(item for _, item in approved)
+        # Tercera auditoría, Bloque F-8: a plain top-N slice let one leading
+        # sector (rewarded by STRONG_SECTOR_BONUS above) fill the whole
+        # list with names that are, for a 5-21 day hold, effectively the
+        # same correlated bet repeated - see _select_diversified's own
+        # docstring for the sector cap + correlation gate that replaces it.
+        close_by_ticker = {
+            candidate.ticker: ohlcv[candidate.ticker]["close"]
+            for candidate, _ in candidates_by_tier[t]
+            if candidate.ticker in ohlcv
+        }
+        approved = _select_diversified(scored, close_by_ticker)
+        results.extend(approved)
         discard_stats[t] = TierDiscardStats(
             tier=t,
             prefilter_matches=prefilter_counts.get(t, 0),
-            analyzed=len(candidates_by_tier[t]),
+            analyzed=actually_analyzed,
             approved=len(approved),
         )
     return results, discard_stats

@@ -98,11 +98,31 @@ def chandelier_multiplier(vol_regime: str | None, r_multiple: float | None) -> f
     return CHANDELIER_MULTIPLIER_BY_REGIME.get(vol_regime or "", CHANDELIER_MULTIPLIER_DEFAULT)
 
 
-def update_trailing_stop(current_stop: float | None, candidate: float | None) -> float | None:
+def update_trailing_stop(
+    current_stop: float | None, candidate: float | None, price: float | None = None
+) -> float | None:
     """The trailing stop only ever moves up for a long position, never down
     - once risk is locked in, it stays locked in. `None` inputs pass through
     gracefully: no candidate yet keeps the current stop, no current stop yet
-    adopts the candidate outright."""
+    adopts the candidate outright.
+
+    Tercera auditoría, Bloque A-1: a `current_stop` at or above `price` is
+    never a legitimate state for an open long position - `compute_trailing_stop`'s
+    own `price` guard only ever *prevents* a new invalid candidate from being
+    adopted, it can't repair a stop that was already persisted as invalid
+    before that guard existed (the exact Chandelier pre-entry-high bug this
+    same audit's predecessor fixed). Treating that impossible value as
+    "already locked in" made `max(current_stop, candidate)` keep it forever,
+    even once fresh, valid (lower) candidates started arriving - reproduced
+    with a pre-fix plan (`current_stop=263.0`, `price=95.0`): three
+    consecutive evaluations all stayed at `EXIT_NOW` with "el precio ha
+    perforado el stop de protección vigente (263.00)". Once `price` is
+    passed, a corrupt `current_stop` is discarded (never trusted as a floor)
+    so a valid candidate can replace it - self-healing on the very next
+    evaluation, no data migration needed, since `price` is already threaded
+    through from `portfolio_risk_service.py`."""
+    if price is not None and current_stop is not None and current_stop >= price:
+        current_stop = None
     if candidate is None:
         return current_stop
     if current_stop is None:
@@ -135,7 +155,7 @@ def compute_trailing_stop(
     candidate = chandelier_stop(high, atr14, multiplier, window)
     if candidate is not None and price is not None and candidate >= price:
         candidate = None
-    return ChandelierResult(stop=update_trailing_stop(current_stop, candidate), multiplier=multiplier)
+    return ChandelierResult(stop=update_trailing_stop(current_stop, candidate, price=price), multiplier=multiplier)
 
 
 def max_shares_for_position_risk(

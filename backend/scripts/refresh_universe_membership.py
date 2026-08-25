@@ -6,8 +6,9 @@ live-request code path).
 
 Run by hand, or wired to a monthly cron (e.g. a Render Cron Job) - either
 way, this is the *only* place a live index-constituent fetch happens; every
-other caller (`premium_watchlist_service.py`, `watchlist_service.py`) only
-ever reads the table this writes.
+other caller (`market_screener_service.get_universe_snapshot`, which
+`premium_watchlist_service.py`/`watchlist_service.py` build on) only ever
+reads the table this writes.
 
 Usage:
     python scripts/refresh_universe_membership.py            # both regions, only if due

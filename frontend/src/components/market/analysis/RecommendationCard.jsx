@@ -64,6 +64,15 @@ function RecommendationCard({
   const meta = VERDICT_META[recommendation.verdict] ?? { label: recommendation.verdict, tone: 'neutral' }
   const triggered = recommendation.factors.filter((f) => f.triggered)
   const mismatched = new Set(signContradictedFactors ?? [])
+  // Tercera auditoría, Bloque H: la contradicción real es "¿qué fracción de lo
+  // que empuja este veredicto tiene el signo medido en contra?", no un simple
+  // sí/no - un factor contradicho de 8 y 6 de 8 son avisos muy distintos, y la
+  // versión anterior los mostraba con el mismo banner fijo. Umbral de "mayoría"
+  // (>=50%) es una decisión de presentación sobre evidencia ya medida, no un
+  // peso nuevo de recommendation_engine.py - no requiere estudio de ablación.
+  const mismatchedTriggered = triggered.filter((f) => mismatched.has(f.label))
+  const mismatchFraction = triggered.length > 0 ? mismatchedTriggered.length / triggered.length : 0
+  const mismatchIsMajority = mismatchFraction >= 0.5
 
   return (
     <div className={`recommendation-card recommendation-card--${meta.tone}`}>
@@ -77,8 +86,8 @@ function RecommendationCard({
       {recommendation.verdict === 'comprar' && (
         <EntryTimingBadge entryTiming={entryTiming} showDescription />
       )}
-      <ImminentCrossBadge imminentCross={imminentCross} />
-      <ImminentCrossBadge imminentCross={imminentCrossShortTerm} shortTerm />
+      <ImminentCrossBadge imminentCross={imminentCross} verdict={recommendation.verdict} />
+      <ImminentCrossBadge imminentCross={imminentCrossShortTerm} shortTerm verdict={recommendation.verdict} />
       <CandlestickPatternBadge pattern={candlestickPattern} />
 
       {recommendation.verdict === 'comprar' && (
@@ -99,11 +108,19 @@ function RecommendationCard({
         </div>
       )}
 
-      {mismatched.size > 0 && (
-        <div className="recommendation-card__sign-warning">
-          <strong>⚠️ Este veredicto se apoya, en parte, en factores cuyo signo medido por el estudio de
-          ablación es el contrario al peso que tienen hoy</strong> - no se ha corregido el peso, solo se
-          muestra la contradicción. Marcados con ⚠️ abajo. Ver Metodología §16.
+      {mismatchedTriggered.length > 0 && (
+        <div
+          className={`recommendation-card__sign-warning ${
+            mismatchIsMajority ? 'recommendation-card__sign-warning--majority' : 'recommendation-card__sign-warning--minor'
+          }`}
+        >
+          <strong>
+            ⚠️ {mismatchedTriggered.length} de {triggered.length} factores activos en este veredicto{' '}
+            {mismatchIsMajority ? '(la mayoría)' : '(una minoría)'} tienen el signo contrario al medido por el
+            estudio de ablación
+          </strong>{' '}
+          - no se ha corregido el peso, solo se muestra la contradicción. Marcados con ⚠️ abajo. Ver Metodología
+          §16.
         </div>
       )}
 

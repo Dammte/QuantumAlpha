@@ -133,3 +133,61 @@ def triggered_factors_with_contradicted_sign(factors: list, horizon_days: int) -
     return [
         f.label for f in factors if f.triggered and FACTOR_LABEL_TO_ABLATION_KEY.get(f.label) in mismatched_keys
     ]
+
+
+# --- Setup outcome stats (Tercera auditoría, Bloque F-6/F-7) ----------------
+#
+# watchlist_service.py's four setup types were, until this audit, labels
+# without a price - segment_by_setup_type only ever measured
+# recommendation_engine.py *factors* within each setup segment, never the
+# setup's own realized win rate/expectancy/duration/MAE. Read from the v3
+# run (--use-dynamic-universe --temporal-split), a separate file set from
+# the v2 factor-ablation report above - v2 never computed these.
+
+SETUP_OUTCOME_AVAILABLE_HORIZONS_DAYS = (5, 10, 21, 63, 126)
+
+
+@dataclass(frozen=True, slots=True)
+class SetupOutcomeResult:
+    setup: str
+    n: int
+    win_rate: float
+    expectancy_r: float
+    median_bars_held: float
+    mae_p80_pct: float
+
+
+def _setup_outcome_path(horizon_days: int) -> Path:
+    return DOCS_DIR / f"factor_ablation_report_v3_h{horizon_days}_setup_outcomes.csv"
+
+
+def load_setup_outcome_stats(horizon_days: int) -> list[SetupOutcomeResult]:
+    """Whatever the v3 study run wrote for this horizon - `[]` if that
+    horizon was never run, the file doesn't exist, or it can't be parsed,
+    never a fabricated result (same discipline as `load_ablation_report`)."""
+    path = _setup_outcome_path(horizon_days)
+    if not path.exists():
+        return []
+    try:
+        with path.open(encoding="utf-8", newline="") as f:
+            return [
+                SetupOutcomeResult(
+                    setup=row["setup"],
+                    n=int(row["n"]),
+                    win_rate=float(row["win_rate"]),
+                    expectancy_r=float(row["expectancy_r"]),
+                    median_bars_held=float(row["median_bars_held"]),
+                    mae_p80_pct=float(row["mae_p80_pct"]),
+                )
+                for row in csv.DictReader(f)
+            ]
+    except Exception:
+        logger.exception("Setup outcome stats: failed to read/parse horizon=%d", horizon_days)
+        return []
+
+
+def setup_outcome_by_name(horizon_days: int) -> dict[str, SetupOutcomeResult]:
+    """`load_setup_outcome_stats` keyed by setup name, for a direct per-setup
+    lookup (e.g. attaching a candidate's own setup's historical stats to it
+    in the watchlist/premium responses)."""
+    return {r.setup: r for r in load_setup_outcome_stats(horizon_days)}

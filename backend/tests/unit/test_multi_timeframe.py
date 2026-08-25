@@ -120,19 +120,30 @@ def test_conflict_flagged_when_weekly_macd_bearish_and_daily_macd_bullish():
     assert any("MACD semanal" in c for c in conflicts)
 
 
-def test_daily_only_fallback_is_bullish_when_weekly_is_unavailable():
+def test_daily_only_fallback_is_transitioning_when_weekly_unavailable_and_daily_bullish():
+    # Tercera auditoría, Bloque A-2: an unconfirmed weekly must never let a
+    # confident daily read alone produce "bullish_aligned"/"bearish_aligned"
+    # - "aligned" means two timeframes agree, and there's only one opinion
+    # here. This used to return "bullish_aligned" - the dangerous mirror of
+    # the bearish false-EXIT_NOW bug this same fix addresses (a false
+    # "aligned" buy signal is lower-stakes than a false EXIT_NOW, but equally
+    # unjustified by the data).
     daily = _read("daily", trend=ta.TrendState.UPTREND)
     alignment, score, conflicts = mtf.combine_timeframes(None, daily)
-    assert alignment == "bullish_aligned"
-    assert score == 1.0
+    assert alignment == "transitioning"
+    assert score == 0.0
     assert conflicts == []
 
 
-def test_daily_only_fallback_is_bearish_when_weekly_is_unavailable():
+def test_daily_only_fallback_is_transitioning_when_weekly_unavailable_and_daily_bearish():
+    # The dangerous direction: this is exactly what fed exit_engine.py's
+    # `alignment == "bearish_aligned"` EXIT_NOW trigger a false positive for
+    # any ticker with an unconfirmed weekly (~1.15-3.85 years of history) and
+    # an ordinary daily downtrend - no genuine weekly confirmation at all.
     daily = _read("daily", trend=ta.TrendState.DOWNTREND)
     alignment, score, _ = mtf.combine_timeframes(None, daily)
-    assert alignment == "bearish_aligned"
-    assert score == -1.0
+    assert alignment == "transitioning"
+    assert score == 0.0
 
 
 def test_daily_only_fallback_is_transitioning_when_weekly_is_unavailable():
@@ -143,20 +154,33 @@ def test_daily_only_fallback_is_transitioning_when_weekly_is_unavailable():
 
 
 # --- "unknown" weekly (present, but not enough history for a real SMA200
-# read - see timeframe_bias) must fall back to the daily-only read, exactly
-# like weekly being None - never guessed as bullish/bearish/neutral. ---
+# read - see timeframe_bias) must fall back to "transitioning", exactly like
+# weekly being None - never guessed as bullish/bearish/neutral in either
+# direction, no matter how confident the lone daily read is. ---
 
 
-def test_daily_only_fallback_when_weekly_exists_but_is_not_confirmed_yet():
+def test_unconfirmed_weekly_never_reads_aligned_even_with_a_confident_bearish_daily():
     # A young ticker: some weekly bars exist (weekly is not None), but fewer
     # than ~200 - price_vs_sma200 is still None. Even with a crystal-clear
-    # weekly DOWNTREND label attached (as if it were confirmed), the missing
-    # price_vs_sma200 alone must be enough to treat it as unconfirmed.
+    # weekly DOWNTREND label attached (as if it were confirmed) *and* a
+    # confident daily downtrend agreeing with it, the missing price_vs_sma200
+    # alone must be enough to treat the weekly as unconfirmed - this is the
+    # exact real-world shape of the bug (a daily downtrend on a ticker with
+    # too little weekly history read as "bearish_aligned" -> false EXIT_NOW).
+    weekly = _read("weekly", trend=ta.TrendState.DOWNTREND, price_vs_sma200=None)
+    daily = _read("daily", trend=ta.TrendState.DOWNTREND)
+    alignment, score, conflicts = mtf.combine_timeframes(weekly, daily)
+    assert alignment == "transitioning"
+    assert score == 0.0
+    assert conflicts == []
+
+
+def test_unconfirmed_weekly_never_reads_aligned_even_with_a_confident_bullish_daily():
     weekly = _read("weekly", trend=ta.TrendState.DOWNTREND, price_vs_sma200=None)
     daily = _read("daily", trend=ta.TrendState.UPTREND)
     alignment, score, conflicts = mtf.combine_timeframes(weekly, daily)
-    assert alignment == "bullish_aligned"  # daily-only fallback, weekly's DOWNTREND label ignored
-    assert score == 1.0
+    assert alignment == "transitioning"  # daily-only fallback, weekly's DOWNTREND label ignored
+    assert score == 0.0
     assert conflicts == []
 
 

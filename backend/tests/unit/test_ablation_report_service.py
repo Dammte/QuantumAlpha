@@ -100,3 +100,60 @@ def test_triggered_factors_with_contradicted_sign_empty_when_factor_is_consisten
     monkeypatch.setattr(ars, "DOCS_DIR", docs)
     factors = [_factor("Tendencia alcista (MA20 > MA50 > MA200)", triggered=True)]
     assert ars.triggered_factors_with_contradicted_sign(factors, 21) == []
+
+
+# --- setup outcome stats (Tercera auditoría, Bloque F-6/F-7) ----------------
+
+_OUTCOME_HEADER = "setup,n,win_rate,expectancy_r,median_bars_held,mae_p80_pct"
+
+
+def _write_outcomes(tmp_path, horizon_days, rows):
+    docs = tmp_path / "docs"
+    docs.mkdir(exist_ok=True)
+    path = docs / f"factor_ablation_report_v3_h{horizon_days}_setup_outcomes.csv"
+    path.write_text("\n".join([_OUTCOME_HEADER, *rows]) + "\n", encoding="utf-8")
+    return docs
+
+
+def test_load_setup_outcome_stats_missing_file_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(ars, "DOCS_DIR", tmp_path / "docs")
+    assert ars.load_setup_outcome_stats(21) == []
+
+
+def test_load_setup_outcome_stats_parses_real_rows(tmp_path, monkeypatch):
+    docs = _write_outcomes(
+        tmp_path, 21,
+        ["oversold_bounce,412,0.54,0.42,6.0,2.1", "breakout_volume,201,0.48,0.15,8.0,3.4"],
+    )
+    monkeypatch.setattr(ars, "DOCS_DIR", docs)
+    results = ars.load_setup_outcome_stats(21)
+    assert len(results) == 2
+    oversold = next(r for r in results if r.setup == "oversold_bounce")
+    assert oversold.n == 412
+    assert oversold.win_rate == 0.54
+    assert oversold.expectancy_r == 0.42
+    assert oversold.median_bars_held == 6.0
+    assert oversold.mae_p80_pct == 2.1
+
+
+def test_load_setup_outcome_stats_malformed_file_returns_empty_not_raises(tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "factor_ablation_report_v3_h21_setup_outcomes.csv").write_text(
+        "not,valid\ngarbage\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ars, "DOCS_DIR", docs)
+    assert ars.load_setup_outcome_stats(21) == []
+
+
+def test_setup_outcome_by_name_keys_by_setup(tmp_path, monkeypatch):
+    docs = _write_outcomes(tmp_path, 21, ["oversold_bounce,412,0.54,0.42,6.0,2.1"])
+    monkeypatch.setattr(ars, "DOCS_DIR", docs)
+    by_name = ars.setup_outcome_by_name(21)
+    assert set(by_name) == {"oversold_bounce"}
+    assert by_name["oversold_bounce"].win_rate == 0.54
+
+
+def test_setup_outcome_by_name_empty_when_no_report_on_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(ars, "DOCS_DIR", tmp_path / "docs")
+    assert ars.setup_outcome_by_name(21) == {}

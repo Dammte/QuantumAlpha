@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.domain.interfaces.position_signal_snapshot_repository import PositionSignalSnapshotRepositoryPort
@@ -37,9 +37,31 @@ class PositionSignalSnapshotRepository(PositionSignalSnapshotRepositoryPort):
         r_multiple: float | None,
         engine_version: str,
     ) -> PositionSignalSnapshot:
+        # Tercera auditoría, Bloque A-7: root-cause fix for the duplication
+        # signal_performance_service.py's own read-side dedupe has to
+        # compensate for - every genuinely fresh (non-cached) evaluation used
+        # to insert another row regardless of whether one already existed
+        # for this (portfolio, ticker) today, so a manual "Actualizar ahora"
+        # (which bypasses PortfolioRiskService's cache on purpose) or simply
+        # enough cache-miss reloads in a day kept accumulating rows that
+        # measured reload frequency, not distinct evaluations. One row per
+        # (portfolio, ticker, calendar day) - same delete-then-insert idiom
+        # `UniverseMembershipRepository.save_snapshot` already uses.
+        now = datetime.now(UTC)
+        today_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=UTC)
+        tomorrow_start = today_start + timedelta(days=1)
+        self.db.execute(
+            delete(PositionSignalSnapshotORM).where(
+                PositionSignalSnapshotORM.portfolio_id == portfolio_id,
+                PositionSignalSnapshotORM.ticker == ticker,
+                PositionSignalSnapshotORM.created_at >= today_start,
+                PositionSignalSnapshotORM.created_at < tomorrow_start,
+            )
+        )
         orm = PositionSignalSnapshotORM(
             portfolio_id=portfolio_id,
             ticker=ticker,
+            created_at=now,
             signal=signal,
             exit_urgency=exit_urgency,
             score=score,

@@ -210,6 +210,22 @@ def test_signal_outcomes_deduplicates_same_ticker_and_day():
     assert at_5.n == 1
 
 
+def test_signal_outcomes_keeps_both_portfolios_same_ticker_and_day_distinct():
+    # Tercera auditoría, Bloque A-7: PositionSignalSnapshot is multi-
+    # portfolio - two different portfolios holding the same ticker, each
+    # evaluated the same day, are two genuinely distinct observations, not
+    # one. The old (ticker, day) key alone collapsed them into a single row.
+    close = _close_series("2024-01-01", [100.0] * 40)
+    same_day = close.index[0].date()
+    snapshots = [
+        _pos_snapshot("AAPL", "watch", datetime.combine(same_day, datetime.min.time()), portfolio_id=1),
+        _pos_snapshot("AAPL", "watch", datetime.combine(same_day, datetime.min.time()), portfolio_id=2),
+    ]
+    outcomes = sps.compute_signal_outcomes(snapshots, {"AAPL": close})
+    at_5 = next(o for o in outcomes if o.horizon_days == 5)
+    assert at_5.n == 2
+
+
 # --- find_false_negatives -------------------------------------------------------
 
 
@@ -255,6 +271,26 @@ def test_false_negative_deduplicates_same_ticker_and_day():
     ]
     negatives = sps.find_false_negatives(snapshots, {"AAPL": close})
     assert len(negatives) == 1
+
+
+def test_false_negative_survives_a_same_day_later_non_hold_snapshot():
+    # Tercera auditoría, Bloque A-7: a `hold` at 09:00 followed by a `watch`
+    # at 17:00 the same day used to dedupe to the *later* (watch) snapshot
+    # before the hold-only filter ran, then get discarded by that filter -
+    # reporting 0 false negatives for a day that had exactly 1. Filtering to
+    # `hold` before deduping fixes it: the watch snapshot is never even a
+    # dedup candidate for this question.
+    close = _close_series("2024-01-01", [100.0] * 10 + [90.0] * 20)  # -10% by bar 10
+    same_day = close.index[0].date()
+    snapshots = [
+        _pos_snapshot("AAPL", "hold", datetime.combine(same_day, datetime.min.time()), price=100.0),
+        _pos_snapshot(
+            "AAPL", "watch", datetime.combine(same_day, datetime.min.time().replace(hour=17)), price=100.0
+        ),
+    ]
+    negatives = sps.find_false_negatives(snapshots, {"AAPL": close})
+    assert len(negatives) == 1
+    assert negatives[0].return_pct == pytest.approx(-0.10)
 
 
 # --- build_signal_performance_report (orchestration) ----------------------------

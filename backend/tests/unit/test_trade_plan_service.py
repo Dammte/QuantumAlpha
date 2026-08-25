@@ -297,3 +297,30 @@ def test_ensure_trade_plan_rebuilds_a_fresh_plan_when_the_open_ones_entry_date_i
     assert result.entry_date == date(2024, 3, 1)
     assert repo.created_with is not None
     assert repo.created_with["entry_price"] == pytest.approx(50.0)
+
+
+def test_ensure_trade_plan_never_closes_a_stale_plan_it_cannot_replace():
+    # Tercera auditoría, Bloque A-3: the OHLCV history provided doesn't reach
+    # back to the new lot's entry_date (e.g. a DCA re-entry older than
+    # HISTORY_YEARS) - `close()` used to fire regardless, destroying the
+    # stale-but-real plan on file with nothing to replace it, and every
+    # subsequent call hit the exact same history gap and returned None again
+    # - permanently. `close()` must only fire once the replacement is
+    # actually buildable; here it never is, so the stale plan must survive.
+    stale_plan = _plan(entry_price=100.0, entry_date=date(2024, 1, 5), current_stop=98.0, plan_id=1)
+    repo = _FakeRepo(existing=stale_plan)
+    txs = [
+        _tx("AAPL", TransactionType.BUY, 10, price=100.0, executed_at=datetime(2024, 1, 5), tx_id=1),
+        _tx("AAPL", TransactionType.SELL, 10, price=105.0, executed_at=datetime(2024, 2, 1), tx_id=2),
+        # Re-bought before the OHLCV window even starts (2023-01-02 + 90
+        # business days lands in mid-2023, well before this 2022 entry).
+        _tx("AAPL", TransactionType.BUY, 5, price=50.0, executed_at=datetime(2022, 6, 1), tx_id=3),
+    ]
+    df = _ohlcv_df(90, 100 + np.sin(np.arange(90) / 3) * 5)
+
+    result = tps.ensure_trade_plan(repo, portfolio_id=1, ticker="AAPL", transactions=txs, ohlcv=df)
+
+    assert result is None
+    assert repo.closed is False  # the stale plan was left alone, not destroyed
+    assert repo.created_with is None
+    assert repo.plan is stale_plan  # still on file, exactly as it was

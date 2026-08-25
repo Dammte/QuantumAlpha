@@ -46,6 +46,13 @@ class FakeMarketDataProvider(MarketDataProvider):
             return PriceQuote(price=100.0, previous_close=98.0, currency="EUR")
         return PriceQuote(price=150.0, previous_close=148.0, currency="USD")
 
+    def get_next_earnings_date(self, ticker: str) -> date | None:
+        # Deterministic-by-ticker, same spirit as _random_walk: most fake
+        # tickers report "no known earnings date" (None) so existing tests
+        # are unaffected; a handful of fixed test tickers can opt into a
+        # specific date by name if a future test needs one.
+        return None
+
     def get_fx_rate(self, from_currency: str, to_currency: str) -> float | None:
         if from_currency == to_currency:
             return 1.0
@@ -59,7 +66,24 @@ class FakeMarketDataProvider(MarketDataProvider):
     @staticmethod
     def _random_walk(ticker: str, start: date, end: date) -> list[PriceBar]:
         """A deterministic (seeded by ticker) pseudo-random walk, varied enough that
-        screener/movers/sector tests can tell tickers apart by trend and volume."""
+        screener/movers/sector tests can tell tickers apart by trend and volume.
+
+        Volume scale (Tercera auditoría, Bloque F-9): bumped 1000x (500-5000 ->
+        500k-5M shares/day) when market_screener_service.get_universe_snapshot
+        started applying a real $ liquidity floor (MIN_DOLLAR_VOLUME_20D=$20M)
+        to every ticker, not just the offline monthly refresh - the old
+        500-5000 share/day range priced this whole fake universe at
+        ~$50k-$500k/day, well under a real liquidity bar meant for large-cap
+        names, and every ticker started failing it. Same relative
+        drift/wiggle/seed logic, just rescaled - comparisons *between*
+        tickers (this one trades more than that one) are unaffected.
+
+        Price floor raised $1 -> $20 for the same reason: a strongly
+        negative-drift seed compounded over a 400+ day window could decay
+        all the way to the old $1 floor and sit there for its most recent 20
+        bars, genuinely failing MIN_PRICE=$5 - realistic for an actual penny
+        stock, not for a name in a curated large-cap universe that's
+        supposed to represent."""
         if ticker == "UNKNOWN":
             return []
         rng = random.Random(ticker)
@@ -68,9 +92,9 @@ class FakeMarketDataProvider(MarketDataProvider):
         bars = []
         current = start
         while current <= end:
-            price = max(1.0, price + drift + rng.uniform(-2, 2))
+            price = max(20.0, price + drift + rng.uniform(-2, 2))
             wiggle = abs(rng.uniform(0, 1.5))
-            volume = rng.uniform(500, 5000)
+            volume = rng.uniform(500_000, 5_000_000)
             bars.append(PriceBar(ticker, current, price, price + wiggle, price - wiggle, price, volume))
             current += timedelta(days=1)
         return bars

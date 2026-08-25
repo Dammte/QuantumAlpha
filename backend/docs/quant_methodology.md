@@ -579,6 +579,12 @@ que mide el estudio de ablación"). El resto del Bloque 3 (setups/percentil/limp
 logging) puede construirse igualmente sobre el snapshot curado existente sin depender de esta
 decisión - queda para continuar.
 
+**Actualización (Tercera auditoría, Bloque F-1, agosto 2026)**: conectado. La objeción de coste de
+arriba (multiplicar el fetch de OHLCV por 6-9x) resultó estar mal enfocada - el fetch en sí es una
+sola llamada por lotes, cueste 170 o 1.000 tickers; el coste real era calcular indicadores completos
+sobre 1.000. Resuelto con un cribado barato de precio/volumen (sin llamada de red por ticker) que
+recorta a `CHEAP_SCREEN_KEEP_TOP_N` **antes** de calcular ningún indicador - ver §21.
+
 **Por qué se corta aquí**: los 6 puntos restantes del Bloque 3 son, cada uno, del orden de un día de
 trabajo por derecho propio (separación de 4 tipos de setup con su propio scoring, un percentil
 transversal multi-factor que necesita datos que hoy no existen en `TickerSnapshot` -algunos
@@ -833,3 +839,348 @@ orden "más próximo primero", y que la desprioritización por sobreextensión a
 "snapshot cacheado antes de que este campo existiera"); dos tests de integración nuevos en
 `test_market_api.py` contra los endpoints reales `/market/trend` y `/market/trend/detail`. 680 tests
 unitarios en verde, `ruff check app tests` limpio, `npm run lint`/`npm run build` limpios en el frontend.
+
+## 20. Tercera auditoría independiente — Bloque A: regresiones y bugs con dinero real (agosto 2026)
+
+Una tercera auditoría, ejecutando código real y simulando escenarios (no solo leyendo), encontró
+regresiones introducidas por los propios arreglos de las rondas anteriores, además de bugs nuevos. Ninguno
+toca los pesos de `recommendation_engine.py` - no hay bump de `ENGINE_VERSION` en este bloque.
+
+1. **Un `current_stop` corrupto (de antes del fix del Chandelier) se quedaba en `EXIT_NOW` para
+   siempre.** El fix de la ronda anterior (acotar `high` a `plan.entry_date`, descartar candidatos por
+   encima del precio) solo protege candidatos *nuevos* - `update_trailing_stop`'s `max(current_stop,
+   candidate)` seguía confiando ciegamente en cualquier `current_stop` ya persistido, así que un plan
+   con un stop imposible (por encima del precio) de antes del fix nunca se recuperaba: cada evaluación
+   volvía a dar `EXIT_NOW` con el mismo stop imposible, sin importar cuántos candidatos válidos
+   llegaran después. `update_trailing_stop` ahora recibe `price` y descarta un `current_stop >= price`
+   como corrupto (nunca como "ya protegido") antes de comparar - autocura en la siguiente evaluación,
+   sin migración de datos, porque `portfolio_risk_service.py` ya pasaba `price=exit_price` en esa
+   llamada. Decisión explícita de **no** acotar también el ATR del Chandelier a la entrada (lo que la
+   propia auditoría sugería como "menor, del mismo bloque"): medido contra el decaimiento exponencial
+   real de un EWM(1/14), un ATR calculado sobre el histórico completo converge al mismo valor que uno
+   acotado a la entrada en cuanto han pasado ~60-90 sesiones desde la compra (cualquier pico de
+   volatilidad anterior a esa ventana ya decayó por construcción) - y acotarlo de verdad *rompería* el
+   caso de una posición joven (menos de 14 barras desde la entrada, el mínimo de `ATR(14)`), devolviendo
+   `None` donde hoy da un stop real. El diagnóstico de "un pico previo a la compra sigue ensanchando el
+   trail" no se sostiene contra cómo decae un EWM - no se tocó.
+2. **Semanal sin confirmar (`unknown`) se convertía en "alineación bajista total".** El fallback de
+   `combine_timeframes` para un semanal sin suficiente historia (`timeframe_bias == "unknown"`, menos de
+   ~3,85 años de barras semanales) pasaba directamente el sesgo *diario* como si fuera una alineación de
+   dos temporalidades - `"bearish_aligned", -1.0` con solo un diario bajista, exactamente el literal que
+   `exit_engine.py` compara para disparar `EXIT_NOW` ("Alineación bajista total: la temporalidad semanal
+   y la diaria coinciden en tendencia bajista") - una afirmación falsa cuando la semanal es
+   desconocida, no confirmadamente bajista. Afecta a cualquier ticker con ~1,15-3,85 años de historia
+   (OPVs recientes, ETFs jóvenes). Corregido: la rama `unknown` siempre devuelve `"transitioning", 0.0`,
+   en ambas direcciones - "alineado" afirma que dos temporalidades coinciden, y con la semanal sin
+   confirmar solo hay una opinión, por fuerte que sea. La dirección alcista (antes también devolvía
+   `"bullish_aligned"` en este caso) se corrigió igual, aunque el daño práctico de un falso positivo
+   alcista es menor que el de un falso `EXIT_NOW`.
+3. **`ensure_trade_plan` cerraba el plan vivo antes de saber si podía crear el sustituto.** Si el
+   `entry_date` de la recompra no coincidía con el histórico de `ohlcv` disponible (un lote DCA'd más
+   antiguo que `HISTORY_YEARS`), el plan existente se cerraba igualmente y luego la función devolvía
+   `None` por `as_of_entry.empty` - sin plan, `portfolio_risk_service.py` se salta todo el motor de
+   salida (sin stop, sin trailing, sin `exit_urgency`) para esa posición, y el problema nunca se
+   recuperaba solo (la siguiente llamada encuentra el plan ya cerrado, sigue sin poder reconstruirlo,
+   y así indefinidamente). Movido el `repo.close()` a después de la comprobación `as_of_entry.empty` -
+   un plan que no se puede sustituir de verdad ya no se destruye.
+4. **`reverse=True` invertía también el indicador de "sin puntuación", premiando la ausencia de datos.**
+   `watchlist_service._sort_key` y `market_screener_service.apply_filters` devolvían `(valor is None,
+   valor)` y ordenaban con `sorted(..., reverse=True)` - pero `reverse=True` invierte *todo* el tuple,
+   incluido el booleano, así que un ticker sin `rs_rating`/`percentile_score` (200-252 barras: pasa el
+   mínimo del screener pero no alcanza lo que pide RS Rating) encabezaba la lista en vez de ir al final.
+   Corregido reescribiendo ambas funciones como claves estrictamente ascendentes (el "sin dato" ya
+   codificado como el valor más alto de la tupla, el signo de la magnitud invertido cuando hace falta
+   orden descendente) - nunca más combinadas con `reverse=True`.
+5. **El pipeline premium analizaba el mismo ticker hasta 3 veces.** Un candidato que dispara varios
+   setups (deliberado, `watchlist_service.py`) generaba una fila por setup en `build_watchlist`, y
+   `build_premium_watchlist` no deduplicaba antes de cortar a `MAX_CANDIDATES_PER_TIER` - así que
+   consumía varias plazas y corría la lectura más cara de la app (GARCH+Markov+Monte
+   Carlo+walk-forward+Kelly) varias veces sobre datos idénticos. Nuevo `_dedupe_by_ticker`: conserva la
+   primera aparición de cada ticker (la de mayor puntuación, ya que `items` llega ordenado) y guarda los
+   demás setups que también disparó como `also_matched_setups` - mostrados como etiqueta secundaria
+   ("también: ruptura con volumen"), no como filas nuevas. De paso, `prefilter_matches` pasa a contar
+   tickers únicos, no pares (ticker, setup) - inflaba el denominador ~1,5-2x - y `analyzed` en
+   `TierDiscardStats` ahora solo cuenta candidatos que de verdad produjeron una señal utilizable, no
+   todos los que entraron al bucle (antes "15 analizados" podía significar que 5 habían fallado en
+   silencio por OHLCV ausente o una excepción).
+6. **El filtro de liquidez del universo dinámico comparaba precio/volumen sin convertir divisa.**
+   `dynamic_universe_service.apply_liquidity_filter` comparaba el precio/volumen en divisa local del
+   ticker contra umbrales en USD - GBp (peniques, LSE) hacía el filtro ~127x más laxo, SEK/NOK/DKK ~10x,
+   EUR/CHF ~10%. Un valor sueco con 20M SEK/día (~$1,9M reales) pasaba el "$20M" de sobra. Corregido
+   usando `MarketDataService.get_fx_rate` (que ya normaliza GBp/GBX a una tasa GBP real, dividida entre
+   100) antes de comparar contra `MIN_PRICE`/`MIN_DOLLAR_VOLUME_20D` - con caché por divisa dentro de la
+   misma llamada para no repetir la consulta FX por cada ticker que comparte moneda. La capitalización
+   de mercado se deja sin convertir a propósito: si `info.market_cap` de yfinance ya viene
+   normalizado a USD para un listado extranjero no se verificó contra la API real, y adivinar mal en
+   cualquier dirección corrompería en silencio el único número que hoy funciona. También se añadió un
+   guard de recencia (`MAX_STALE_DAYS=10`): un ticker cuya última barra disponible sea más vieja que eso
+   (deslistado/parado desde antes del inicio de la ventana de 45 días) ya no pasa con precios rancios
+   solo por tener `>= 20` barras en algún punto de esa ventana.
+7. **Bugs menores, cada uno con su fix y su test**:
+   - `sector_rotation_service.assess_sector_rotation`: `if overlap > best_overlap` resolvía cualquier
+     empate a favor de la primera fase del diccionario ("recuperación temprana" - que además tiene 4
+     sectores en su set frente a los 3 de las demás, un sesgo compuesto) - ahora un empate genuino entre
+     fases no elige ninguna (`cycle_phase=None`), en vez de fingir una lectura que el dato no respalda.
+     Y `laggards = ranked[-top_n:]` podía repetir sectores ya listados como líderes cuando había menos
+     de `2*top_n` sectores con rango - el corte de laggards ahora nunca empieza antes de `top_n`.
+   - `signal_performance_service._deduplicate_latest_per_ticker_and_day`: la clave era `(ticker, día)`,
+     pero `PositionSignalSnapshot` es multi-cartera - dos carteras con el mismo ticker el mismo día
+     colapsaban en una sola fila, perdiendo la observación de una de ellas. Clave ahora
+     `(portfolio_id, ticker, día)` vía `getattr(..., None)` (que da `None` para `RecommendationSnapshot`,
+     que no tiene `portfolio_id` y nunca lo necesitó).
+   - `find_false_negatives` deduplicaba *antes* de filtrar por `signal == "hold"` - un `hold` a las 9:00
+     seguido de un `watch` a las 17:00 el mismo día hacía que el dedupe se quedara con el `watch` (más
+     reciente), que el filtro descartaba después, perdiendo el `hold` real que la función existe para
+     encontrar. Ahora filtra primero, deduplica después.
+   - **Causa raíz de la duplicación, no solo el síntoma**: `PositionSignalSnapshotRepository.save()` no
+     tenía ningún guard de escritura - cada evaluación fresca (incluyendo un "Actualizar ahora" manual,
+     que salta el caché a propósito) insertaba otra fila para el mismo (cartera, ticker, día). Ahora
+     borra cualquier fila existente para ese (portfolio_id, ticker, día calendario) antes de insertar -
+     mismo patrón delete-then-insert que `UniverseMembershipRepository.save_snapshot` ya usa. Sin test
+     antes de este bloque (ningún repositorio de este proyecto con acceso a BD real lo tenía) - nuevo
+     `tests/integration/test_position_signal_snapshot_repository.py`.
+   - `market_screener_service.get_sector_performance`: era el único método pesado de esta clase sin
+     caché durable - cada redespliegue de Render pagaba la descarga síncrona de 11 ETFs en la primera
+     llamada a `/sectors`, `/sectors/rotation` o el `sector_rs_rank` del watchlist. Ahora usa
+     `durable_cache` exactamente igual que `get_universe_snapshot` (los campos de `SectorPerformance` son
+     todos tipos planos, así que `asdict`/`**kwargs` hace de (de)serializador sin código nuevo).
+   - `HISTORY_DAYS=400` (~261-265 sesiones tras festivos europeos) dejaba un margen de solo ~10 sesiones
+     sobre las >252 que exige `rs_raw_score` - un ETF europeo con festivos extra o un hueco de datos
+     caía por debajo en silencio y desaparecía del ranking sectorial. Nueva constante
+     `SECTOR_HISTORY_DAYS=500` (solo para `get_sector_performance`, `HISTORY_DAYS` general sin cambios),
+     con logging explícito de qué sectores quedan excluidos y por qué.
+   - **Verificado y descartado**: la afirmación de que `pd.bdate_range(end=<fin de semana>, periods=25)`
+     devuelve 24 elementos (y por tanto 6 tests fallarían en fin de semana) no se reprodujo contra la
+     versión de pandas real de este proyecto (3.0.5) - `bdate_range` calcula hacia atrás desde el último
+     día hábil antes de `end` y siempre devuelve exactamente `periods` elementos, caiga `end` en fin de
+     semana o no. No se tocó ese test.
+   - Pendiente, explícitamente no abordado en este bloque: `market_screener_service.py`'s ranking de
+     industrias mezcla métricas incompatibles (ETF ponderado por capitalización vs. media equiponderada
+     de 2-5 nombres curados) en una sola lista ordenada - es una decisión de diseño de UI (marcar el
+     método visualmente, o separar los rankings), no un bug de datos incorrectos, y queda para una
+     pasada de UI dedicada.
+
+**Tests**: ~40 tests nuevos/actualizados a través de `test_trade_manager.py`, `test_multi_timeframe.py`,
+`test_trade_plan_service.py`, `test_watchlist_service.py`, `test_market_screener_service.py`,
+`test_premium_watchlist_service.py`, `test_dynamic_universe_service.py`, `test_sector_rotation_service.py`,
+`test_signal_performance_service.py`, más el `test_position_signal_snapshot_repository.py` nuevo y dos
+tests de integración nuevos en `test_market_api.py` para la caché durable de sectores. Suite completa
+(unit+integración) en verde, `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
+
+## 21. Tercera auditoría independiente — Bloque F: universo dinámico, setups semanales y percentil real (agosto 2026)
+
+Ninguno de los diez puntos de este bloque toca los pesos de `recommendation_engine.py` - no hay bump de
+`ENGINE_VERSION`. Todo el trabajo es en `watchlist_service.py`, `premium_watchlist_service.py`,
+`market_screener_service.py`, `dynamic_universe_service.py`, `factor_ablation_study.py` y el par
+`ticker_analysis_service.py`/`market_data_service.py` (fecha de earnings).
+
+1. **Universo dinámico conectado al camino en vivo, con un cribado barato antes del cálculo caro
+   (F-1)**: cierra el punto que §15 dejaba abierto. `market_screener_service.get_universe_snapshot` lee
+   ahora `UniverseMembershipRepository` cuando hay una `db` disponible y sustituye por completo la lista
+   curada de `market_universe.py`; si el universo leído supera `CHEAP_SCREEN_KEEP_TOP_N=400`,
+   `dynamic_universe_service.apply_cheap_price_volume_screen` (precio/volumen del propio OHLCV ya
+   descargado, cero llamadas de red por ticker) lo recorta antes de que `_build_raw` calcule un solo
+   indicador. Efecto práctico hoy: nulo (solo existe un snapshot real en BD, ~900 US + ~240 Europa,
+   ambos ya por debajo del umbral) - el cambio es estructuralmente correcto para cuando el universo
+   dinámico crezca, no una mejora medible todavía.
+   - El mismo punto-en-el-tiempo alcanza también al estudio de ablación:
+     `filter_samples_by_point_in_time_membership` descarta una muestra histórica si el ticker no era
+     miembro genuino del universo en la fecha de esa muestra (usando el snapshot más cercano anterior, o
+     el snapshot más antiguo disponible como fallback honesto para fechas previas a cualquier
+     snapshot) - reemplaza la comparación anterior contra el snapshot *de hoy*, que no reducía sesgo de
+     supervivencia en absoluto. Mismo efecto práctico nulo hoy por la misma razón (un solo snapshot real
+     en BD todavía), correcto de cara al futuro.
+2. **Nivel semanal reescrito con setups propios, en vez de reglas ad hoc (F-2)**: `_medium_term_reasons`
+   (un conjunto de reglas sueltas, sin percentil, sin arquitectura de setup) se sustituyó por
+   `MEDIUM_TERM_SETUPS` (`FAST_GOLDEN_CROSS`, `FAST_CROSS_IMMINENT`, `STAGE2_LEADER`) - exactamente el
+   mismo patrón que `SHORT_TERM_SETUPS` ya usa en el nivel diario: un `WatchlistItem` por setup que
+   dispara, con su propio percentil (ver punto 4). El horizonte de Monte Carlo del nivel semanal en el
+   premium watchlist pasa de "3m" a "1m" - "1m" es el horizonte de holding real de un setup semanal
+   (días a pocas semanas), no 3 meses.
+3. **RS Rating del nivel diario sustituido por un percentil de verdad (F-3)**: `rs_rating` es un cálculo
+   de 52 semanas (`technical_analysis.rs_raw_score`/rating relativo del universo) - una medida
+   *semanal/mensual* de fondo, no una lectura del horizonte de holding real del nivel diario (días a
+   pocas semanas). Nuevo `watchlist_service.percentile_rank_by_ticker(snapshots, field)` (percentil
+   transversal genérico, público); el nivel diario del premium watchlist ahora usa el percentil de
+   `mansfield_rs_4w` (fuerza relativa a 4 semanas) en vez del `rs_rating` crudo. El nivel semanal sigue
+   usando `rs_rating` sin cambios - es la temporalidad para la que ese cálculo sí tiene sentido.
+4. **Cada setup puntúa con sus propios campos y signos, no un composite de 7 campos compartido (F-4)**:
+   antes, `setup_percentile_scores` usaba el mismo composite de 7 campos para los 4 setups diarios (con
+   un único caso especial: invertir `change_1w` para `oversold_bounce`) - así que `breakout_volume`,
+   `trend_continuation` y `pullback_to_support` puntuaban de forma casi idéntica pese a ser tesis
+   distintas. Nuevo `SETUP_PERCENTILE_FIELDS: dict[str, dict[str, bool]]` - un conjunto de campos y
+   signos (mayor-es-mejor / invertido) por cada uno de los 7 setups (4 diarios + 3 semanales),
+   documentado inline por qué cada campo entra o se invierte para ese setup concreto.
+5. **Corrección de un docstring falso (F-5)**: el docstring de `watchlist_service.py` citaba una
+   evidencia de ablación que en realidad mide algo distinto (factor-level, no setup-level) - corregido
+   para no reclamar una validación que no existe todavía, con puntero explícito al punto 6.
+6. **Medición real por tipo de setup, no solo por factor (F-6)**: el estudio de ablación ya medía
+   *factores* (¿este campo por sí solo predice el retorno futuro?) pero nunca *setups* (¿esta
+   combinación de reglas, tal y como dispara en producción, gana dinero de verdad?). `FactorSample` ahora
+   guarda `exit_reason`/`bars_held`/`mae_pct`/`mfe_pct`/`risk_pct` directamente de
+   `backtest_engine.TripleBarrierLabel` (antes se descartaban); `compute_setup_outcome_stats` agrega win
+   rate (`exit_reason == "target"`), expectancy en R (`media(retorno_adelante / risk_pct)`), duración
+   mediana en barras y MAE p80 - por setup, por horizonte. Expuesto vía
+   `ablation_report_service.load_setup_outcome_stats`/`setup_outcome_by_name` (lee
+   `factor_ablation_report_v3_h{N}_setup_outcomes.csv` - prefijo `v3` nuevo, **no** sobrescribe los CSV
+   `v2` que §17 y la UI ya citan) y adjuntado a cada `WatchlistItemResponse`/`PremiumWatchlistItemResponse`
+   como `setup_outcome_stats` cuando existe medición para ese setup+horizonte.
+7. **Evidencia real, ejecutándose (F-7)**: `factor_ablation_study.py --horizons 5 10 21 63 126 --regions
+   us europe --use-dynamic-universe --temporal-split --out-prefix docs/factor_ablation_report_v3` -
+   lanzado contra el universo dinámico real (~900 US + ~240 Europa a 2026-08-21). **Todavía en curso al
+   cierre de este bloque** - es un proceso de horas contra ~1.140 tickers × 2 regiones × 5 horizontes.
+   Sus CSV de salida (incluidos los `*_setup_outcomes.csv` del punto 6) se verifican y se commitean por
+   separado en cuanto termine - no se reclama aquí ninguna conclusión de esa corrida todavía, solo que
+   el mecanismo que la produce está construido, probado (`test_factor_ablation_study.py`) y en marcha.
+8. **Diversificación por sector y correlación, no solo por puntuación (F-8)**:
+   `premium_watchlist_service._select_diversified` recorre la lista de candidatos ya ordenada por
+   puntuación y descarta (no sustituye-y-reintenta) cualquiera que llevaría a un sector por encima de
+   `MAX_PER_SECTOR=3`, o cuyos retornos de 60 días correlacionan `>= MAX_CANDIDATE_CORRELATION=0.7` con
+   un nombre ya aprobado (reutilizando `portfolio_construction_service.compute_correlation_matrix`, sin
+   reimplementar nada). Decisión explícita: no se añade una penalización de puntuación adicional al lado
+   del bonus de sector fuerte ya existente - el propio tope estructural de sector ya es la fuerza
+   contraria que pedía el encargo; apilar una segunda penalización blanda habría sido redundante.
+9. **Filtro de liquidez en vivo (no solo en el batch mensual) + exclusión por earnings (F-9)**: la misma
+   corrección de divisa del punto 6 de §20 (`dynamic_universe_service.usd_price_and_dollar_volume`) se
+   extrajo como función compartida y ahora se aplica también dentro del bucle por ticker de
+   `get_universe_snapshot` (con la tasa FX cacheada por divisa para toda la llamada, no por ticker - sin
+   violar la regla de "sin llamadas de red por ticker"). Además, nuevo puerto
+   `MarketDataProvider.get_next_earnings_date` (implementado en `YFinanceProvider` vía
+   `yf.Ticker(ticker).calendar`), usado **solo** en los dos caminos ya establecidos de "profundizar en un
+   único ticker" (`TickerAnalysis.analyze()` y el bucle acotado ≤15/nivel de `premium_watchlist_service`)
+   - nunca en el snapshot del universo completo, para no violar la regla de llamadas de red por ticker en
+   caminos calientes. El nivel diario excluye candidatos con earnings dentro de
+   `SIGN_CHECK_HORIZON_DAYS=21` (el horizonte de holding real reutilizado, no una constante nueva); los
+   niveles semanal/mensual conservan el candidato pero lo marcan visualmente.
+   - **Regresión encontrada y corregida durante este mismo punto**: el nuevo filtro de liquidez en vivo
+     rompió ~20 tests de integración porque `FakeMarketDataProvider._random_walk` (fixture de tests)
+     generaba un volumen (500-5.000 acciones/día) y un suelo de precio (`max(1.0, ...)`) irrealmente
+     bajos para simular un universo curado de grandes capitalizaciones - corregido a 500k-5M
+     acciones/día y un suelo de $20, con comentario explícito de por qué esto es un arreglo de fidelidad
+     del fixture (nunca se pretendió simular penny stocks) y no el patrón prohibido de "arreglar un test
+     haciéndolo más permisivo" (que es sobre no debilitar aserciones de *regla de decisión*, no sobre
+     datos de prueba poco realistas).
+10. **Huecos del frontend cerrados (F-10)**: `percentile_score` visible en la tarjeta de watchlist,
+    `premium_score` (no la puntuación interna de recomendación) como insignia del premium watchlist,
+    claves de React corregidas para incluir `setup` (evitaba colisiones al mostrar el mismo ticker en
+    varios setups), tarjeta de estadística de setup (punto 6) visible en ambas listas, insignia de
+    earnings, aviso de descartes cuando 0 candidatos sobreviven, y retirada de la insignia del backtest
+    legacy walk-forward del premium watchlist (redundante con el backtest de triple-barrera, ver también
+    Bloque H).
+
+**Tests**: ~55 tests nuevos/actualizados en `test_watchlist_service.py`, `test_premium_watchlist_service.py`,
+`test_factor_ablation_study.py`, `test_ablation_report_service.py`, `test_dynamic_universe_service.py`, más
+tests de integración nuevos en `test_market_api.py`. Suite completa (unit+integración): 870 tests en verde,
+`ruff check app tests` limpio.
+
+## 22. Tercera auditoría independiente — Bloque G: mapa de relaciones entre empresas (agosto 2026)
+
+Función nueva explícitamente pedida por el encargo (única excepción a "no escribas módulos nuevos" de
+esta ronda, junto con el propio Bloque F): `relationship_map_service.py` +
+`GET /api/v1/market/tickers/{ticker}/relationships` + una tarjeta en `TickerAnalysisPanel` (pestaña
+"Relaciones"). No hay ningún proveedor gratuito y fiable de cadena de suministro estructurada (FactSet
+Supply Chain y similares son de pago), así que el mapa se construye en tres capas, de la más objetiva a
+la más especulativa - **nunca mezcladas como si fueran la misma clase de evidencia**, cada una etiquetada
+visualmente por fiabilidad en la interfaz:
+
+1. **Estadística (la más fiable, y gratis)**: correlación de retornos a 60/250 sesiones, beta relativa,
+   correlación con desfase (lead-lag, k∈[-5,+5] sesiones - qué activo se mueve primero), co-movimiento en
+   días extremos (±2σ) y divergencia actual frente a la correlación histórica. Todo calculado sobre el
+   OHLCV que `MarketScreenerService.get_universe_snapshot` ya tiene en memoria (nuevo getter público
+   `get_cached_ohlcv()`) - cero llamadas de red nuevas por par.
+   - **Bug real encontrado durante el desarrollo, no solo durante la revisión**: una ventana de 60
+     sesiones con varianza cero hace que `pandas.Series.corr()` devuelva NaN, y `nan is not None` es
+     `True` en Python - un guard `corr_60d is not None` dejaba pasar un NaN silencioso a la aritmética de
+     `is_diverging`. Corregido con `pd.notna()` explícito en el origen: `corr_60d`/`corr_250d` son `None`
+     (nunca un NaN crudo) cuando la correlación no está definida.
+2. **Pares de sector/industria (contexto, gratis, ya en el repo)**: mismos `market_universe.Industry`
+   del ticker analizado, con su RS Rating y estado técnico actual. Sin cuadrante RRG todavía - Bloque E
+   (RRG) quedó fuera del alcance de esta pasada; si se construye después, es la extensión natural aquí.
+3. **Relaciones declaradas en documentos SEC (la más especulativa, EE.UU. solamente)**: búsqueda de texto
+   completo en EDGAR (gratuita, sin clave) de qué otras empresas mencionan a la analizada en su propio
+   10-K/10-Q reciente - la señal más literal de relación comercial disponible sin pagar un feed. Cacheado
+   ≥30 días vía `durable_cache` (una relación de un 10-K cambia una vez al año, no en cada request) y
+   llamado una sola vez por análisis, igual que `get_ticker_info` - nunca desde un camino caliente.
+   `disclosed_available=False` explícito (nunca una lista vacía silenciosa) para Europa o cuando EDGAR
+   falla/tarda - degrada a las capas 1 y 2 sin romper la pantalla.
+   - **Alcance explícito, no construido en esta pasada**: extraer la sección de concentración de clientes
+     del propio 10-K de la empresa analizada (el otro sentido de la relación que pedía el encargo)
+     necesitaría resolver el CIK del ticker y parsear el documento completo, no solo la búsqueda de texto
+     - más frágil de lo que esta pasada puede verificar con confianza sin pruebas contra la API real.
+     Queda señalado aquí como pendiente, no construido a medias.
+- **Región no siempre conocida por el llamador**: a diferencia de cualquier otro endpoint de `market/`,
+  este se alcanza desde una búsqueda de texto libre ("Analizar activo") que puede no saber a qué región
+  pertenece el ticker. `region` no tiene valor por defecto fijo en este endpoint concreto - cuando el
+  llamador lo omite, se resuelve con `market_universe.region_of(ticker)` (el mismo "mejor esfuerzo" ya
+  usado para este caso exacto en `technical_analysis.closed_bars`/`benchmark_for_ticker`), no con un "us"
+  fijo que buscaría un ticker europeo en el universo/caché equivocado.
+- El resultado termina siempre en candidatos accionables: cada ticker relacionado en las tres capas es un
+  botón que lanza su propio análisis completo (reutiliza `search()` del propio panel), no solo una
+  etiqueta - "el mapa debe terminar en candidatos accionables, no en un diagrama bonito".
+
+**Tests**: 22 tests unitarios nuevos en `test_relationship_map_service.py` (estadística, sector/industria,
+EDGAR con `requests.get` mockeado - nunca red real) + 5 tests de integración nuevos en `test_market_api.py`
+para el endpoint (tres capas para un ticker de EE.UU. con EDGAR mockeado, capa 3 no disponible en Europa,
+resolución automática de región sin el parámetro, ticker desconocido con capas vacías en vez de error).
+Suite completa (unit+integración): 870 tests en verde, `ruff check app tests` y `npm run lint`/
+`npm run build` limpios.
+
+## 23. Tercera auditoría independiente — Bloque H: contradicciones de interfaz (agosto 2026)
+
+Bloque puramente de frontend - ningún archivo de `app/` cambia, así que no hay tests de `pytest` nuevos
+ni bump de `ENGINE_VERSION`; verificado con `npm run lint` y `npm run build` limpios. La regla general
+aplicada a los siete puntos: cuando dos lecturas del sistema genuinamente responden preguntas distintas
+(comprar es un checklist de puntuación, vender/gestionar una posición es el motor de salida - ver §8), la
+contradicción **se declara explícitamente en la interfaz**, nunca se oculta ni se fuerza a que las dos
+lecturas coincidan sin evidencia nueva que lo justifique.
+
+1. **Cruce bajista inminente con confianza suficiente, bajo un veredicto COMPRAR**: el encargo original
+   apuntaba a un veto (B-1.3) para resolver esto - fuera de alcance esta pasada (Bloque B no se tocó).
+   `ImminentCrossBadge` ya declaraba que la proyección "no afecta a la puntuación de compra"; ahora,
+   además, cuando el cruce es bajista **y** ya tiene confianza suficiente para que el motor de salida
+   actuase (`clearsActionBar`) **y** el veredicto es "comprar", añade una nota explícita bajo el propio
+   badge señalando que son preguntas distintas y que, con la posición todavía sin abrir, vale la pena
+   esperar a que se resuelva - sin inventar un veto que no existe todavía.
+2. **Dos backtests a distinto horizonte, apilados sin jerarquía**: `TripleBarrierBacktestCard.jsx`
+   (Segunda auditoría, Bloque 2/4) ya documentaba en su propio código que ambos se muestran a propósito,
+   "cada uno etiquetado por lo que realmente es" - retirar uno habría revertido esa decisión ya deliberada
+   sin evidencia nueva. El problema real era de **orden**: el legacy (walk-forward, sin stop/objetivo
+   reales) aparecía primero, y su propio texto ya decía "ver más abajo el backtest de triple-barrera... para
+   la lectura honesta" - invertido respecto a lo que el texto prometía. Corregido intercambiando el orden
+   en `TickerAnalysisPanel.jsx` (triple-barrera primero, con `<h3>` marcado "método principal"; walk-forward
+   después, marcado "secundario") y actualizando "ver más abajo" → "ver arriba" en `BacktestCard.jsx`.
+3. **Monte Carlo con P(stop) > P(objetivo), sin aviso, mientras Kelly sigue sugiriendo tamaño**:
+   relacionado con el punto 4 pero no siempre el mismo caso - `ticker_analysis_service.py` deriva
+   `win_probability` de Kelly de estas mismas dos probabilidades de Monte Carlo
+   (`win_probability_from_barriers`), pero con un ratio riesgo/beneficio suficientemente grande, Kelly
+   puede seguir siendo positivo pese a P(stop) > P(objetivo) - el ratio compensa la asimetría. Dos avisos
+   distintos en `PositionSizingCard.jsx`, cada uno con su propio texto: Kelly negativo/nulo (punto 4,
+   menciona la asimetría de Monte Carlo cuando también está presente) y Monte Carlo desfavorable con Kelly
+   todavía positivo (el ratio riesgo/beneficio compensa, pero vale la pena mirar ambos números) - sin
+   forzar que ninguno de los dos cambie.
+4. **Kelly negativo bajo un veredicto COMPRAR**: `kelly_criterion.recommend_position_size` ya limitaba
+   `recommended_position_pct` a un mínimo de 0% y ya explicaba en su `rationale` que "la ventaja esperada
+   no compensa el riesgo" cuando el Kelly completo es negativo o nulo - pero nada conectaba visualmente
+   ese 0% con el veredicto COMPRAR mostrado justo arriba. Resuelto por el mismo aviso del punto 3.
+5. **Banner de "signo contrario" binario, siempre igual de alarmante sea 1 de 13 factores o 9 de 13**:
+   `RecommendationCard.jsx` ahora calcula la fracción real de factores activos con signo contrario
+   (`mismatchedTriggered.length / triggered.length`) y muestra el conteo explícito ("N de M factores...")
+   en vez de un banner de sí/no. Con mayoría (`>= 50%`) usa el tono de aviso serio ya existente; en
+   minoría, un tono neutro/atenuado nuevo (`--minor`). El umbral del 50% es una decisión de presentación
+   sobre evidencia ya medida (cuántos factores discrepan), no un peso nuevo de `recommendation_engine.py`
+   - no requiere estudio de ablación.
+6. **`SectorForecastCard`: badge "sin señal estadística clara" con números impresos de todas formas**:
+   `forecast_5d_return`/`prob_bullish_21d` son proyecciones reales del ajuste de Markov (nunca
+   fabricadas), pero mostrarlas junto al badge que ya dice "no hay estructura distinguible del azar" las
+   presenta como igual de fiables que una proyección genuina. Ahora se ocultan por completo cuando
+   `has_statistical_structure` es falso, sustituidas por una nota explícita - `current_state_label` (una
+   descripción, no una proyección direccional) se sigue mostrando siempre.
+7. **`SectorStrength` ordena por retorno absoluto del periodo, ignorando `rs_rank`**: la propia etiqueta
+   de la vista es "fuerza relativa", pero el orden de las barras solo miraba el retorno crudo del botón de
+   periodo seleccionado (1D/1S/1M/3M/6M/1A) - un sector +5% en un mercado +8% es un rezagado en RS aunque
+   su barra sea positiva, y podía aparecer por delante de un líder real. Ahora ordena por `rs_rank` (el
+   mismo percentil de periodos combinados que ya decide "sector fuerte/rezagado" en otras vistas de la
+   app, p. ej. `Watchlist.jsx`), con el retorno del periodo elegido de vuelta como criterio de desempate
+   solo cuando ninguno de los dos sectores comparados tiene `rs_rank` (menos de 252 sesiones de
+   historia). El valor de cada barra sigue siendo el retorno del periodo elegido - solo el orden cambia;
+   el `rs_rank` de cada sector se añadió al tooltip para que la razón del orden sea visible, no implícita.

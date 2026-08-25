@@ -60,3 +60,16 @@ class MarketDataProvider(ABC):
         signal, not authoritative (see YFinanceProvider for caveats). Returns
         None if the provider has no holders data for this ticker."""
         ...
+
+    @abstractmethod
+    def get_next_earnings_date(self, ticker: str) -> date | None:
+        """The next (or most recently estimated) earnings report date - same
+        "one-off deep dive, never bulk-scanned" category as `get_ticker_info`
+        (Tercera auditoría, Bloque F-9): a breakout 3 days before earnings is
+        not the same trade as one with no event risk in the holding window,
+        but checking this for an entire ~170-1000-ticker universe on every
+        request would be exactly the per-ticker-network-call-in-a-hot-path
+        CLAUDE.md forbids - only called for a single ticker's deep-dive
+        ("Analizar activo", premium watchlist candidates). Returns None if
+        the provider has no earnings-calendar data for this ticker."""
+        ...

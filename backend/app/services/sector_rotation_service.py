@@ -71,16 +71,33 @@ def assess_sector_rotation(
         return None
 
     leaders = [s.sector for s in ranked[:top_n]]
-    laggards = [s.sector for s in ranked[-top_n:]][::-1]
+    # Tercera auditoría, Bloque A-7: with fewer than 2*top_n sectors actually
+    # ranked (a thin universe, or several sectors missing performance data),
+    # a plain `ranked[-top_n:]` re-included sectors already claimed as
+    # leaders - the same sector could show up as both "leading" and
+    # "lagging" at once. Starting the laggard slice no earlier than `top_n`
+    # means it shrinks (fewer laggards reported) instead of overlapping.
+    laggard_start = max(top_n, len(ranked) - top_n)
+    laggards = [s.sector for s in ranked[laggard_start:]][::-1]
     leader_set = set(leaders)
 
-    best_phase: str | None = None
+    # Tercera auditoría, Bloque A-7: `if overlap > best_overlap` alone let a
+    # tie always resolve to whichever phase happens to iterate first
+    # ("recuperación temprana" - which also has 4 sectors in its leadership
+    # set against the other three phases' 3, a second, compounding bias
+    # toward it on any near-tie). A genuine tie between phases means the
+    # data doesn't actually distinguish between them - report no phase
+    # rather than pick one by insertion order.
     best_overlap = -1
+    tied_phases: list[str] = []
     for phase, phase_sectors in CYCLE_PHASE_LEADERS.items():
         overlap = len(leader_set & phase_sectors)
         if overlap > best_overlap:
-            best_overlap, best_phase = overlap, phase
-    confidence = best_overlap / top_n if top_n and best_overlap > 0 else 0.0
+            best_overlap, tied_phases = overlap, [phase]
+        elif overlap == best_overlap:
+            tied_phases.append(phase)
+    best_phase = tied_phases[0] if len(tied_phases) == 1 else None
+    confidence = best_overlap / top_n if top_n and best_overlap > 0 and best_phase is not None else 0.0
 
     defensive_leadership = len(leader_set & DEFENSIVE_SECTORS) >= 2
     warning = None

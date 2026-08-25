@@ -608,6 +608,13 @@ class TickerAnalysisService:
         # supplies it, see compute_core_signals()'s docstring for why the other
         # two callers (portfolio risk, premium watchlist) deliberately don't.
         info = self.market_data.get_ticker_info(ticker)
+        # Tercera auditoría, Bloque F-9: a breakout 3 days before earnings
+        # isn't the same trade as one with no event risk in the holding
+        # window - only fetched here (a single-ticker deep-dive already
+        # paying for get_ticker_info) and in premium_watchlist_service.py's
+        # bounded candidate loop, never for the whole universe screener.
+        next_earnings = self.market_data.get_next_earnings_date(ticker)
+        days_to_earnings = (next_earnings - date.today()).days if next_earnings else None
         core = compute_core_signals(
             close,
             high,
@@ -681,6 +688,7 @@ class TickerAnalysisService:
             industry=info.industry if info else None,
             currency=info.currency if info else None,
             market_cap=info.market_cap if info else None,
+            days_to_earnings=days_to_earnings,
             price=core.price,
             change_1d=core.change_1d,
             change_1w=core.change_1w,

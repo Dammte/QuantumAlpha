@@ -229,6 +229,22 @@ class MarketContextResponse(BaseModel):
     macro: MacroSnapshotResponse | None
 
 
+class SetupOutcomeStatsResponse(BaseModel):
+    """Tercera auditoría, Bloque F-6: the setup's own historical, realized
+    trading outcome (win rate/expectancy in R/median duration/MAE p80) from
+    `scripts/factor_ablation_study.py`'s v3 run - see
+    `ablation_report_service.SetupOutcomeResult`. `None` on the item itself
+    when that setup hasn't been measured yet (no v3 CSV on file) - never a
+    fabricated number."""
+
+    setup: str
+    n: int
+    win_rate: float
+    expectancy_r: float
+    median_bars_held: float
+    mae_p80_pct: float
+
+
 class WatchlistItemResponse(BaseModel):
     ticker: str
     sector: str
@@ -243,6 +259,7 @@ class WatchlistItemResponse(BaseModel):
     # ones (not split into setup types) - see watchlist_service.py.
     setup: str | None = None
     percentile_score: float | None = None
+    setup_outcome_stats: SetupOutcomeStatsResponse | None = None
 
 
 class PremiumWatchlistItemResponse(BaseModel):
@@ -262,6 +279,9 @@ class PremiumWatchlistItemResponse(BaseModel):
     premium_score: float
     signals: CoreSignalsResponse
     setup: str | None = None
+    also_matched_setups: list[str] = []
+    setup_outcome_stats: SetupOutcomeStatsResponse | None = None
+    days_to_earnings: int | None = None
 
 
 class TradePlanResponse(BaseModel):
@@ -406,4 +426,50 @@ class PortfolioConstructionResponse(BaseModel):
     suggested_to_trim: list[PositionRiskContributionResponse]  # top contributors to trim if vol exceeds target
     aggregate_risk: AggregateRiskReportResponse
     tickers_without_trade_plan: list[str]  # excluded from aggregate_risk - no known stop to size risk against
+    computed_at: datetime
+
+
+# --- Relationship map (Tercera auditoría, Bloque G) --------------------------
+
+
+class StatisticalRelationResponse(BaseModel):
+    ticker: str
+    sector: str | None
+    correlation_60d: float | None
+    correlation_250d: float | None
+    relative_beta: float | None
+    lead_lag_days: int | None
+    lead_lag_correlation: float | None
+    comovement_extreme_days_pct: float | None
+    is_diverging: bool
+    setup: str | None
+    percentile_score: float | None
+
+
+class SectorPeerResponse(BaseModel):
+    ticker: str
+    sector: str
+    industry: str
+    rs_rating: int | None
+    trend: str
+    setup: str | None
+    percentile_score: float | None
+
+
+class DisclosedRelationResponse(BaseModel):
+    filer_name: str
+    filer_ticker: str | None
+    form: str
+    filing_date: date
+
+
+class RelationshipMapResponse(BaseModel):
+    ticker: str
+    region: str
+    statistical: list[StatisticalRelationResponse]
+    sector_peers: list[SectorPeerResponse]
+    # `None` (not `[]`) when disclosed_available is False - a non-US ticker,
+    # or no company name to search EDGAR for. See relationship_map_service.py.
+    disclosed: list[DisclosedRelationResponse] | None
+    disclosed_available: bool
     computed_at: datetime

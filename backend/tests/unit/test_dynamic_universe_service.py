@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 import pandas as pd
+import pytest
 
 from app.domain.models.ticker_info import TickerInfo
 from app.domain.models.universe_membership import UniverseMember
@@ -79,9 +80,9 @@ def _ohlc_df(n: int, close: float, volume: float) -> pd.DataFrame:
     )
 
 
-def _ticker_info(market_cap: float | None) -> TickerInfo:
+def _ticker_info(market_cap: float | None, currency: str = "USD") -> TickerInfo:
     return TickerInfo(
-        ticker="X", name=None, sector=None, industry=None, market_cap=market_cap, currency="USD",
+        ticker="X", name=None, sector=None, industry=None, market_cap=market_cap, currency=currency,
         trailing_pe=None, forward_pe=None, dividend_yield=None, beta=None, average_volume=None,
         analyst_recommendation=None, analyst_target_mean_price=None, analyst_opinion_count=None,
         revenue_growth=None, profit_margins=None, debt_to_equity=None,
@@ -89,12 +90,22 @@ def _ticker_info(market_cap: float | None) -> TickerInfo:
 
 
 class _FakeMarketData:
-    """Duck-typed stand-in for MarketDataService - only the two methods
+    """Duck-typed stand-in for MarketDataService - only the methods
     apply_liquidity_filter actually calls."""
 
-    def __init__(self, ohlcv: dict[str, pd.DataFrame], market_caps: dict[str, float | None]):
+    def __init__(
+        self,
+        ohlcv: dict[str, pd.DataFrame],
+        market_caps: dict[str, float | None],
+        currencies: dict[str, str] | None = None,
+        fx_rates: dict[str, float | None] | None = None,
+    ):
         self._ohlcv = ohlcv
         self._market_caps = market_caps
+        self._currencies = currencies or {}
+        # currency -> rate to USD; a real fx_rate_provider would key this by
+        # (from, to) but every call here targets "USD" so this stays flat.
+        self._fx_rates = fx_rates or {}
 
     def get_bulk_ohlcv(self, tickers, start, end):
         return {t: self._ohlcv[t] for t in tickers if t in self._ohlcv}
@@ -102,7 +113,12 @@ class _FakeMarketData:
     def get_ticker_info(self, ticker):
         if ticker not in self._market_caps:
             return None
-        return _ticker_info(self._market_caps[ticker])
+        return _ticker_info(self._market_caps[ticker], currency=self._currencies.get(ticker, "USD"))
+
+    def get_fx_rate(self, from_currency, to_currency):
+        if from_currency == "USD":
+            return 1.0
+        return self._fx_rates.get(from_currency)
 
 
 def test_apply_liquidity_filter_keeps_names_clearing_every_bar():
@@ -153,6 +169,106 @@ def test_apply_liquidity_filter_rejects_a_ticker_with_no_data_at_all():
 
 def test_apply_liquidity_filter_empty_input_returns_empty():
     assert dus.apply_liquidity_filter([], _FakeMarketData({}, {})) == []
+
+
+# --- usd_price_and_dollar_volume (Tercera auditoría, Bloque F-9) -----------
+
+
+def test_usd_price_and_dollar_volume_converts_by_the_given_rate():
+    df = _ohlc_df(25, close=100.0, volume=1_000_000.0)
+    result = dus.usd_price_and_dollar_volume(df, "GBp", fx_rate=0.0127)
+    assert result is not None
+    price_usd, dollar_volume_usd = result
+    assert price_usd == pytest.approx(1.27)
+    assert dollar_volume_usd == pytest.approx(100.0 * 1_000_000.0 * 0.0127)
+
+
+def test_usd_price_and_dollar_volume_none_when_fx_rate_unavailable():
+    df = _ohlc_df(25, close=100.0, volume=1_000_000.0)
+    assert dus.usd_price_and_dollar_volume(df, "SEK", fx_rate=None) is None
+
+
+def test_usd_price_and_dollar_volume_none_with_too_little_history():
+    df = _ohlc_df(5, close=100.0, volume=1_000_000.0)
+    assert dus.usd_price_and_dollar_volume(df, "USD", fx_rate=1.0) is None
+
+
+def test_usd_price_and_dollar_volume_none_with_empty_df():
+    assert dus.usd_price_and_dollar_volume(pd.DataFrame(), "USD", fx_rate=1.0) is None
+
+
+# --- Tercera auditoría, Bloque A-6: FX-converted price/volume + staleness ---
+
+
+def test_apply_liquidity_filter_rejects_a_gbp_penny_stock_the_old_check_let_through():
+    # 300 GBp (=  £3.00, ~$3.81 at this rate) - clearly below the $5 floor in
+    # real terms, but the *raw* number (300) trivially cleared the old
+    # unconverted "last_price >= MIN_PRICE(5)" check, and the raw $ volume
+    # (300 x 10M shares = "3,000,000,000") cleared the $20M bar by ~150x
+    # before conversion too. Both must now fail once correctly converted.
+    constituents = [dus.RawConstituent(ticker="CHEAP.L", sector=None)]
+    market_data = _FakeMarketData(
+        ohlcv={"CHEAP.L": _ohlc_df(25, close=300.0, volume=10_000_000.0)},
+        market_caps={"CHEAP.L": 2_000_000_000.0},
+        currencies={"CHEAP.L": "GBp"},
+        fx_rates={"GBp": 0.0127},  # ~1.27 USD/GBP, expressed per penny
+    )
+    assert dus.apply_liquidity_filter(constituents, market_data) == []
+
+
+def test_apply_liquidity_filter_keeps_a_genuinely_liquid_gbp_name_after_conversion():
+    # 500 GBp (£5.00, ~$6.35) with real volume - clears the bar once
+    # properly converted, same as it always should have.
+    constituents = [dus.RawConstituent(ticker="REAL.L", sector=None)]
+    market_data = _FakeMarketData(
+        ohlcv={"REAL.L": _ohlc_df(25, close=500.0, volume=10_000_000.0)},  # 500 * 0.0127 * 10M = $63.5M/day
+        market_caps={"REAL.L": 5_000_000_000.0},
+        currencies={"REAL.L": "GBp"},
+        fx_rates={"GBp": 0.0127},
+    )
+    result = dus.apply_liquidity_filter(constituents, market_data)
+    assert [m.ticker for m in result] == ["REAL.L"]
+
+
+def test_apply_liquidity_filter_rejects_a_swedish_name_under_the_usd_equivalent_bar():
+    # 20M SEK/day (~$1.9M at ~0.095 USD/SEK) is well under the real $20M
+    # floor, even though the raw SEK number alone would have cleared it.
+    constituents = [dus.RawConstituent(ticker="THIN.ST", sector=None)]
+    market_data = _FakeMarketData(
+        ohlcv={"THIN.ST": _ohlc_df(25, close=100.0, volume=200_000.0)},  # 100*200k = 20M SEK/day raw
+        market_caps={"THIN.ST": 2_000_000_000.0},
+        currencies={"THIN.ST": "SEK"},
+        fx_rates={"SEK": 0.095},
+    )
+    assert dus.apply_liquidity_filter(constituents, market_data) == []
+
+
+def test_apply_liquidity_filter_rejects_when_fx_rate_is_unavailable():
+    # Can't confirm this clears a USD bar without a rate - fail safe rather
+    # than silently treating it as if it were already USD.
+    constituents = [dus.RawConstituent(ticker="NOFX.ST", sector=None)]
+    market_data = _FakeMarketData(
+        ohlcv={"NOFX.ST": _ohlc_df(25, close=100.0, volume=1_000_000.0)},
+        market_caps={"NOFX.ST": 2_000_000_000.0},
+        currencies={"NOFX.ST": "SEK"},
+        fx_rates={},  # SEK rate unavailable
+    )
+    assert dus.apply_liquidity_filter(constituents, market_data) == []
+
+
+def test_apply_liquidity_filter_rejects_a_stale_last_bar():
+    # A ticker delisted/halted since well before "today" - the window still
+    # has >= 20 bars total, but the *latest* one is well past MAX_STALE_DAYS,
+    # which the old check never looked at.
+    stale_dates = pd.bdate_range(end=date.today() - timedelta(days=20), periods=25)
+    df = pd.DataFrame(
+        {"open": [50.0] * 25, "high": [50.0] * 25, "low": [50.0] * 25, "close": [50.0] * 25,
+         "volume": [1_000_000.0] * 25},
+        index=stale_dates,
+    )
+    constituents = [dus.RawConstituent(ticker="STALE", sector=None)]
+    market_data = _FakeMarketData(ohlcv={"STALE": df}, market_caps={"STALE": 2_000_000_000.0})
+    assert dus.apply_liquidity_filter(constituents, market_data) == []
 
 
 class _FakeUniverseMembershipRepo:
@@ -250,3 +366,38 @@ def test_refresh_universe_membership_falls_back_when_liquidity_filter_leaves_not
     count, source = dus.refresh_universe_membership("us", market_data, repo)
     assert source == "curated_fallback"
     assert count > 0
+
+
+# --- Tercera auditoría, Bloque F-1: request-time cheap price/volume screen --
+
+
+def test_apply_cheap_price_volume_screen_keeps_liquid_names_and_drops_illiquid_ones():
+    ohlcv = {
+        "LIQUID": _ohlc_df(25, close=50.0, volume=1_000_000.0),  # $50M/day
+        "PENNY": _ohlc_df(25, close=1.0, volume=100_000_000.0),  # price < $5
+        "THIN": _ohlc_df(25, close=50.0, volume=1_000.0),  # $50k/day, well under $20M
+    }
+    result = dus.apply_cheap_price_volume_screen(ohlcv, list(ohlcv))
+    assert result == ["LIQUID"]
+
+
+def test_apply_cheap_price_volume_screen_truncates_to_keep_top_n_by_dollar_volume():
+    ohlcv = {
+        f"T{i}": _ohlc_df(25, close=50.0, volume=(1_000_000.0 * (i + 1)))  # T0 thinnest, T4 thickest
+        for i in range(5)
+    }
+    result = dus.apply_cheap_price_volume_screen(ohlcv, list(ohlcv), keep_top_n=2)
+    assert result == ["T4", "T3"]  # highest dollar volume first
+
+
+def test_apply_cheap_price_volume_screen_skips_tickers_with_no_or_thin_data():
+    ohlcv = {
+        "HASDATA": _ohlc_df(25, close=50.0, volume=1_000_000.0),
+        "TOOFEW": _ohlc_df(5, close=50.0, volume=1e6),
+    }
+    result = dus.apply_cheap_price_volume_screen(ohlcv, ["HASDATA", "TOOFEW", "MISSING"])
+    assert result == ["HASDATA"]
+
+
+def test_apply_cheap_price_volume_screen_empty_input():
+    assert dus.apply_cheap_price_volume_screen({}, []) == []

@@ -17,8 +17,20 @@ function SectorForecastRow({ forecast, onNavigateToTicker }) {
       </div>
       <div className="watchlist-card__stats">
         <span>Estado actual: {forecast.current_state_label}</span>
-        <span>Proyección a 5 días: {formatPercent(forecast.forecast_5d_return, { signed: true })}</span>
-        <span>Prob. de cierre alcista a 21 días: {formatPercent(forecast.prob_bullish_21d)}</span>
+        {/* Tercera auditoría, Bloque H: estos dos números son proyecciones
+            del propio modelo de Markov, no fabricados - pero mostrarlos junto
+            al badge de "sin señal estadística clara" de arriba los presenta
+            como si fueran igual de fiables que una proyección con estructura
+            genuina. Cuando el badge ya dice que no hay estructura, se ocultan
+            en vez de imprimirse de todos modos. */}
+        {forecast.has_statistical_structure ? (
+          <>
+            <span>Proyección a 5 días: {formatPercent(forecast.forecast_5d_return, { signed: true })}</span>
+            <span>Prob. de cierre alcista a 21 días: {formatPercent(forecast.prob_bullish_21d)}</span>
+          </>
+        ) : (
+          <span className="empty-state">Sin estructura distinguible del azar - no se muestra una proyección numérica</span>
+        )}
       </div>
       {forecast.top_stocks.length > 0 && (
         <p className="watchlist-card__sector-tag">

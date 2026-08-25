@@ -89,6 +89,27 @@ def test_trailing_stop_none_when_neither_available():
     assert tm.update_trailing_stop(current_stop=None, candidate=None) is None
 
 
+def test_trailing_stop_discards_a_corrupt_current_stop_above_price():
+    # Tercera auditoría, Bloque A-1: a stop already persisted above the
+    # current price (from before the entry-bounded Chandelier fix existed)
+    # must not win max(current_stop, candidate) forever just because it's
+    # numerically larger - it's an impossible state for an open long
+    # position, not a legitimately "locked in" one.
+    assert tm.update_trailing_stop(current_stop=263.0, candidate=90.0, price=95.0) == pytest.approx(90.0)
+
+
+def test_trailing_stop_corrupt_current_stop_with_no_candidate_yet_returns_none():
+    # No valid replacement available this bar either - honest "no valid stop
+    # right now" beats silently keeping the impossible 263.0.
+    assert tm.update_trailing_stop(current_stop=263.0, candidate=None, price=95.0) is None
+
+
+def test_trailing_stop_price_guard_is_a_no_op_when_current_stop_is_legitimate():
+    # A current_stop below price is untouched by the guard - same result as
+    # before this fix for every already-healthy position.
+    assert tm.update_trailing_stop(current_stop=90.0, candidate=85.0, price=95.0) == pytest.approx(90.0)
+
+
 # --- compute_trailing_stop: end-to-end --------------------------------------
 
 
@@ -134,6 +155,24 @@ def test_compute_trailing_stop_never_places_the_stop_at_or_above_the_current_pri
     # Unguarded candidate would be 130 - 3*2 = 124.0, above the 101.0 price -
     # discarded, current_stop (95.0, itself already below price) stands.
     assert result.stop == pytest.approx(95.0)
+
+
+def test_compute_trailing_stop_self_heals_a_corrupt_stop_persisted_before_the_fix():
+    # Reproduces the brief's exact case: a plan whose current_stop (263.0)
+    # was left above price by the pre-fix Chandelier bug. Three consecutive
+    # evaluations, same shape as the real evaluate-and-persist loop in
+    # portfolio_risk_service.py, must recover a valid (below-price) stop
+    # immediately on the first one - not stay wedged at 263.0 forever.
+    high = pd.Series([90.0] * 17 + [96.0, 95.0, 94.0, 93.0, 92.0])  # window high = 96
+    atr14 = pd.Series([1.0] * 22)
+    current_stop = 263.0
+    for _ in range(3):
+        result = tm.compute_trailing_stop(
+            high, atr14, current_stop=current_stop, r_multiple=0.2, vol_regime="normal", price=95.0
+        )
+        assert result.stop is not None
+        assert result.stop < 95.0
+        current_stop = result.stop
 
 
 def test_compute_trailing_stop_price_guard_does_not_block_a_valid_candidate_below_price():

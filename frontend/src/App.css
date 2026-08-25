@@ -1661,6 +1661,15 @@
   margin: 0 0 10px;
 }
 
+/* Tercera auditoría, Bloque F-6: the setup's own historical, realized
+   outcome - a plain, muted line, not another badge competing for attention. */
+.watchlist-card__setup-outcome {
+  font-size: 11px;
+  color: var(--text);
+  margin: 0 0 8px;
+  line-height: 1.4;
+}
+
 .premium-watchlist-card {
   display: flex;
   flex-direction: column;
@@ -1682,17 +1691,14 @@
   color: var(--cat-4);
 }
 
-.premium-watchlist-card__backtest {
+/* Tercera auditoría, Bloque F-9: earnings inside the daily tier's own
+   holding horizon (weekly/monthly tiers keep the candidate, this is the
+   "at minimum, mark it visually" case for those). */
+.premium-watchlist-card__earnings-warning {
   margin: 0 0 8px;
   font-size: 12px;
-  color: var(--text);
-}
-
-.premium-watchlist-card__backtest-text {
-  display: block;
-  margin-top: 4px;
-  color: var(--text);
-  line-height: 1.4;
+  color: var(--series-critical, #d03b3b);
+  font-weight: 600;
 }
 
 .premium-watchlist-card__kelly {
@@ -1751,9 +1757,20 @@
   font-weight: 600;
   padding: 3px 9px;
   border-radius: 999px;
-  margin: 6px 0;
+  margin: 6px 4px 6px 0;
   background: var(--accent-bg);
   color: var(--accent);
+}
+
+/* Tercera auditoría, Bloque A-5: a ticker matching several setups shows its
+   best one as the primary badge above, and every other setup it also
+   matched here - muted, so it reads as "also true", not as a second
+   equally-weighted candidate slot. */
+.setup-badge--secondary {
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  border: 1px solid var(--border);
 }
 
 .premium-watchlist__discard-note {
@@ -1798,6 +1815,14 @@
   margin-left: 6px;
   font-size: 12px;
   color: var(--text);
+}
+
+.imminent-cross-badge__conflict-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text);
+  font-style: italic;
 }
 
 /* Signal badges (price-action risk read on a held position) */
@@ -2099,11 +2124,19 @@
 .recommendation-card__sign-warning {
   font-size: 12.5px;
   color: var(--text-h);
-  background: rgba(208, 59, 59, 0.08);
-  border: 1px solid var(--series-critical);
   border-radius: 8px;
   padding: 10px 14px;
   margin: 10px 0;
+}
+/* Tercera auditoría, Bloque H: severidad proporcional a la fracción de
+   factores contradichos, no un único banner fijo (ver RecommendationCard.jsx). */
+.recommendation-card__sign-warning--majority {
+  background: rgba(208, 59, 59, 0.08);
+  border: 1px solid var(--series-critical);
+}
+.recommendation-card__sign-warning--minor {
+  background: var(--bg);
+  border: 1px solid var(--border);
 }
 
 /* Fundamentals */
@@ -2425,6 +2458,17 @@
   border-radius: 10px;
   padding: 14px 16px;
   margin-top: 16px;
+}
+
+/* Tercera auditoría, Bloque H: COMPRAR + Kelly desfavorable, declarado. */
+.position-sizing-card__conflict-warning {
+  font-size: 12.5px;
+  color: var(--text-h);
+  background: rgba(208, 59, 59, 0.08);
+  border: 1px solid var(--series-critical);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
 }
 
 .position-sizing-card__headline {
@@ -2764,4 +2808,98 @@
   color: var(--series-critical);
   font-weight: 600;
   font-size: 12px;
+}
+
+/* Tercera auditoría, Bloque G: relationship map - three layers, each visually
+   distinct by reliability (never blended into one undifferentiated list). */
+
+.relationship-map {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.relationship-map__layer {
+  border-left: 3px solid var(--border);
+  padding-left: 14px;
+}
+.relationship-map__layer--statistical {
+  border-left-color: var(--series-good);
+}
+.relationship-map__layer--sector {
+  border-left-color: var(--accent);
+}
+.relationship-map__layer--disclosed {
+  border-left-color: var(--border);
+}
+
+.relationship-map__layer-header h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.relationship-map__reliability {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.relationship-map__reliability--high {
+  background: rgba(12, 163, 12, 0.14);
+  color: var(--series-good);
+}
+.relationship-map__reliability--mid {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.relationship-map__reliability--low {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.relationship-map__hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.relationship-map__no-setup {
+  color: var(--text);
+}
+
+.relationship-map__divergence-badge {
+  margin-left: 6px;
+}
+
+.relationship-map__disclosed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.relationship-map__disclosed-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.relationship-map__disclosed-filer {
+  color: var(--text-h);
+  font-weight: 500;
+}
+
+.relationship-map__disclosed-meta {
+  color: var(--text);
+  white-space: nowrap;
 }
