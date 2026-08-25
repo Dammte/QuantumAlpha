@@ -1125,6 +1125,26 @@ resolución automática de región sin el parámetro, ticker desconocido con cap
 Suite completa (unit+integración): 870 tests en verde, `ruff check app tests` y `npm run lint`/
 `npm run build` limpios.
 
+**Bug real encontrado verificando el despliegue en producción, no en los tests**: nada más desplegar,
+`GET /tickers/AAPL/relationships` devolvía `"statistical": []` - AAPL, con toda seguridad, tiene
+correlaciones reales con el resto del universo tecnológico. Causa raíz en
+`market_screener_service.get_universe_snapshot`: sus dos atajos de caché (TTL en proceso, y el durable
+que sobrevive a un redeploy) devolvían el snapshot sin pasar nunca por la descarga de OHLCV, así que
+`_ohlcv_cache` se quedaba vacío en cualquier worker que no hubiera hecho el recálculo completo desde que
+arrancó - `get_cached_ohlcv()` (la fuente de `compute_statistical_relations`) devolvía `{}` en silencio.
+`get_proximity_matches` ya tenía este mismo hueco, documentado en su día como "silencioso pero aceptable"
+- aceptable para un screener que de por sí puede devolver `[]` con pocas consecuencias, no para una capa
+que se anuncia explícitamente como "la más fiable" de una función nueva. Arreglado con
+`_ensure_ohlcv_cache_warm`: tras cualquiera de los dos atajos de caché, si `_ohlcv_cache` está frío,
+descarga el OHLCV de los tickers del propio snapshot (la misma llamada por lotes de siempre, sin repetir
+el cálculo de indicadores - Bloque F-1 ya midió que esa descarga cuesta igual para 170 o 1.000 tickers)
+antes de devolver. Verificado end-to-end contra el backend real en Render tras el fix: la misma llamada a
+AAPL ahora completa en ~104s (primera vez, universo + búsqueda EDGAR en vivo) con datos reales en las tres
+capas. `sector_peers: []` para AAPL en ese mismo chequeo, en cambio, **no** era un bug -
+`market_universe.py` no tiene a AAPL en ningún `Industry.tickers` (solo en `TICKER_CAP_TIER`), así que la
+lista vacía es la respuesta honesta, no un fallo. 6 tests nuevos en `test_market_screener_service.py`
+reproducen ambos atajos de caché contra un `_ohlcv_cache` frío.
+
 ## 23. Tercera auditoría independiente — Bloque H: contradicciones de interfaz (agosto 2026)
 
 Bloque puramente de frontend - ningún archivo de `app/` cambia, así que no hay tests de `pytest` nuevos

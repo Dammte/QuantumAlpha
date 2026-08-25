@@ -393,6 +393,33 @@ class MarketScreenerService:
         cached = self._ohlcv_cache.get(region)
         return cached[1] if cached is not None else {}
 
+    def _ensure_ohlcv_cache_warm(self, region: str, snapshots: list[TickerSnapshot]) -> None:
+        """Tercera auditoría, Bloque G, bug real encontrado en producción: un
+        snapshot servido por cualquiera de los dos atajos de caché de abajo
+        (TTL en proceso o durable) nunca pasaba por la descarga de OHLCV, así
+        que `_ohlcv_cache` se quedaba vacío en cualquier worker que no
+        hubiera hecho el recálculo completo todavía - `get_cached_ohlcv()`
+        devolvía `{}` y `relationship_map_service.compute_statistical_relations`
+        veía un universo vacío en silencio (confirmado contra el backend real:
+        AAPL con `statistical: []` nada más desplegar). `get_proximity_matches`
+        ya documentaba este mismo hueco como "un hueco silencioso, aceptable" -
+        aceptable para un screener que igual muestra `[]` con pocas
+        consecuencias, no para una capa entera de una función nueva que se
+        anuncia como "estadística, la más fiable". La descarga en sí es una
+        sola llamada por lotes (Bloque F-1: cuesta lo mismo para 170 o 1.000
+        tickers) - esto nunca repite el cálculo de indicadores, solo rellena
+        `_ohlcv_cache` cuando de verdad falta o caducó."""
+        cached = self._ohlcv_cache.get(region)
+        if cached is not None and datetime.now(UTC) - cached[0] < CACHE_TTL:
+            return
+        tickers = [s.ticker for s in snapshots]
+        if not tickers:
+            return
+        benchmark_ticker = benchmark_for_region(region)
+        start, end = self._date_range()
+        ohlcv_by_ticker = self.market_data.get_bulk_ohlcv([*tickers, benchmark_ticker], start, end)
+        self._ohlcv_cache[region] = (datetime.now(UTC), ohlcv_by_ticker)
+
     def get_universe_snapshot(
         self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
     ) -> list[TickerSnapshot]:
@@ -400,6 +427,7 @@ class MarketScreenerService:
         if not force_refresh and cached is not None:
             cached_at, snapshots = cached
             if datetime.now(UTC) - cached_at < CACHE_TTL:
+                self._ensure_ohlcv_cache_warm(region, snapshots)
                 return snapshots
 
         # In-process cache missed (cold start, just after a deploy, or genuinely
@@ -416,6 +444,7 @@ class MarketScreenerService:
             snapshots = durable_cache.load_fresh_as(db, snapshot_key, CACHE_TTL, _reconstruct_snapshots)
             if snapshots is not None:
                 self._snapshot_cache[region] = (datetime.now(UTC), snapshots)
+                self._ensure_ohlcv_cache_warm(region, snapshots)
                 return snapshots
 
         # Tercera auditoría, Bloque F-1: the dynamic, point-in-time universe
@@ -518,13 +547,14 @@ class MarketScreenerService:
         level right now" screener - reuses the OHLCV already fetched for the
         universe snapshot rather than re-downloading it.
 
-        Only warm right after a real (non-durable-cache) `get_universe_snapshot`
-        computation in *this* process, since raw OHLCV frames aren't themselves
-        part of the durable cache (only the derived `TickerSnapshot`s are, see
-        `durable_cache.py`) - so right after a restart, this returns empty until
-        the in-process cache has been filled at least once by a live recompute.
-        A quiet, temporary gap rather than a crash, consistent with every other
-        graceful-degradation point in this module."""
+        Raw OHLCV frames aren't themselves part of the durable cache (only the
+        derived `TickerSnapshot`s are, see `durable_cache.py`), so a snapshot
+        served from either cache used to leave `_ohlcv_cache` cold - fixed in
+        `get_universe_snapshot`/`_ensure_ohlcv_cache_warm` (Tercera auditoría,
+        Bloque G: found live in production, `relationship_map_service.py`'s
+        Layer 1 was silently returning `[]` for every ticker on a freshly
+        deployed worker). This still returns `[]` only in the genuine edge
+        case of an empty universe for this region."""
         # ensures _ohlcv_cache is warm
         self.get_universe_snapshot(region=region, force_refresh=force_refresh, db=db)
         cached = self._ohlcv_cache.get(region)

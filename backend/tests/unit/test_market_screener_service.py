@@ -327,3 +327,84 @@ def test_apply_filters_sorts_none_change_1d_last_under_ascending_sort_too():
     strong = _snapshot("STRONG", change_1d=0.05)
     results = mss.apply_filters([no_value, weak, strong], mss.ScreenerFilters(sort_dir="asc"))
     assert [s.ticker for s in results] == ["WEAK", "STRONG", "NO_VALUE"]
+
+
+# --- Tercera auditoría, Bloque G: a cache-hit snapshot must still warm _ohlcv_cache.
+# Real bug found live in production right after deploying relationship_map_service.py:
+# a snapshot served from either cache shortcut in get_universe_snapshot never
+# populated _ohlcv_cache, so get_cached_ohlcv() returned {} on any worker that
+# hadn't happened to take the full-recompute path yet - compute_statistical_relations
+# silently saw an empty universe (confirmed against the real backend: AAPL came
+# back with "statistical": [] right after this exact code shipped).
+
+
+class _FakeMarketData:
+    """Just enough of MarketDataService for _ensure_ohlcv_cache_warm's single
+    get_bulk_ohlcv call, with a counter to prove a warm cache isn't re-fetched."""
+
+    def __init__(self, ohlcv):
+        self._ohlcv = ohlcv
+        self.calls = 0
+
+    def get_bulk_ohlcv(self, tickers, start, end):
+        self.calls += 1
+        return self._ohlcv
+
+
+def test_ensure_ohlcv_cache_warm_populates_when_cold():
+    fake_df = _df([100.0] * 60)
+    market_data = _FakeMarketData({"AAPL": fake_df})
+    service = mss.MarketScreenerService(market_data)
+    assert service.get_cached_ohlcv("us") == {}
+
+    service._ensure_ohlcv_cache_warm("us", [_snapshot("AAPL")])
+
+    assert service.get_cached_ohlcv("us") == {"AAPL": fake_df}
+    assert market_data.calls == 1
+
+
+def test_ensure_ohlcv_cache_warm_is_a_noop_once_already_warm():
+    market_data = _FakeMarketData({"AAPL": _df([100.0] * 60)})
+    service = mss.MarketScreenerService(market_data)
+    service._ensure_ohlcv_cache_warm("us", [_snapshot("AAPL")])
+    assert market_data.calls == 1
+
+    service._ensure_ohlcv_cache_warm("us", [_snapshot("AAPL")])
+    assert market_data.calls == 1  # still within CACHE_TTL - no second fetch
+
+
+def test_ensure_ohlcv_cache_warm_skipped_for_an_empty_snapshot():
+    market_data = _FakeMarketData({})
+    service = mss.MarketScreenerService(market_data)
+    service._ensure_ohlcv_cache_warm("us", [])
+    assert market_data.calls == 0
+    assert service.get_cached_ohlcv("us") == {}
+
+
+def test_get_universe_snapshot_in_process_cache_hit_still_warms_ohlcv_cache():
+    fake_df = _df([100.0] * 60)
+    market_data = _FakeMarketData({"AAPL": fake_df})
+    service = mss.MarketScreenerService(market_data)
+    snapshot = [_snapshot("AAPL")]
+    service._snapshot_cache["us"] = (mss.datetime.now(mss.UTC), snapshot)
+    assert service.get_cached_ohlcv("us") == {}  # cold before the call under test
+
+    result = service.get_universe_snapshot(region="us")
+
+    assert result == snapshot  # served from the in-process cache, unchanged
+    assert service.get_cached_ohlcv("us") == {"AAPL": fake_df}
+
+
+def test_get_universe_snapshot_durable_cache_hit_still_warms_ohlcv_cache(monkeypatch):
+    fake_df = _df([100.0] * 60)
+    market_data = _FakeMarketData({"AAPL": fake_df})
+    service = mss.MarketScreenerService(market_data)
+    snapshot = [_snapshot("AAPL")]
+    # In-process cache is cold (simulates a freshly restarted worker); the
+    # durable cache is the one that hits.
+    monkeypatch.setattr(mss.durable_cache, "load_fresh_as", lambda *a, **k: snapshot)
+
+    result = service.get_universe_snapshot(region="us", db=object())
+
+    assert result == snapshot
+    assert service.get_cached_ohlcv("us") == {"AAPL": fake_df}
