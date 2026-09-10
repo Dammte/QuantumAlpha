@@ -8,21 +8,21 @@ leaving them at their first-draft values - the same status
 Deliberately a *sibling* script to `factor_ablation_study.py`, not an
 extension of it: that script's own `collect_samples_for_ticker` hardcodes
 `vol_regime=None` for every single sample, with its own comment explaining why
-- a per-bar GARCH refit across the full ~1,140-ticker universe x 10 years
-would be prohibitively expensive at that scale, the same reason Markov/GARCH
-are excluded from that study entirely. That means the main ablation study
-structurally *cannot* exercise the regime-dependent multipliers this script
-exists to test - every sample there falls back to
+- historically, a per-bar GARCH refit across the full ~1,140-ticker universe x
+10 years would have been prohibitively expensive at that scale. That's why
+the main ablation study structurally *cannot* exercise the regime-dependent
+multipliers this script exists to test - every sample there falls back to
 `CHANDELIER_MULTIPLIER_DEFAULT` regardless of what the regime dict says.
 
-This script pays the GARCH cost deliberately, on a small, representative
-sample of tickers (not the full universe) - the same trade-off the original
-factor ablation study made at ~217 tickers before this project's universe
-grew via the dynamic membership table. In production, the live path (GARCH is
-already computed per ticker for "Analizar activo") *does* use the real
-regime-dependent multiplier - this script's sample size is a deliberate cost
-trade-off for a calibration run, not a claim that regime detection doesn't
-matter in the live system.
+2026-09: the volatility-regime input itself changed from a per-ticker GARCH
+fit (`volatility_model.py`, retired for lack of cross-sectional evidence - see
+`recommendation_engine.py`'s module docstring) to
+`technical_analysis.volatility_regime_from_atr_percentile`, which is cheap
+(no model fit, just a percentile of an indicator every caller already
+computes). This script's small, deliberate sample (not the full universe) is
+kept as-is for this pass rather than expanded to the full universe alongside
+that change - reorienting this study's scope is Fase 8 work (see
+`docs/quant_methodology.md`), not a side effect of an unrelated import fix.
 
 Reuses `backtest_engine.find_triple_barrier_entries` (the same "what would the
 system have proposed here" replay `run_triple_barrier_backtest` itself uses)
@@ -68,7 +68,6 @@ from app.services import technical_analysis as ta  # noqa: E402
 from app.services import trade_manager as tm  # noqa: E402
 from app.services.market_data_service import MarketDataService  # noqa: E402
 from app.services.market_universe import universe_tickers  # noqa: E402
-from app.services.volatility_model import fit_garch  # noqa: E402
 
 HISTORY_YEARS = 10
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
@@ -152,12 +151,13 @@ def sample_tickers(regions: list[str], n_per_region: int, seed: int = 7) -> dict
     return ticker_region
 
 
-def resolve_vol_regime(close: pd.Series) -> str | None:
-    """The one genuinely expensive step this script exists to pay for, on a
-    deliberately small sample - see the module docstring."""
-    returns = close.pct_change()
-    garch = fit_garch(returns)
-    return garch.regime if garch is not None else None
+def resolve_vol_regime(df: pd.DataFrame) -> str | None:
+    """2026-09: no longer the expensive step this script was built to pay for
+    (see module docstring) - kept as its own function since `run_calibration`
+    still resolves it once per ticker up front, independent of the
+    per-candidate grid loop."""
+    atr14 = ta.atr(df["high"], df["low"], df["close"])
+    return ta.volatility_regime_from_atr_percentile(ta.atr_percentile(atr14 / df["close"]))
 
 
 def trailing_labels_for_ticker(
@@ -199,9 +199,9 @@ def trailing_labels_for_ticker(
 def run_calibration(
     ticker_region: dict[str, str], horizon_days: int
 ) -> tuple[dict[str, list[be.TripleBarrierLabel]], dict[str, str | None]]:
-    """Downloads OHLCV once and fits GARCH once per ticker (the expensive,
-    per-candidate-independent parts), then re-simulates the trailing strategy
-    once per grid candidate - the download/GARCH cost is paid exactly once
+    """Downloads OHLCV once and resolves the volatility regime once per ticker
+    (the per-candidate-independent parts), then re-simulates the trailing
+    strategy once per grid candidate - the download cost is paid exactly once
     regardless of how many candidates are in the grid."""
     provider = YFinanceProvider()
     market_data = MarketDataService(provider)
@@ -215,7 +215,7 @@ def run_calibration(
 
     vol_regime_by_ticker: dict[str, str | None] = {}
     for ticker, df in ohlcv_by_ticker.items():
-        vol_regime_by_ticker[ticker] = resolve_vol_regime(df["close"])
+        vol_regime_by_ticker[ticker] = resolve_vol_regime(df)
 
     grid = build_grid()
     rows_by_candidate: dict[str, list[be.TripleBarrierLabel]] = {}

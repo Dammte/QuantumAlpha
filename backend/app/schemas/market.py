@@ -290,9 +290,9 @@ class WatchlistItemResponse(BaseModel):
 
 class PremiumWatchlistItemResponse(BaseModel):
     """A ticker that didn't just match a cheap technical rule, but was run through
-    the full "Analizar activo" pipeline (recommendation, GARCH, Markov, Monte Carlo,
-    walk-forward backtest, Kelly sizing) and came out endorsed - see
-    `premium_watchlist_service.py` for the approval bar."""
+    the full "Analizar activo" pipeline (recommendation, walk-forward backtest)
+    and came out endorsed - see `premium_watchlist_service.py` for the
+    approval bar."""
 
     ticker: str
     sector: str

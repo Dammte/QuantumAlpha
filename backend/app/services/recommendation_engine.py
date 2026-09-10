@@ -32,10 +32,6 @@ rather than duplicate each other** (audited 2026-08, see
 - OBV divergence is the only volume-based factor - a second, independent data
   source (participation, not just price) that price-only indicators cannot
   see by construction (Wyckoff's "effort vs result").
-- Markov/GARCH are statistically gated (a chain forecast is only credited when
-  a runs test says the ticker's own history isn't indistinguishable from
-  noise) - independent of, and structurally different from, the rule-based
-  checklist above.
 - Fundamentals (revenue growth, profit margin, leverage) are the only factors
   that don't come from price/volume at all - a CANSLIM/quality-factor-style
   check that a technical setup is backed by a business that's actually
@@ -60,15 +56,20 @@ rather than duplicate each other** (audited 2026-08, see
   exist and are still used by `MarketContextService` and the ablation study;
   they're just not wired into this function anymore. See
   `docs/quant_methodology.md` for the full writeup.
-- Mean-reverting price structure (Hurst exponent < 0.45, see
-  `statistical_structure.py`) is a one-directional caution flag, not a
-  bullish/bearish vote: this checklist is fundamentally trend-following
-  (trend, stage, RS, Minervini all reward persistence), and a ticker whose
-  own decade-long history shows genuine anti-persistence (an up move
-  statistically tends to reverse, not continue) means those specific factors
-  carry less real edge on this name specifically - worth a small penalty to
-  reflect lower confidence, not worth inventing a symmetric "trending bonus"
-  that would just double-count trend/stage from yet another angle.
+
+2026-09: Markov chain continuity (+-2), GARCH high-volatility regime (-1) and
+the Hurst mean-reversion caution (-1) were removed from this checklist -
+`markov_chain_model.py`'s bullish threshold turned out to be mathematically
+unreachable and its bearish threshold effectively always true in practice
+(the chain's stationary distribution is reached in one step regardless of
+input, verified with synthetic AR(1) series), and `volatility_model.py`/
+`statistical_structure.py` never had cross-sectional evidence behind their
+weights to begin with (Nivel 3 in docs/quant_methodology.md - "plausible, sin
+muestra suficiente"). See docs/quant_methodology.md for the measured writeup.
+GARCH's only surviving role is picking the Chandelier Exit's volatility
+bucket (`technical_analysis.volatility_regime_from_atr_percentile`, fed by an
+ATR percentile instead of a per-ticker model fit) - it no longer touches this
+score.
 
 BUY_THRESHOLD/AVOID_THRESHOLD are first-pass values inherited from before this
 audit; `scripts/factor_ablation_study.py` measures each factor's actual
@@ -79,9 +80,7 @@ removed, or reweighted - see that script's own docstring for methodology.
 
 from dataclasses import dataclass
 
-from app.services.markov_chain_model import MarkovChainResult
 from app.services.technical_analysis import PriceLevel, Stage, TrendState
-from app.services.volatility_model import GarchResult
 
 # Bumped whenever the factor list or a weight changes materially - stamped
 # onto every persisted RecommendationSnapshotORM row (see models.py) so a
@@ -95,7 +94,12 @@ from app.services.volatility_model import GarchResult
 # bias with an explicit "unknown" state). v5: the fast-pair (EMA21/55) veto
 # below - no existing factor/weight touched, but a "comprar" verdict can now
 # come back "esperar" for a reason the score itself never carried before.
-ENGINE_VERSION = "2026-08-audit-v5"
+# v6: Markov/GARCH/Hurst removed from the checklist entirely (see module
+# docstring) - the first step of the reconstruction toward a levels/triggers
+# gate (docs/quant_methodology.md). The gate itself, when it replaces this
+# checklist wholesale, gets its own version string ("...-v6-levels") rather
+# than reusing this intermediate one.
+ENGINE_VERSION = "2026-09-audit-v6"
 
 BUY_THRESHOLD = 5
 AVOID_THRESHOLD = -3
@@ -103,8 +107,6 @@ ATR_STOP_MULTIPLE = 2.5
 REWARD_RISK_RATIO = 2.0
 MAX_RESISTANCE_TARGET_DISTANCE = 0.30
 SUPPORT_PROXIMITY = 0.03
-MARKOV_BULLISH_THRESHOLD = 0.55
-MARKOV_BEARISH_THRESHOLD = 0.45
 REVENUE_GROWTH_STRONG = 0.15
 PROFIT_MARGIN_HEALTHY = 0.15
 DEBT_TO_EQUITY_HIGH = 200.0
@@ -213,13 +215,10 @@ def build_recommendation(
     nearest_support: PriceLevel | None,
     nearest_resistance: PriceLevel | None,
     minervini_range_confirmed: bool = False,
-    markov: MarkovChainResult | None = None,
-    garch: GarchResult | None = None,
     obv_divergence: str | None = None,
     revenue_growth: float | None = None,
     profit_margins: float | None = None,
     debt_to_equity: float | None = None,
-    mean_reverting_structure: bool = False,
     fast_pair_bearish_signal: str | None = None,
 ) -> Recommendation:
     factors: list[RecommendationFactor] = []
@@ -292,19 +291,6 @@ def build_recommendation(
     parabolic = atr_multiple is not None and atr_multiple > 4
     add("Extensión parabólica (riesgo de reversión a corto plazo)", -2, parabolic)
 
-    # Only credited when the runs test says the ticker's own up/down sequence is
-    # NOT statistically indistinguishable from iid noise - a Markov forecast on a
-    # sequence that looks random carries no real edge, so it's excluded rather
-    # than presented as a signal.
-    markov_sequence_has_structure = markov is not None and not markov.sequence_looks_random
-    markov_bullish = markov_sequence_has_structure and markov.prob_bullish_21d >= MARKOV_BULLISH_THRESHOLD
-    markov_bearish = markov_sequence_has_structure and markov.prob_bullish_21d <= MARKOV_BEARISH_THRESHOLD
-    add("Cadena de Markov: continuidad alcista probable (secuencia no aleatoria)", 2, markov_bullish)
-    add("Cadena de Markov: continuidad bajista probable (secuencia no aleatoria)", -2, markov_bearish)
-
-    high_vol_regime = garch is not None and garch.regime == "alta"
-    add("Volatilidad condicional elevada (GARCH, percentil ≥75 de su propio historial)", -1, high_vol_regime)
-
     # Wyckoff "effort vs result": price near a range high/low without real
     # volume behind it - the only participation-based (not price-derived)
     # factor in the checklist. See `technical_analysis.obv_divergence`.
@@ -347,17 +333,6 @@ def build_recommendation(
         "Apalancamiento elevado (deuda/patrimonio > 200%)",
         -1,
         debt_to_equity is not None and debt_to_equity > DEBT_TO_EQUITY_HIGH,
-    )
-
-    # One-directional: only softens confidence in the trend-following factors
-    # above when this ticker's own history genuinely doesn't behave that way
-    # (Hurst < 0.45) - no symmetric bonus for a trending reading, since that
-    # would just re-reward trend/stage from another angle. See module docstring.
-    add(
-        "Estructura de precio con reversión a la media (Hurst < 0.45): las señales de tendencia son "
-        "menos fiables en este activo específico",
-        -1,
-        mean_reverting_structure,
     )
 
     score = sum(f.points for f in factors)

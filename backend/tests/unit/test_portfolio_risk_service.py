@@ -38,7 +38,6 @@ def _stub_signals(
     imminent_cross=None,
     imminent_cross_short_term=None,
     candlestick_pattern=None,
-    garch=None,
     obv_divergence=None,
     relative_volume=None,
     rsi14=None,
@@ -49,7 +48,7 @@ def _stub_signals(
     """A minimal stand-in for CoreTickerSignals carrying only what
     assess_position_risk actually reads - used to test its signal/reasons
     logic in isolation from the real indicator pipeline. The exit-engine-only
-    fields (garch/obv_divergence/relative_volume/rsi14/adx14/atr_multiple/
+    fields (obv_divergence/relative_volume/rsi14/adx14/atr_multiple/
     multi_timeframe) default to None/unset, same "only what's needed"
     philosophy - they're only read at all when a test supplies portfolio_id/
     transactions/trade_plan_repo to exercise that branch."""
@@ -65,7 +64,6 @@ def _stub_signals(
         imminent_cross=imminent_cross,
         imminent_cross_short_term=imminent_cross_short_term,
         candlestick_pattern=candlestick_pattern,
-        garch=garch,
         obv_divergence=obv_divergence,
         relative_volume=relative_volume,
         rsi14=rsi14,
@@ -191,8 +189,8 @@ def test_signal_is_consistent_with_recommendation_engine_thresholds():
     # A perfectly straight-line uptrend (no noise at all) is a pathological
     # fixture for a real indicator set: RSI pins at exactly 100, and the
     # ever-growing distance from a near-flat ATR trips the parabolic-extension
-    # and GARCH-high-vol *caution* factors right alongside the bullish
-    # trend/stage/RS ones - the engine correctly treating an unrealistically
+    # *caution* factor right alongside the bullish trend/stage/RS ones - the
+    # engine correctly treating an unrealistically
     # smooth, already-extended move with caution, not a bug. Mild noise around
     # the same slope keeps this a genuine, clean uptrend without that artifact.
     rng = np.random.default_rng(7)
@@ -459,11 +457,11 @@ def test_get_portfolio_positions_risk_empty_tickers_returns_empty():
 
 
 def test_get_portfolio_positions_risk_isolates_a_ticker_whose_compute_raises(monkeypatch):
-    """The exact production bug this test locks in: one holding's GARCH
-    optimizer failing to converge, a backtest edge case, or any other
-    numerical hiccup on a real ticker's data must never take the rest of the
-    portfolio's risk read down with it (previously an uncaught exception here
-    propagated straight to a 500 on the whole /risk response)."""
+    """The exact production bug this test locks in: one holding's backtest
+    edge case, or any other numerical hiccup on a real ticker's data, must
+    never take the rest of the portfolio's risk read down with it (previously
+    an uncaught exception here propagated straight to a 500 on the whole
+    /risk response)."""
 
     class _StubMarketData:
         def get_bulk_ohlcv(self, tickers, start, end):
@@ -472,7 +470,7 @@ def test_get_portfolio_positions_risk_isolates_a_ticker_whose_compute_raises(mon
 
     def flaky_assess(ticker, df, benchmark_close=None, rs_rating=None, vix_close=None, **kwargs):
         if ticker == "BAD":
-            raise ValueError("simulated GARCH/backtest numerical failure")
+            raise ValueError("simulated backtest numerical failure")
         return prs.PositionRisk(
             ticker=ticker,
             currency="USD",

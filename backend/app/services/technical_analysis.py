@@ -165,6 +165,47 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> 
     return true_range(high, low, close).ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
 
 
+ATR_PERCENTILE_WINDOW = 252
+
+
+def atr_percentile(atr_pct: pd.Series, window: int = ATR_PERCENTILE_WINDOW) -> float | None:
+    """Percentile rank (0-1) of the latest ATR/price reading within its own
+    trailing `window` sessions (a year of daily bars by default).
+
+    2026-09: this is what replaced a per-ticker GARCH(1,1) fit
+    (`volatility_model.py`, retired) as the input to the Chandelier Exit's
+    volatility-regime bucket. GARCH's own contribution there was never its
+    variance forecast - nothing downstream consumed that once Monte Carlo was
+    also retired (it was the only other GARCH consumer, and it fed the same
+    regime bucket back in as a Kelly sizing multiplier, itself retired) - it
+    was just picking one of four buckets. ATR is already an EWM average of
+    true range, so its own percentile inherits the same volatility clustering
+    without fitting a model per ticker per request. See
+    docs/quant_methodology.md."""
+    clean = atr_pct.dropna()
+    if len(clean) < 2:
+        return None
+    trailing = clean.iloc[-window:]
+    current = trailing.iloc[-1]
+    return float((trailing < current).mean())
+
+
+def volatility_regime_from_atr_percentile(percentile: float | None) -> str | None:
+    """Same bucket boundaries the retired GARCH-based regime used
+    (`volatility_model._regime_label`) - only the input changed (ATR
+    percentile instead of GARCH conditional-variance percentile), not the
+    thresholds, since there's no new evidence to justify different cutoffs."""
+    if percentile is None:
+        return None
+    if percentile < 0.20:
+        return "baja"
+    if percentile < 0.60:
+        return "normal"
+    if percentile < 0.85:
+        return "elevada"
+    return "alta"
+
+
 def atr_multiple_from_sma(
     close: pd.Series, high: pd.Series, low: pd.Series, sma_window: int = 50, atr_window: int = 14
 ) -> float | None:

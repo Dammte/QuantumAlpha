@@ -11,15 +11,8 @@ from app.services import technical_analysis as ta
 from app.services import watchlist_service as wl
 
 
-def _signals(verdict="comprar", score=6, has_sizing=False, entry_timing=None):
-    position_sizing = SimpleNamespace() if has_sizing else None
-    return SimpleNamespace(
-        recommendation=SimpleNamespace(verdict=verdict, score=score),
-        backtest=None,
-        monte_carlo=None,
-        position_sizing=position_sizing,
-        entry_timing=entry_timing,
-    )
+def _signals(verdict="comprar", score=6):
+    return SimpleNamespace(recommendation=SimpleNamespace(verdict=verdict, score=score))
 
 
 # --- _approval_score: the objectivity gate ----------------------------------
@@ -82,29 +75,6 @@ def test_missing_sector_rs_rank_gets_no_bonus():
     base = pws._approval_score(_signals(score=6))
     same = pws._approval_score(_signals(score=6), sector_rs_rank=None)
     assert same == pytest.approx(base)
-
-
-def _timing(status: str):
-    return SimpleNamespace(status=status)
-
-
-def test_extended_entry_timing_gets_a_ranking_penalty():
-    """Found auditing a real premium daily list: half the candidates were
-    already "extended" per entry_timing, undermining a list specifically
-    meant to be actionable *today*. A fresher, equally-scored setup should
-    outrank an already-extended one, without excluding the extended one
-    outright (it's still a legitimate "comprar" - see entry_timing.py)."""
-    base = pws._approval_score(_signals(score=6, entry_timing=_timing("valid")))
-    extended = pws._approval_score(_signals(score=6, entry_timing=_timing("extended")))
-    assert base - extended == pytest.approx(pws.EXTENDED_ENTRY_PENALTY)
-
-
-def test_optimal_or_missing_entry_timing_gets_no_penalty():
-    base = pws._approval_score(_signals(score=6, entry_timing=None))
-    optimal = pws._approval_score(_signals(score=6, entry_timing=_timing("optimal")))
-    late = pws._approval_score(_signals(score=6, entry_timing=_timing("late")))
-    assert optimal == pytest.approx(base)
-    assert late == pytest.approx(base)
 
 
 # --- build_premium_watchlist: orchestration ----------------------------------
@@ -216,11 +186,11 @@ def test_build_premium_watchlist_empty_universe_returns_empty(monkeypatch):
 
 
 def test_build_premium_watchlist_isolates_a_candidate_whose_compute_raises(monkeypatch):
-    """The exact production bug this test locks in: one candidate's GARCH
-    optimizer failing to converge, a backtest edge case, or any other
-    numerical hiccup on up to 15 tickers a request must never take the whole
-    tier down with it (previously an uncaught exception propagated straight
-    to a 500 on the whole premium watchlist response)."""
+    """The exact production bug this test locks in: one candidate's backtest
+    edge case, or any other numerical hiccup on up to 15 tickers a request,
+    must never take the whole tier down with it (previously an uncaught
+    exception propagated straight to a 500 on the whole premium watchlist
+    response)."""
     good = _snapshot("GOOD", rs_rating=50)
     bad = _snapshot("BAD", rs_rating=99)
     market_data = _StubMarketData({"GOOD", "BAD", pws.benchmark_for_region("us")})
@@ -230,7 +200,7 @@ def test_build_premium_watchlist_isolates_a_candidate_whose_compute_raises(monke
         # Triggered by ticker, not rs_rating (Tercera auditoría, Bloque F-3:
         # the daily tier no longer passes rs_rating through unconverted).
         if ticker == "BAD":
-            raise ValueError("simulated GARCH/backtest numerical failure")
+            raise ValueError("simulated backtest numerical failure")
         return _signals(score=10)
 
     monkeypatch.setattr(pws, "compute_core_signals", flaky_compute)
@@ -484,14 +454,16 @@ def test_service_get_premium_watchlist_with_stats_recomputes_only_once(monkeypat
     assert len(calls) == 1  # one recompute, not one per accessor
 
 
-# --- Tercera auditoría, Bloque F-2: weekly tier Monte Carlo horizon --------
+# --- Tercera auditoría, Bloque F-2: weekly tier horizon label --------------
 
 
 def test_weekly_tier_uses_the_1m_monte_carlo_horizon_not_3m(monkeypatch):
     # The weekly tier's own setups (fast-pair cross/imminent cross/Stage 2
-    # leadership) are weeks-not-months signals now - its stop/target
-    # simulation horizon must match that, not the old "3m" (63 sessions) it
-    # ran at when the tier's rules were still months-scale.
+    # leadership) are weeks-not-months signals now - the horizon label it
+    # passes through to compute_core_signals (2026-09: no longer changes what
+    # gets computed there, just the persisted snapshot's horizon field - see
+    # ticker_analysis_service.py) must match that, not the old "3m" (63
+    # sessions) it used when the tier's rules were still months-scale.
     snapshots = [_snapshot("AAPL")]
     market_data = _StubMarketData({"AAPL", pws.benchmark_for_region("us")})
     horizons_seen = []

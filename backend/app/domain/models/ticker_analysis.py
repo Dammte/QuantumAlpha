@@ -4,16 +4,9 @@ from datetime import date
 from app.domain.models.ticker_info import HoldersSummary, NewsArticle, TickerInfo
 from app.services.analysis_tools import HistoricalAnalogs, MonthSeasonality
 from app.services.backtest_engine import TripleBarrierBacktestResult
-from app.services.entry_timing import EntryTiming
-from app.services.kelly_criterion import KellyResult
-from app.services.markov_chain_model import MarkovChainResult
-from app.services.monte_carlo_simulation import MonteCarloResult
 from app.services.multi_timeframe import MultiTimeframeRead
 from app.services.recommendation_engine import Recommendation
-from app.services.statistical_structure import StatisticalStructure
 from app.services.technical_analysis import ImminentCross, PriceLevel, Stage, TrendState
-from app.services.volatility_model import GarchResult
-from app.services.walk_forward_backtest import WalkForwardBacktestResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,13 +80,11 @@ class TickerAnalysis:
     minervini_pass: bool
     support_resistance: list[PriceLevel]
     obv_divergence: str | None
-    statistical_structure: StatisticalStructure | None
     market_trend: TrendState | None  # informational only - see recommendation_engine.py docstring
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
     is_intraday_snapshot: bool
     multi_timeframe: MultiTimeframeRead
     confirmed_recommendation: Recommendation | None
-    sign_contradicted_factors: list[str]
     price_history: list[PricePoint]
     news: list[NewsArticle]
     fundamentals: TickerInfo | None
@@ -101,10 +92,4 @@ class TickerAnalysis:
     seasonality: list[MonthSeasonality]
     historical_analogs: HistoricalAnalogs | None
     recommendation: Recommendation
-    entry_timing: EntryTiming | None
-    markov: MarkovChainResult | None
-    garch: GarchResult | None
-    monte_carlo: MonteCarloResult | None
-    backtest: WalkForwardBacktestResult | None
     triple_barrier_backtest: TripleBarrierBacktestResult | None
-    position_sizing: KellyResult | None

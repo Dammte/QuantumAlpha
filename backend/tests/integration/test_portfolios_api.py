@@ -269,8 +269,8 @@ def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
         assert p["signal"] in {"exit_warning", "add_candidate", "watch", "hold"}
         assert isinstance(p["score"], int)
         assert len(p["reasons"]) > 0
-        # Full quant suite - the same one "Analizar activo" runs - backs every holding now
-        assert {"garch", "markov", "monte_carlo", "backtest", "position_sizing"} <= p["signals"].keys()
+        # The same recommendation pipeline "Analizar activo" runs backs every holding now
+        assert "recommendation" in p["signals"]
         assert p["signals"]["recommendation"]["verdict"] in {"comprar", "esperar", "evitar"}
 
     held_tickers = {p["ticker"] for p in positions}

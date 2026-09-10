@@ -1,16 +1,14 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
-import { SETUP_LABELS, formatCurrency, formatPercent, garchRegimeLabel, isExceptionalScore } from '../../format'
+import { SETUP_LABELS, formatCurrency, formatPercent, isExceptionalScore } from '../../format'
 import CandlestickPatternBadge from './CandlestickPatternBadge'
-import EntryTimingBadge from './EntryTimingBadge'
 import ImminentCrossBadge from './ImminentCrossBadge'
 import RefreshBar from '../RefreshBar'
 
 // No "todas" option on purpose: computing all three tiers at once means the
-// full quant suite (GARCH, Markov, Monte Carlo, backtest, Kelly) over up to
-// 45 tickers in one request - exactly the kind of avoidable load this is
-// meant to prevent. Defaults to "daily" below; weekly/monthly only get
-// computed if you actually click them.
+// full recommendation+backtest pipeline over up to 45 tickers in one request
+// - exactly the kind of avoidable load this is meant to prevent. Defaults to
+// "daily" below; weekly/monthly only get computed if you actually click them.
 const TIERS = [
   { key: 'daily', label: 'Diaria' },
   { key: 'weekly', label: 'Semanal' },
@@ -83,19 +81,11 @@ function PremiumWatchlistCard({ item, onNavigateToTicker }) {
           {formatPercent(signals.change_1d, { signed: true })} (1D)
         </span>
         {signals.rs_rating !== null && <span>RS {signals.rs_rating}</span>}
-        {signals.garch && <span>{garchRegimeLabel(signals.garch.regime)}</span>}
       </div>
 
-      <EntryTimingBadge entryTiming={signals.entry_timing} />
       <ImminentCrossBadge imminentCross={signals.imminent_cross} />
       <ImminentCrossBadge imminentCross={signals.imminent_cross_short_term} shortTerm />
       <CandlestickPatternBadge pattern={signals.candlestick_pattern} />
-
-      {signals.position_sizing && (
-        <p className="premium-watchlist-card__kelly">
-          Tamaño de posición sugerido: <strong>{formatPercent(signals.position_sizing.recommended_position_pct)}</strong> de la cartera
-        </p>
-      )}
 
       <ul className="watchlist-card__reasons">
         {item.reasons.map((reason) => (
@@ -162,13 +152,11 @@ function PremiumWatchlist({ onNavigateToTicker, region }) {
     <div>
       <p className="empty-state" style={{ marginBottom: 16 }}>
         Una selección reducida (hasta 10 por horizonte) de activos que no solo cumplen una regla técnica, sino que
-        pasaron el mismo análisis completo de "Analizar activo" (GARCH, cadena de Markov, Monte Carlo) y superaron el
-        veredicto "comprar". El orden y el corte los decide <strong>premium_score</strong> (el badge superior): la
-        puntuación del checklist ajustada por el percentil del setup, el sector y el momento de entrada - no el
-        tamaño de posición Kelly (que se muestra igual, pero ya no puntúa esta selección) ni el backtest walk-forward
-        (retirado de aquí - ver "Analizar activo" para el backtest de barrera triple). Las marcadas con{' '}
-        <strong>★ Señal excepcional</strong> tienen una puntuación base de 10 o más - muy pocas llegan ahí, y son las
-        que más factores independientes confirman a la vez.
+        pasaron el mismo análisis completo de "Analizar activo" y superaron el veredicto "comprar". El orden y el
+        corte los decide <strong>premium_score</strong> (el badge superior): la puntuación del checklist ajustada por
+        el percentil del setup y el sector (ver "Analizar activo" para el backtest de barrera triple de cada
+        candidato). Las marcadas con <strong>★ Señal excepcional</strong> tienen una puntuación base de 10 o más -
+        muy pocas llegan ahí, y son las que más factores independientes confirman a la vez.
       </p>
 
       <div className="filters-row">

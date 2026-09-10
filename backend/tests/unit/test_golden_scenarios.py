@@ -48,9 +48,7 @@ def _recommendation_from_series(
 ) -> Recommendation:
     """Reproduces the same indicator-derivation pipeline
     `ticker_analysis_service._confirmed_recommendation`/`compute_core_signals`
-    use (minus GARCH/Markov/Monte Carlo - orthogonal to what a checklist
-    golden scenario needs to verify, and expensive to fit repeatedly for
-    ~10 scenarios) before calling the real `build_recommendation`."""
+    use before calling the real `build_recommendation`."""
     high = high if high is not None else close * 1.01
     low = low if low is not None else close * 0.99
     volume = volume if volume is not None else pd.Series([1_000_000.0] * len(close), index=close.index)

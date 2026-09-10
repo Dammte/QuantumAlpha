@@ -53,7 +53,7 @@ def get_ticker_analysis(
         RecommendationSnapshotRepository, Depends(get_recommendation_snapshot_repository)
     ],
     horizon: Annotated[
-        Literal["1m", "3m", "6m"], Query(description="Horizonte de la simulación Monte Carlo")
+        Literal["1m", "3m", "6m"], Query(description="Horizonte de la recomendación, persistido en el snapshot")
     ] = "3m",
 ) -> TickerAnalysisResponse:
     try:

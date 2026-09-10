@@ -1,26 +1,13 @@
 import { Fragment, useState } from 'react'
-import { SIGNAL_LABELS, formatCurrency, formatPercent, garchRegimeLabel } from '../format'
+import { SIGNAL_LABELS, formatCurrency, formatPercent } from '../format'
 import MultiTimeframeSemaphore from './MultiTimeframeSemaphore'
 import PositionDetailPanel from './PositionDetailPanel'
 
 const BASE_COLUMN_COUNT = 8 // ticker, cantidad, precio medio, precio actual, variación, valor, peso, ganancia
 const RISK_COLUMN_COUNT = 2 // señal de tendencia + detalle
 
-function backtestSummary(backtest) {
-  if (!backtest) return null
-  const test = backtest.significance_tests.find((t) => t.comparison === 'comprar vs evitar')
-  if (!test) return 'historial insuficiente para validar el sistema en este activo'
-  if (test.significant_at_5pct && test.mean_difference > 0) return 'ventaja histórica confirmada en este activo'
-  if (test.significant_at_5pct && test.mean_difference <= 0) return 'sin ventaja histórica en este activo - tratar con cautela'
-  return 'sin diferencia estadísticamente significativa en el historial'
-}
-
 function riskTooltip(risk) {
   const parts = [`Puntuación: ${risk.score}`, risk.reasons.join(' · ')]
-  if (risk.signals?.entry_timing) parts.push(risk.signals.entry_timing.label)
-  if (risk.signals?.garch) parts.push(garchRegimeLabel(risk.signals.garch.regime))
-  const backtest = backtestSummary(risk.signals?.backtest)
-  if (backtest) parts.push(backtest)
   return parts.join(' · ')
 }
 
@@ -139,17 +126,11 @@ function PositionsTable({ positions, colorScale, totalMarketValue, riskByTicker,
                             <span className={`signal-badge signal-badge--${risk.signal}`} title={riskTooltip(risk)}>
                               {SIGNAL_LABELS[risk.signal] ?? risk.signal}
                               <span className="signal-badge__score"> ({risk.score >= 0 ? '+' : ''}{risk.score})</span>
-                              {risk.signal === 'add_candidate' && risk.signals?.entry_timing?.status === 'extended' && (
-                                <span title="Setup válido, pero muy extendido - más prudente esperar un retroceso antes de añadir">
-                                  {' '}
-                                  ⚠️
-                                </span>
-                              )}
                             </span>
                             <MultiTimeframeSemaphore multiTimeframe={risk.multi_timeframe} compact />
                           </div>
                         ) : riskLoading ? (
-                          <span className="signal-badge signal-badge--pending" title="Calculando la señal técnica completa (tendencia, GARCH, Markov, backtest)…">
+                          <span className="signal-badge signal-badge--pending" title="Calculando la señal técnica completa (tendencia, backtest de triple-barrera)…">
                             Calculando…
                           </span>
                         ) : (

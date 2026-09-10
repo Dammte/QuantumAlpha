@@ -359,6 +359,59 @@ def test_atr_multiple_from_sma_none_when_not_enough_data():
     assert ta.atr_multiple_from_sma(close, close, close, sma_window=50, atr_window=14) is None
 
 
+def test_atr_percentile_none_with_fewer_than_two_observations():
+    assert ta.atr_percentile(pd.Series([0.02])) is None
+    assert ta.atr_percentile(pd.Series([], dtype=float)) is None
+
+
+def test_atr_percentile_is_highest_when_current_reading_is_the_trailing_max():
+    # A steadily rising ATR/price series - the latest reading is strictly
+    # above every prior one, so all n-1 prior readings count as "below it".
+    atr_pct = pd.Series(np.arange(1, 101) / 1000.0)
+    assert ta.atr_percentile(atr_pct) == pytest.approx(0.99)
+
+
+def test_atr_percentile_is_zero_when_current_reading_is_the_trailing_min():
+    # A steadily falling series - the latest (last) reading is the lowest
+    # ever seen, so zero prior readings are below it.
+    atr_pct = pd.Series(np.arange(100, 0, -1) / 1000.0)
+    assert ta.atr_percentile(atr_pct) == pytest.approx(0.0)
+
+
+def test_atr_percentile_only_looks_at_the_trailing_window():
+    # A big, old spike outside the window must not affect today's percentile -
+    # only the most recent `window` observations matter.
+    old_spike = [0.10] * 5
+    trailing_flat = [0.02] * 300
+    atr_pct = pd.Series(old_spike + trailing_flat)
+    assert ta.atr_percentile(atr_pct, window=252) == pytest.approx(0.0)
+
+
+def test_atr_percentile_drops_nan_before_ranking():
+    atr_pct = pd.Series([np.nan, np.nan, 0.01, 0.02, 0.03])
+    assert ta.atr_percentile(atr_pct) == pytest.approx(2 / 3)
+
+
+@pytest.mark.parametrize(
+    "percentile,expected",
+    [
+        (None, None),
+        (0.0, "baja"),
+        (0.19, "baja"),
+        (0.20, "normal"),
+        (0.59, "normal"),
+        (0.60, "elevada"),
+        (0.84, "elevada"),
+        (0.85, "alta"),
+        (1.0, "alta"),
+    ],
+)
+def test_volatility_regime_from_atr_percentile_bands(percentile, expected):
+    # Same bucket boundaries the retired GARCH-based regime used
+    # (volatility_model._regime_label) - only the input changed.
+    assert ta.volatility_regime_from_atr_percentile(percentile) == expected
+
+
 def test_relative_volume_above_one_on_a_spike():
     volume = pd.Series([1000.0] * 20 + [3000.0])
     assert ta.relative_volume(volume, window=20) == pytest.approx(3.0)

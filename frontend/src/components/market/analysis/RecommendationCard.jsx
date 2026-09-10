@@ -1,6 +1,5 @@
 import { formatCurrency, formatRatio } from '../../../format'
 import CandlestickPatternBadge from '../CandlestickPatternBadge'
-import EntryTimingBadge from '../EntryTimingBadge'
 import ImminentCrossBadge from '../ImminentCrossBadge'
 
 const VERDICT_META = {
@@ -54,25 +53,13 @@ function ScoreGauge({ score }) {
 
 function RecommendationCard({
   recommendation,
-  entryTiming,
   imminentCross,
   imminentCrossShortTerm,
   candlestickPattern,
   currency,
-  signContradictedFactors,
 }) {
   const meta = VERDICT_META[recommendation.verdict] ?? { label: recommendation.verdict, tone: 'neutral' }
   const triggered = recommendation.factors.filter((f) => f.triggered)
-  const mismatched = new Set(signContradictedFactors ?? [])
-  // Tercera auditoría, Bloque H: la contradicción real es "¿qué fracción de lo
-  // que empuja este veredicto tiene el signo medido en contra?", no un simple
-  // sí/no - un factor contradicho de 8 y 6 de 8 son avisos muy distintos, y la
-  // versión anterior los mostraba con el mismo banner fijo. Umbral de "mayoría"
-  // (>=50%) es una decisión de presentación sobre evidencia ya medida, no un
-  // peso nuevo de recommendation_engine.py - no requiere estudio de ablación.
-  const mismatchedTriggered = triggered.filter((f) => mismatched.has(f.label))
-  const mismatchFraction = triggered.length > 0 ? mismatchedTriggered.length / triggered.length : 0
-  const mismatchIsMajority = mismatchFraction >= 0.5
 
   return (
     <div className={`recommendation-card recommendation-card--${meta.tone}`}>
@@ -95,9 +82,6 @@ function RecommendationCard({
         </div>
       )}
 
-      {recommendation.verdict === 'comprar' && (
-        <EntryTimingBadge entryTiming={entryTiming} showDescription />
-      )}
       <ImminentCrossBadge imminentCross={imminentCross} verdict={recommendation.verdict} />
       <ImminentCrossBadge imminentCross={imminentCrossShortTerm} shortTerm verdict={recommendation.verdict} />
       <CandlestickPatternBadge pattern={candlestickPattern} />
@@ -120,36 +104,20 @@ function RecommendationCard({
         </div>
       )}
 
-      {mismatchedTriggered.length > 0 && (
-        <div
-          className={`recommendation-card__sign-warning ${
-            mismatchIsMajority ? 'recommendation-card__sign-warning--majority' : 'recommendation-card__sign-warning--minor'
-          }`}
-        >
-          <strong>
-            ⚠️ {mismatchedTriggered.length} de {triggered.length} factores activos en este veredicto{' '}
-            {mismatchIsMajority ? '(la mayoría)' : '(una minoría)'} tienen el signo contrario al medido por el
-            estudio de ablación
-          </strong>{' '}
-          - no se ha corregido el peso, solo se muestra la contradicción. Marcados con ⚠️ abajo. Ver Metodología
-          §16.
-        </div>
-      )}
-
       <ul className="recommendation-card__factors">
         {triggered.map((f) => (
           <li key={f.label} className={f.points >= 0 ? 'delta-up' : 'delta-down'}>
             <span>{f.points >= 0 ? '▲' : '▼'}</span> {f.label} ({f.points >= 0 ? '+' : ''}
-            {f.points}){mismatched.has(f.label) && <span className="system-performance__mismatch-tag"> ⚠️ signo contrario medido</span>}
+            {f.points})
           </li>
         ))}
         {triggered.length === 0 && <li className="empty-state">Sin factores técnicos destacables ahora mismo.</li>}
       </ul>
       <p className="recommendation-card__disclaimer">
         Puntuación transparente basada en reglas técnicas propias (tendencia, fases de Weinstein, Minervini, RS
-        Rating, ADX, RSI, soportes/resistencias, divergencia de volumen OBV, cadena de Markov, volatilidad GARCH,
-        crecimiento y rentabilidad fundamental). Los pesos se calibran contra un estudio de ablación estadístico
-        sobre el universo completo de tickers, no a ojo - ver metodología. No es asesoramiento financiero.
+        Rating, ADX, RSI, soportes/resistencias, divergencia de volumen OBV, crecimiento y rentabilidad
+        fundamental). Los pesos se calibran contra un estudio de ablación estadístico sobre el universo completo de
+        tickers, no a ojo - ver metodología. No es asesoramiento financiero.
       </p>
     </div>
   )

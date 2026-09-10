@@ -1,9 +1,9 @@
 """Cuarta auditoría independiente, recomendación DEUDA-1: unit tests for the
 pure/synthetic-data-safe pieces of scripts/chandelier_calibration_study.py.
-Nothing here touches the network or fits a real GARCH model - `resolve_vol_regime`
-is exercised only through `trailing_labels_for_ticker`'s caller contract (a
-`vol_regime` string passed straight through), never by actually calling
-`fit_garch` in a test.
+Nothing here touches the network - `resolve_vol_regime` (2026-09: an ATR
+percentile bucket, no model fit) is exercised only through
+`trailing_labels_for_ticker`'s caller contract (a `vol_regime` string passed
+straight through).
 
 Imported as `scripts.chandelier_calibration_study` - see
 test_factor_ablation_study.py's own docstring for why this import path works

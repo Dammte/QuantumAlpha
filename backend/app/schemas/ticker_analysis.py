@@ -4,17 +4,10 @@ from pydantic import BaseModel
 
 from app.schemas.common import PriceLevelResponse
 from app.schemas.quant_analysis import (
-    EntryTimingResponse,
-    GarchResponse,
     ImminentCrossResponse,
-    KellyPositionSizeResponse,
-    MarkovChainResponse,
-    MonteCarloResponse,
     MultiTimeframeResponse,
     RecommendationResponse,
-    StatisticalStructureResponse,
     TripleBarrierBacktestResponse,
-    WalkForwardBacktestResponse,
 )
 
 
@@ -161,13 +154,11 @@ class TickerAnalysisResponse(BaseModel):
     minervini_pass: bool
     support_resistance: list[PriceLevelResponse]
     obv_divergence: str | None
-    statistical_structure: StatisticalStructureResponse | None
     market_trend: str | None
     vix_regime: str | None
     is_intraday_snapshot: bool
     multi_timeframe: MultiTimeframeResponse
     confirmed_recommendation: RecommendationResponse | None
-    sign_contradicted_factors: list[str]
     price_history: list[PricePointResponse]
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None
@@ -175,10 +166,4 @@ class TickerAnalysisResponse(BaseModel):
     seasonality: list[MonthSeasonalityResponse]
     historical_analogs: HistoricalAnalogsResponse | None
     recommendation: RecommendationResponse
-    entry_timing: EntryTimingResponse | None
-    markov: MarkovChainResponse | None
-    garch: GarchResponse | None
-    monte_carlo: MonteCarloResponse | None
-    backtest: WalkForwardBacktestResponse | None
     triple_barrier_backtest: TripleBarrierBacktestResponse | None
-    position_sizing: KellyPositionSizeResponse | None

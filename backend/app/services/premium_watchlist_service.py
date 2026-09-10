@@ -4,10 +4,10 @@
 technical rule - useful, but with ~170 tickers in the universe that can still
 be dozens of names to review by hand. This module is different on purpose:
 instead of a rule match, a ticker only makes this list if it's run through the
-*exact same* deep-dive pipeline "Analizar activo" uses (recommendation, GARCH,
-Markov, Monte Carlo, walk-forward backtest, Kelly sizing - see
-`compute_core_signals()` in `ticker_analysis_service.py`) and that full
-analysis actually endorses it. This is the same objectivity principle the
+*exact same* deep-dive pipeline "Analizar activo" uses (recommendation,
+walk-forward backtest - see `compute_core_signals()` in
+`ticker_analysis_service.py`) and that full analysis actually endorses it.
+This is the same objectivity principle the
 market-regime banner and the sector-rotation read already apply at the
 market-wide level, now applied per-ticker: a name is never "premium" merely
 because a cheap rule matched today.
@@ -106,18 +106,6 @@ MAX_PER_SECTOR = 3
 # first place, a higher bar for a name that hasn't been bought yet.
 MAX_CANDIDATE_CORRELATION = 0.7
 CORRELATION_RETURNS_WINDOW = 60  # trading days - matches portfolio_construction_service.CORRELATION_WINDOW
-# entry_timing.py is deliberately informational for the core recommendation -
-# "extended" doesn't mean "avoid", it means the easy, low-risk part of the
-# move likely already happened, which is a genuinely different question from
-# "is this a good stock". But this list exists specifically to be a short,
-# curated set worth acting on *today* (see the daily/weekly/monthly cadence
-# above) - among two names that clear the exact same bar on every other
-# count, the one that isn't already extended is the more actionable pick for
-# a list with that stated purpose, so it should rank above the other rather
-# than tie with it. A modest ranking penalty, not exclusion: an extended name
-# can still be the best (or only) candidate available and will still show up,
-# just no longer tied with a fresher setup that did just as well elsewhere.
-EXTENDED_ENTRY_PENALTY = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +184,11 @@ def _approval_score(
       from the same recommendation this score is already built from) -
       replaced by `setup_percentile` below.
 
+    2026-09: the `entry_timing.py`-based "already extended" ranking penalty
+    was removed along with `entry_timing.py` itself (see
+    `recommendation_engine.py`'s module docstring) - its function is meant to
+    be absorbed by the levels/triggers geometry replacing this whole service.
+
     `sector_rs_rank` is this candidate's *sector's* own cross-sectional RS
     rank (MarketScreenerService.get_sector_performance) - `None` when sector
     performance couldn't be computed, which contributes nothing rather than
@@ -211,8 +204,6 @@ def _approval_score(
         score += (setup_percentile - 50.0) / 50.0 * SETUP_PERCENTILE_BONUS_WEIGHT
     if sector_rs_rank is not None and sector_rs_rank >= STRONG_SECTOR_RS_THRESHOLD:
         score += STRONG_SECTOR_BONUS  # leading in a sector that's itself leading - CANSLIM/IBD's own principle
-    if signals.entry_timing is not None and signals.entry_timing.status == "extended":
-        score -= EXTENDED_ENTRY_PENALTY  # already ran - a fresher, equally-scored setup ranks above it here
     return score
 
 
@@ -239,9 +230,9 @@ def _dedupe_by_ticker(items: list[wl.WatchlistItem]) -> list[tuple[wl.WatchlistI
     occurrence is the *same* ticker under a different setup label, not a
     distinct candidate. Before this, each one consumed its own slot in
     `MAX_CANDIDATES_PER_TIER`/`MAX_APPROVED_PER_TIER` and re-ran the entire
-    expensive per-ticker pipeline (GARCH+Markov+Monte Carlo+walk-forward+
-    Kelly) again on identical data - measured 3x on a real universe (one
-    ticker matching breakout_volume + trend_continuation + oversold_bounce).
+    expensive per-ticker pipeline again on identical data - measured 3x on a
+    real universe (one ticker matching breakout_volume + trend_continuation +
+    oversold_bounce).
     The other setups aren't dropped, just folded into a secondary label list
     instead of a separate row."""
     order: list[str] = []

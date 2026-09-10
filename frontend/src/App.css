@@ -1043,39 +1043,6 @@
   margin-top: 4px;
 }
 
-/* Compact horizon toggle (Monte Carlo projection window) */
-
-.horizon-switch {
-  display: inline-flex;
-  gap: 2px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 2px;
-}
-
-.horizon-switch__item {
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 5px 10px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-}
-
-.horizon-switch__item--active {
-  background: var(--accent);
-  color: white;
-}
-
-.horizon-switch__item:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
 /* Screener */
 
 .screener-filters {
@@ -1708,12 +1675,6 @@
   font-weight: 600;
 }
 
-.premium-watchlist-card__kelly {
-  margin: 0 0 10px;
-  font-size: 12px;
-  color: var(--text-h);
-}
-
 .premium-watchlist-card__cta {
   align-self: flex-start;
   margin-top: 12px;
@@ -1805,11 +1766,6 @@
   .sector-tier-badge--warn {
     color: #eda100;
   }
-}
-
-.entry-timing__description {
-  font-size: 12px;
-  color: var(--text);
 }
 
 .imminent-cross-badge__r2 {
@@ -2145,24 +2101,6 @@
   font-weight: 400;
 }
 
-.recommendation-card__sign-warning {
-  font-size: 12.5px;
-  color: var(--text-h);
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin: 10px 0;
-}
-/* Tercera auditoría, Bloque H: severidad proporcional a la fracción de
-   factores contradichos, no un único banner fijo (ver RecommendationCard.jsx). */
-.recommendation-card__sign-warning--majority {
-  background: rgba(208, 59, 59, 0.08);
-  border: 1px solid var(--series-critical);
-}
-.recommendation-card__sign-warning--minor {
-  background: var(--bg);
-  border: 1px solid var(--border);
-}
-
 /* Fundamentals */
 
 .fundamentals-grid {
@@ -2251,176 +2189,9 @@
   font-style: italic;
 }
 
-/* Volatility (GARCH) card */
-
-.volatility-card__regime {
-  margin-bottom: 16px;
-}
-
-.volatility-card__badge {
-  display: inline-block;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  padding: 5px 14px;
-  border-radius: 8px;
-  margin-bottom: 10px;
-}
-.volatility-card__badge--up {
-  background: rgba(12, 163, 12, 0.16);
-  color: var(--series-good);
-}
-.volatility-card__badge--neutral {
-  background: var(--code-bg);
-  color: var(--text-h);
-}
-.volatility-card__badge--warn {
-  background: rgba(237, 161, 0, 0.18);
-  color: var(--cat-4);
-}
-.volatility-card__badge--down {
-  background: rgba(208, 59, 59, 0.16);
-  color: var(--series-critical);
-}
-
-.volatility-card__gauge-track {
-  height: 8px;
-  border-radius: 4px;
-  background: var(--code-bg);
-  overflow: hidden;
-}
-
-.volatility-card__gauge-fill {
-  height: 100%;
-  border-radius: 4px;
-}
-.volatility-card__gauge-fill--up {
-  background: var(--series-good);
-}
-.volatility-card__gauge-fill--neutral {
-  background: var(--chart-muted);
-}
-.volatility-card__gauge-fill--warn {
-  background: var(--cat-4);
-}
-.volatility-card__gauge-fill--down {
-  background: var(--series-critical);
-}
-
-.volatility-card__gauge-label {
-  display: block;
-  font-size: 11px;
-  color: var(--text);
-  margin-top: 6px;
-}
-
-.volatility-card__disclaimer {
-  font-size: 11px;
-  color: var(--text);
-  margin: 16px 0 0;
-  font-style: italic;
-}
-
-/* Markov chain card */
-
-.markov-card__state {
-  font-size: 14px;
-  color: var(--text);
-  margin: 0 0 14px;
-}
-.markov-card__state strong {
-  color: var(--text-h);
-}
-
-.markov-card__subheading {
-  font-size: 12px;
-  color: var(--text);
-  margin: 18px 0 8px;
-}
-
-.markov-heatmap {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 11px;
-}
-
-.markov-heatmap__row {
-  display: grid;
-  grid-template-columns: 56px repeat(5, 1fr);
-  gap: 3px;
-  align-items: center;
-}
-
-.markov-heatmap__corner {
-  width: 56px;
-}
-
-.markov-heatmap__col-label,
-.markov-heatmap__row-label {
-  color: var(--text);
-  font-size: 10px;
-  text-align: center;
-}
-.markov-heatmap__row-label {
-  text-align: right;
-  padding-right: 4px;
-}
-
-.markov-heatmap__cell {
-  text-align: center;
-  padding: 6px 0;
-  border-radius: 4px;
-  color: var(--text-h);
-  font-variant-numeric: tabular-nums;
-}
-
-.markov-card__caution {
-  font-size: 11px;
-  color: var(--series-critical);
-  margin: 14px 0 0;
-  font-style: italic;
-}
-
-.markov-card__note {
-  font-size: 11px;
-  color: var(--text);
-  margin: 14px 0 0;
-  font-style: italic;
-}
-
-/* Monte Carlo chart */
-
-.monte-carlo__legend-hint {
-  font-size: 11px;
-  color: var(--text);
-  margin: 8px 0 0;
-}
-
-/* Walk-forward backtest card */
-
-.backtest-card__interpretation {
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  margin: 0 0 16px;
-}
-.backtest-card__interpretation--up {
-  border-color: var(--series-good);
-  color: var(--text-h);
-  background: rgba(12, 163, 12, 0.08);
-}
-.backtest-card__interpretation--down {
-  border-color: var(--series-critical);
-  color: var(--text-h);
-  background: rgba(208, 59, 59, 0.08);
-}
-.backtest-card__interpretation--neutral {
-  background: var(--code-bg);
-  color: var(--text-h);
-}
+/* Triple-barrier backtest card (shared table/disclaimer styling - the legacy
+   walk-forward BacktestCard.jsx these were originally written for was
+   retired 2026-09, see quant_methodology.md) */
 
 .backtest-card__table {
   width: 100%;
@@ -2448,105 +2219,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-.backtest-card__tests {
-  list-style: none;
-  padding: 0;
-  margin: 0 0 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text);
-}
-
 .backtest-card__disclaimer {
   font-size: 11px;
   color: var(--text);
   margin: 0;
-  font-style: italic;
-}
-
-.backtest-card__legacy-warning {
-  font-size: 12.5px;
-  color: var(--text-h);
-  background: var(--code-bg);
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin: 0 0 12px;
-}
-
-/* Kelly position sizing card */
-
-.position-sizing-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-top: 16px;
-}
-
-/* Tercera auditoría, Bloque H: COMPRAR + Kelly desfavorable, declarado. */
-.position-sizing-card__conflict-warning {
-  font-size: 12.5px;
-  color: var(--text-h);
-  background: rgba(208, 59, 59, 0.08);
-  border: 1px solid var(--series-critical);
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin-bottom: 12px;
-}
-
-.position-sizing-card__headline {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-
-.position-sizing-card__label {
-  font-size: 12px;
-  color: var(--text);
-}
-
-.position-sizing-card__value {
-  font-size: 24px;
-  font-weight: 800;
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
-}
-
-.position-sizing-card__hint {
-  font-size: 11px;
-  color: var(--text);
-}
-
-.position-sizing-card__capital {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text);
-  margin-bottom: 14px;
-  max-width: 260px;
-}
-
-.position-sizing-card__capital-label {
-  font-size: 12px;
-}
-
-.position-sizing-card__capital input {
-  font: inherit;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text-h);
-}
-
-.position-sizing-card__rationale {
-  font-size: 12px;
-  color: var(--text);
-  margin: 14px 0 0;
   font-style: italic;
 }
 

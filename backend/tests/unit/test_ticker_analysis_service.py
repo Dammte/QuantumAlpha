@@ -32,12 +32,6 @@ def test_returns_a_fully_populated_result_for_an_uptrend():
     assert signals.trend == tas.ta.TrendState.UPTREND
     assert signals.rs_rating == 85
     assert signals.recommendation is not None
-    assert signals.garch is not None
-    # Note: a perfectly deterministic straight-line series (no noise at all,
-    # unlike a real market) can leave Markov/backtest inputs degenerate, so
-    # markov/backtest legitimately being None here isn't asserted either way -
-    # see test_ticker_analysis_api.py for full-suite coverage against the
-    # (noisy, realistic) fake random-walk price data.
 
 
 def test_rs_rating_passed_through_unchanged():
@@ -57,13 +51,6 @@ def test_mansfield_rs_is_computed_when_a_benchmark_is_given():
     benchmark = pd.Series(100 + np.arange(260) * 0.1, index=close.index)  # mansfield_rs inner-joins by index
     signals = tas.compute_core_signals(close, high, low, volume, open_, benchmark, rs_rating=None)
     assert signals.mansfield_rs is not None
-
-
-def test_position_sizing_only_present_for_a_comprar_verdict_with_a_trade_setup():
-    close, high, low, volume, open_ = _series(200 - np.arange(260) * 0.3)  # clear downtrend -> "evitar"
-    signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
-    assert signals.recommendation.verdict != "comprar"
-    assert signals.position_sizing is None
 
 
 def test_multi_timeframe_is_always_populated():
@@ -130,28 +117,6 @@ def test_triple_barrier_backtest_is_skipped_by_default():
     signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
     assert signals is not None
     assert signals.triple_barrier_backtest is None
-
-
-def test_sign_contradicted_factors_flags_a_triggered_mismatched_factor(monkeypatch):
-    close, high, low, volume, open_ = _series(100 + np.arange(260) * 0.4)
-    monkeypatch.setattr(
-        tas.ars,
-        "triggered_factors_with_contradicted_sign",
-        lambda factors, horizon: ["Tendencia alcista (MA20 > MA50 > MA200)"],
-    )
-    signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
-    assert signals is not None
-    assert signals.sign_contradicted_factors == ["Tendencia alcista (MA20 > MA50 > MA200)"]
-
-
-def test_sign_contradicted_factors_is_always_a_list():
-    # Real content depends on whatever docs/factor_ablation_report_v2_h21.csv
-    # currently says - only the shape is asserted here (see
-    # test_ablation_report_service.py for the actual logic's own tests).
-    close, high, low, volume, open_ = _series(100 + np.arange(260) * 0.4)
-    signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
-    assert signals is not None
-    assert isinstance(signals.sign_contradicted_factors, list)
 
 
 def test_52_week_range_factor_never_fires_with_only_60_bars():

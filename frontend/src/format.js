@@ -45,20 +45,6 @@ export function formatRelativeTime(isoString) {
   return `hace ${diffDays} d`
 }
 
-// entry_timing.status -> the same tone vocabulary sector-tier-badge/signal-badge
-// already use (up/neutral/warn/down), so an "óptimo" reads as unambiguously good
-// and "muy extendido" as unambiguously risky wherever this shows up.
-export const ENTRY_TIMING_TONE = {
-  optimal: 'up',
-  valid: 'neutral',
-  late: 'warn',
-  extended: 'down',
-}
-
-export function entryTimingTone(status) {
-  return ENTRY_TIMING_TONE[status] ?? 'neutral'
-}
-
 // Mirrors recommendation_engine.py's BUY_THRESHOLD (5): a score sits on an
 // open-ended additive scale, not a fixed 0-10 range, so "perfect" is defined
 // relative to that floor - roughly double it - rather than an arbitrary max.
@@ -91,17 +77,6 @@ export const SETUP_LABELS = {
   fast_golden_cross: 'Golden cross (par rápido)',
   fast_cross_imminent: 'Cruce alcista inminente (par rápido)',
   stage2_leader: 'Líder en Fase 2',
-}
-
-export const GARCH_REGIME_LABELS = {
-  baja: 'volatilidad baja',
-  normal: 'volatilidad normal',
-  elevada: 'volatilidad elevada',
-  alta: 'volatilidad alta',
-}
-
-export function garchRegimeLabel(regime) {
-  return GARCH_REGIME_LABELS[regime] ?? regime
 }
 
 // exit_urgency (see exit_engine.ExitUrgency) - the position-level urgency

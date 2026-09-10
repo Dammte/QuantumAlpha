@@ -1,17 +1,20 @@
 """Full quant risk read on every held ticker: the *exact same* pipeline
-"Analizar activo" runs on demand (recommendation, GARCH, Markov, Monte Carlo,
-walk-forward backtest, Kelly sizing - see `compute_core_signals()` in
-`ticker_analysis_service.py`), applied to real capital already on the table.
+"Analizar activo" runs on demand (recommendation, walk-forward backtest - see
+`compute_core_signals()` in `ticker_analysis_service.py`), applied to real
+capital already on the table.
 
-This used to be a deliberately lighter subset (no GARCH, no Monte Carlo, no
-backtest, no Kelly) to keep one request scoring every holding fast. That
-tradeoff is gone: the whole point of holding a position is knowing exactly
-when to sell, add, or hold it, and a lighter read that could disagree with
-what searching the same ticker individually would show is exactly the kind of
-assumption that costs money. Every holding now gets the full suite; the only
-concession to cost is that the OHLCV history for every holding + the
-benchmark is still fetched in a single batched call (see `get_bulk_ohlcv`),
-so scoring N holdings is one network round-trip, not N.
+This used to be a deliberately lighter subset to keep one request scoring
+every holding fast, then a much heavier one once GARCH/Markov/Monte
+Carlo/Kelly were added (see docs/quant_methodology.md for that history) -
+those were removed again 2026-09 for lack of cross-sectional evidence, which
+also removes most of the latency that pass added. The whole point of holding
+a position is knowing exactly when to sell, add, or hold it, and a lighter
+read that could disagree with what searching the same ticker individually
+would show is exactly the kind of assumption that costs money - every
+holding still gets the exact same analysis, just a cheaper one now. The
+OHLCV history for every holding + the benchmark is still fetched in a single
+batched call (see `get_bulk_ohlcv`), so scoring N holdings is one network
+round-trip, not N.
 """
 
 import logging
@@ -49,21 +52,24 @@ PROXIMITY_THRESHOLD = 0.03  # within 3% of a level counts as "close to it"
 # month ago doesn't still count as "recent".
 RECENT_LOOKBACK = 10
 
-# Same idiom as MarketScreenerService/PremiumWatchlistService: the full quant
-# suite per holding (GARCH, Markov, Monte Carlo, walk-forward backtest) is
-# genuinely slow - ~5s per ticker measured in production - so a cold dashboard
-# load with several holdings can take 30-40s. Caching per ticker means that
-# cost is only paid once per CACHE_TTL, not on every dashboard reload, which is
-# the actual common case. See PortfolioRiskService below.
+# Same idiom as MarketScreenerService/PremiumWatchlistService: the per-holding
+# suite (recommendation, multi-timeframe, walk-forward backtest) still isn't
+# free - a cold dashboard load with several holdings adds up. Caching per
+# ticker means that cost is only paid once per CACHE_TTL, not on every
+# dashboard reload, which is the actual common case. See PortfolioRiskService
+# below.
 #
 # Cache misses are computed sequentially, not in a thread pool: an earlier
-# version parallelized this with ThreadPoolExecutor, but on Render's
-# CPU-constrained tier it made things *worse* - each Python thread spins up
-# its own BLAS/OpenMP threads inside numpy/scipy (GARCH, Monte Carlo), and a
-# handful of Python threads each oversubscribing a shared, throttled vCPU
-# turned a 39s sequential response into a request that never completed at
-# all. Caching already removes the cost on every reload but the very first
-# one, which is the case that actually matters for a personal dashboard.
+# version parallelized this with ThreadPoolExecutor, back when this suite
+# also ran GARCH and Monte Carlo per ticker (both since removed - see module
+# docstring), but on Render's CPU-constrained tier it made things *worse* -
+# each Python thread spins up its own BLAS/OpenMP threads inside numpy/scipy,
+# and a handful of Python threads each oversubscribing a shared, throttled
+# vCPU turned a 39s sequential response into a request that never completed
+# at all. That lesson doesn't expire just because the heaviest models are
+# gone: no ThreadPoolExecutor in this service, full stop. Caching already
+# removes the cost on every reload but the very first one, which is the case
+# that actually matters for a personal dashboard.
 CACHE_TTL = timedelta(minutes=20)
 
 EXIT_WARNING = "exit_warning"
@@ -327,7 +333,19 @@ def assess_position_risk(
             # one just widened/raised using today's own bar - otherwise a
             # stop "breach" could be an artifact of raising the stop, not a
             # real adverse move.
-            vol_regime = signals.garch.regime if signals.garch is not None else None
+            # Chandelier's regime multiplier used to come from a per-ticker
+            # GARCH fit (volatility_model.py, retired 2026-09 - see
+            # ticker_analysis_service.py's module docstring): what it
+            # actually contributed here was one of four volatility buckets,
+            # not a real forecast (nothing downstream consumed the forecast
+            # itself once Monte Carlo was also retired). A percentile of this
+            # ticker's own ATR/price over its trailing year inherits the same
+            # volatility clustering (ATR is already an EWM average) without
+            # fitting a model per ticker per request.
+            atr_series_closed = ta.atr(closed["high"], closed["low"], closed["close"])
+            vol_regime = ta.volatility_regime_from_atr_percentile(
+                ta.atr_percentile(atr_series_closed / closed["close"])
+            )
             # Bounded to bars on/after entry - the highest high the Chandelier
             # trail should ever consider is one this trade actually lived
             # through. `closed["high"]` unfiltered can reach years before
@@ -336,7 +354,7 @@ def assess_position_risk(
             # high, not the trade's own price action.
             high_since_entry = closed["high"][closed["high"].index.date >= plan.entry_date]
             trailing = tm.compute_trailing_stop(
-                high_since_entry, ta.atr(closed["high"], closed["low"], closed["close"]),
+                high_since_entry, atr_series_closed,
                 current_stop=plan.current_stop, r_multiple=r_multiple, vol_regime=vol_regime, price=exit_price,
             )
             if trailing.stop is not None and plan.id is not None:

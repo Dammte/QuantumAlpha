@@ -126,7 +126,7 @@ def test_score_comparison_is_against_the_single_best_candidate_only() -> None:
 
 def test_margin_uses_raw_score_not_bonus_inflated_premium_score() -> None:
     """D10: premium_score can run well above the same candidate's raw checklist
-    score once backtest/Monte-Carlo/Kelly/sector bonuses are folded in (see
+    score once setup-percentile/sector bonuses are folded in (see
     premium_watchlist_service._approval_score) - a held position's score never
     receives those bonuses. Comparing the bonus-inflated premium_score against
     a raw position score (a prior bug) let a candidate clear SWAP_SCORE_MARGIN

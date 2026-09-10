@@ -21,7 +21,9 @@ import pandas as pd
 # minus a multiple of ATR(N)).
 CHANDELIER_WINDOW = 22
 
-# Base multiplier per GARCH volatility regime (volatility_model.GarchResult.regime),
+# Base multiplier per volatility regime (a string label - "baja" | "normal" |
+# "elevada" | "alta" - see technical_analysis.volatility_regime_from_atr_percentile,
+# fed by an ATR percentile rather than a per-ticker GARCH fit since 2026-09),
 # not a single fixed constant: the literature is consistent that an ATR
 # trailing stop should give a trending, genuinely volatile tape more room
 # (avoid a noise-driven stopout) and a calm tape less (a calm tape's own

@@ -13,37 +13,21 @@ import HoldersCard from './HoldersCard'
 import NewsList from './NewsList'
 import SeasonalityChart from './SeasonalityChart'
 import HistoricalAnalogsCard from './HistoricalAnalogsCard'
-import MarkovChainCard from './MarkovChainCard'
-import VolatilityCard from './VolatilityCard'
-import MonteCarloChart from './MonteCarloChart'
-import BacktestCard from './BacktestCard'
 import TripleBarrierBacktestCard from './TripleBarrierBacktestCard'
-import PositionSizingCard from './PositionSizingCard'
 import RelationshipMapCard from './RelationshipMapCard'
 
-const REGIME_LABELS = {
-  tendencial: 'Tendencial',
-  reversion: 'Reversión a la media',
-  aleatorio: 'Sin estructura clara',
-  desconocido: '—',
-}
-const HORIZON_OPTIONS = [
-  { value: '1m', label: '1 mes' },
-  { value: '3m', label: '3 meses' },
-  { value: '6m', label: '6 meses' },
-]
 const TABS = [
   { key: 'summary', label: 'Resumen' },
-  { key: 'quant', label: 'Cuantitativo' },
   { key: 'charts', label: 'Gráficos' },
   { key: 'fundamentals', label: 'Fundamentales' },
   { key: 'seasonality', label: 'Estacionalidad' },
   { key: 'relationships', label: 'Relaciones' },
 ]
 
+const HORIZON = '3m' // se persiste en el snapshot histórico - ya no cambia qué se calcula (2026-09)
+
 function TickerAnalysisPanel({ presetTicker } = {}) {
   const [ticker, setTicker] = useState('')
-  const [horizon, setHorizon] = useState('3m')
   const [analysis, setAnalysis] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -52,7 +36,7 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
   const [relLoading, setRelLoading] = useState(false)
   const [relError, setRelError] = useState(null)
 
-  const search = async (value, selectedHorizon = horizon) => {
+  const search = async (value, selectedHorizon = HORIZON) => {
     const symbol = value.trim().toUpperCase()
     if (!symbol) return
     setTicker(symbol)
@@ -125,11 +109,6 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
     setRelError(null)
   }
 
-  const handleHorizonChange = (value) => {
-    setHorizon(value)
-    if (analysis) search(analysis.ticker, value)
-  }
-
   const nearestSupport = analysis?.support_resistance.filter((l) => l.kind === 'support').sort((a, b) => Math.abs(a.distance_pct) - Math.abs(b.distance_pct))[0]
   const nearestResistance = analysis?.support_resistance.filter((l) => l.kind === 'resistance').sort((a, b) => Math.abs(a.distance_pct) - Math.abs(b.distance_pct))[0]
 
@@ -166,9 +145,8 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
       {!analysis && !loading && (
         <p className="empty-state">
           Escribe un ticker para ver su análisis cuantitativo completo: gráfico con Bollinger/Gann/soportes, RSI,
-          MACD, fundamentales, noticias, estacionalidad, análogos históricos, cadena de Markov, volatilidad GARCH,
-          simulación Monte Carlo, validación histórica del sistema (backtest) y una recomendación con stop-loss,
-          objetivo y tamaño de posición sugerido (Kelly).
+          MACD, fundamentales, noticias, estacionalidad, análogos históricos, backtest de barrera triple y una
+          recomendación con stop-loss y objetivo sugeridos.
         </p>
       )}
 
@@ -208,15 +186,6 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
             <StatTile label="ADX (14)" value={analysis.adx14 !== null ? analysis.adx14.toFixed(1) : '—'} />
             <StatTile label="Volumen relativo" value={analysis.relative_volume !== null ? `${analysis.relative_volume.toFixed(2)}x` : '—'} />
             <StatTile label="Minervini" value={`${analysis.minervini_score}/8`} tone={analysis.minervini_pass ? 'up' : 'neutral'} />
-            <StatTile
-              label="Estructura de precio (Hurst)"
-              value={analysis.statistical_structure ? REGIME_LABELS[analysis.statistical_structure.regime] : '—'}
-              hint={
-                analysis.statistical_structure?.hurst_exponent != null
-                  ? `H = ${analysis.statistical_structure.hurst_exponent.toFixed(2)} · >0.55 tendencial, <0.45 reversión`
-                  : 'historial insuficiente'
-              }
-            />
           </div>
 
           <div className="sub-toggle" role="tablist" aria-label="Sección del análisis">
@@ -240,96 +209,28 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
                 <h3>Recomendación</h3>
                 <RecommendationCard
                   recommendation={analysis.recommendation}
-                  entryTiming={analysis.entry_timing}
                   imminentCross={analysis.imminent_cross}
                   imminentCrossShortTerm={analysis.imminent_cross_short_term}
                   candlestickPattern={analysis.candlestick_pattern}
                   currency={analysis.currency ?? 'USD'}
-                  signContradictedFactors={analysis.sign_contradicted_factors}
-                />
-                <PositionSizingCard
-                  sizing={analysis.position_sizing}
-                  currency={analysis.currency ?? 'USD'}
-                  price={analysis.price}
-                  stopLoss={analysis.recommendation.stop_loss}
-                  verdict={analysis.recommendation.verdict}
-                  monteCarlo={analysis.monte_carlo}
                 />
               </section>
 
-              {/* Tercera auditoría, Bloque H: el de triple-barrera es el método
-                  principal (stop/objetivo/trailing real, neto de costes) - va
-                  primero. El walk-forward legacy queda como referencia
-                  secundaria debajo, ya no antes del que el propio texto de
-                  BacktestCard.jsx llama "la lectura honesta". */}
               <section className="panel panel--nested">
-                <h3>Backtest de triple-barrera (método principal: stop/objetivo/trailing real, neto de costes)</h3>
+                <h3>Backtest de triple-barrera (stop/objetivo/trailing real, neto de costes)</h3>
                 <TripleBarrierBacktestCard backtest={analysis.triple_barrier_backtest} />
-              </section>
-
-              <section className="panel panel--nested">
-                <h3>Validación histórica del sistema (backtest walk-forward, secundario)</h3>
-                <BacktestCard backtest={analysis.backtest} />
-              </section>
-            </>
-          )}
-
-          {tab === 'quant' && (
-            <>
-              <div className="grid-2">
-                <section className="panel panel--nested">
-                  <h3>Cadena de Markov (pronóstico probabilístico)</h3>
-                  <MarkovChainCard markov={analysis.markov} />
-                </section>
-                <section className="panel panel--nested">
-                  <h3>Volatilidad condicional (GARCH)</h3>
-                  <VolatilityCard garch={analysis.garch} />
-                </section>
-              </div>
-
-              <section className="panel panel--nested">
-                <div className="ticker-analysis__section-header">
-                  <h3>Simulación Monte Carlo (bandas de precio y probabilidad de stop/objetivo)</h3>
-                  <div className="horizon-switch" role="tablist" aria-label="Horizonte de la proyección">
-                    {HORIZON_OPTIONS.map((opt) => (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        role="tab"
-                        aria-selected={horizon === opt.value}
-                        className={`horizon-switch__item ${horizon === opt.value ? 'horizon-switch__item--active' : ''}`}
-                        onClick={() => handleHorizonChange(opt.value)}
-                        disabled={loading}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <p className="ticker-analysis__section-hint">
-                  El horizonte elegido también actualiza la proyección en el gráfico de precio (pestaña Gráficos).
-                </p>
-                <MonteCarloChart
-                  monteCarlo={analysis.monte_carlo}
-                  currentPrice={analysis.price}
-                  currency={analysis.currency ?? 'USD'}
-                  stopLoss={analysis.recommendation.stop_loss}
-                  takeProfit={analysis.recommendation.take_profit}
-                />
               </section>
             </>
           )}
 
           {tab === 'charts' && (
             <section className="panel panel--nested">
-              <h3>Gráfico (precio, Bollinger, MA50/200, Gann 1x1, soportes/resistencias, proyección Monte Carlo)</h3>
+              <h3>Gráfico (precio, Bollinger, MA50/200, Gann 1x1, soportes/resistencias)</h3>
               <PriceChart
                 data={analysis.price_history}
                 currency={analysis.currency ?? 'USD'}
                 nearestSupport={nearestSupport}
                 nearestResistance={nearestResistance}
-                monteCarlo={analysis.monte_carlo}
-                currentPrice={analysis.price}
               />
               <VolumeChart data={analysis.price_history} />
               <RsiMacdChart data={analysis.price_history} />

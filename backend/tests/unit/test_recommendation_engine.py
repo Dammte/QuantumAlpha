@@ -1,43 +1,7 @@
 import pytest
 
 from app.services import recommendation_engine as re
-from app.services.markov_chain_model import MarkovChainResult
 from app.services.technical_analysis import PriceLevel, Stage, TrendState
-from app.services.volatility_model import GarchResult
-
-
-def _markov(prob_bullish_21d: float, sequence_looks_random: bool = False) -> MarkovChainResult:
-    return MarkovChainResult(
-        current_state=3,
-        current_state_label="alcista",
-        state_labels=["fuerte bajista", "bajista", "lateral", "alcista", "fuerte alcista"],
-        transition_matrix=[[0.2] * 5] * 5,
-        state_mean_returns=[0.0] * 5,
-        stationary_distribution=[0.2] * 5,
-        forecast_5d_return=0.01,
-        forecast_21d_return=0.03,
-        forecast_21d_distribution=[0.1, 0.1, 0.1, 0.35, 0.35],
-        prob_bullish_21d=prob_bullish_21d,
-        runs_test_z=0.5,
-        sequence_looks_random=sequence_looks_random,
-        order2_justified=False,
-        order2_p_value=0.5,
-    )
-
-
-def _garch(regime: str) -> GarchResult:
-    return GarchResult(
-        omega=0.00001,
-        alpha=0.08,
-        beta=0.88,
-        persistence=0.96,
-        unconditional_vol_annualized=0.25,
-        current_vol_annualized=0.30,
-        forecast_vol_21d_annualized=0.28,
-        vol_percentile=0.9 if regime == "alta" else 0.4,
-        regime=regime,
-    )
-
 
 # compute_stop_and_target is exercised indirectly by the build_recommendation
 # tests below (only ever called there when verdict == "comprar"), and
@@ -362,45 +326,6 @@ def _neutral_kwargs() -> dict:
     )
 
 
-def test_markov_bullish_forecast_adds_points_when_sequence_is_not_random():
-    rec = re.build_recommendation(**_neutral_kwargs(), markov=_markov(0.65, sequence_looks_random=False))
-    labels = {f.label for f in rec.factors if f.triggered}
-    assert "Cadena de Markov: continuidad alcista probable (secuencia no aleatoria)" in labels
-    assert rec.score == 2
-
-
-def test_markov_bearish_forecast_subtracts_points_when_sequence_is_not_random():
-    rec = re.build_recommendation(**_neutral_kwargs(), markov=_markov(0.20, sequence_looks_random=False))
-    labels = {f.label for f in rec.factors if f.triggered}
-    assert "Cadena de Markov: continuidad bajista probable (secuencia no aleatoria)" in labels
-    assert rec.score == -2
-
-
-def test_markov_forecast_ignored_when_sequence_looks_random():
-    rec = re.build_recommendation(**_neutral_kwargs(), markov=_markov(0.65, sequence_looks_random=True))
-    assert not any(f.triggered for f in rec.factors if "Markov" in f.label)
-    assert rec.score == 0
-
-
-def test_markov_neutral_probability_triggers_neither_factor():
-    rec = re.build_recommendation(**_neutral_kwargs(), markov=_markov(0.50, sequence_looks_random=False))
-    assert not any(f.triggered for f in rec.factors if "Markov" in f.label)
-    assert rec.score == 0
-
-
-def test_garch_high_vol_regime_subtracts_a_point():
-    rec = re.build_recommendation(**_neutral_kwargs(), garch=_garch("alta"))
-    labels = {f.label for f in rec.factors if f.triggered}
-    assert "Volatilidad condicional elevada (GARCH, percentil ≥75 de su propio historial)" in labels
-    assert rec.score == -1
-
-
-def test_garch_normal_vol_regime_no_penalty():
-    rec = re.build_recommendation(**_neutral_kwargs(), garch=_garch("normal"))
-    assert not any(f.triggered for f in rec.factors if "GARCH" in f.label)
-    assert rec.score == 0
-
-
 def test_minervini_pass_now_contributes_a_smaller_confirmation_bonus():
     # Regression guard for the double-counting fix: Minervini alone (no other
     # trend/stage/RS factors triggered) should add exactly +1, not the old +2.
@@ -529,6 +454,22 @@ def test_build_recommendation_has_no_market_regime_params():
     assert "vix_regime" not in params
 
 
+def test_build_recommendation_has_no_markov_garch_or_hurst_params():
+    # 2026-09: regression guard for the same kind of deliberate removal as
+    # the market-regime one above - markov_chain_model.py's own thresholds
+    # were mathematically unreachable/always-true (see
+    # recommendation_engine.py's module docstring), and volatility_model.py/
+    # statistical_structure.py never had cross-sectional evidence behind
+    # their weights. Asserts they're not silently reintroduced here without a
+    # fresh evidence-based decision.
+    import inspect
+
+    params = inspect.signature(re.build_recommendation).parameters
+    assert "markov" not in params
+    assert "garch" not in params
+    assert "mean_reverting_structure" not in params
+
+
 def test_overbought_not_penalized_inside_a_strong_confirmed_uptrend():
     # An external audit correctly flagged this exact conflict: penalizing RSI
     # overbought unconditionally fights the trend factors in a genuinely
@@ -560,16 +501,6 @@ def test_overbought_still_penalized_outside_a_strong_trend():
     assert rec.score == -1
 
 
-def test_mean_reverting_structure_subtracts_a_point():
-    rec = re.build_recommendation(**_neutral_kwargs(), mean_reverting_structure=True)
-    assert rec.score == -1
-    labels = {f.label for f in rec.factors if f.triggered}
-    assert any("reversión a la media" in label for label in labels)
-
-
-def test_mean_reverting_structure_false_by_default():
-    rec = re.build_recommendation(**_neutral_kwargs())
-    assert rec.score == 0
 
 
 def test_overbought_still_penalized_in_a_weak_uptrend_without_strong_adx():

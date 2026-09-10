@@ -6,15 +6,25 @@ Unlike the market screener (which scans ~170 tickers and has to stay fast and
 cheap per-ticker), this runs once per user search, so it can afford a decade of
 history and a couple of slower per-ticker calls (fundamentals, news).
 
-`compute_core_signals()` holds the quant core of that deep dive (recommendation,
-Markov chain, GARCH, Monte Carlo, walk-forward backtest, Kelly sizing) as a
-function of a plain OHLCV frame, with none of the extra per-ticker network calls
-(fundamentals/news/holders) or chart-only series. It exists so the premium
-watchlist and the portfolio-position risk check can run the *exact same*
-analysis "Analizar activo" would - not a cheaper approximation of it - which is
-the whole point of both features: a ticker is never called "premium" or a
-holding never flagged "sell" on a different, laxer basis than what you'd see by
-searching it directly.
+`compute_core_signals()` holds the quant core of that deep dive (recommendation
+plus walk-forward backtest) as a function of a plain OHLCV frame, with none of
+the extra per-ticker network calls (fundamentals/news/holders) or chart-only
+series. It exists so the premium watchlist and the portfolio-position risk
+check can run the *exact same* analysis "Analizar activo" would - not a
+cheaper approximation of it - which is the whole point of both features: a
+ticker is never called "premium" or a holding never flagged "sell" on a
+different, laxer basis than what you'd see by searching it directly.
+
+2026-09: Markov chain, GARCH, Monte Carlo, Kelly sizing, the Hurst/ADF
+statistical-structure read and the entry-timing badge were removed from this
+pipeline (see `docs/quant_methodology.md` and `recommendation_engine.py`'s
+module docstring) - none of them had cross-sectional evidence of predicting
+anything at this portfolio's actual holding horizon, and Monte Carlo's own
+"probability of hitting the stop/target" was circular (it simulated around
+the exact stop/target the recommendation had already chosen). GARCH's one
+remaining real use - bucketing the Chandelier Exit's volatility multiplier -
+now comes from `technical_analysis.volatility_regime_from_atr_percentile`
+instead of a per-ticker model fit.
 
 One deliberate, documented exception: the recommendation engine's fundamentals
 factor (revenue growth, profit margin, leverage - see `recommendation_engine.py`)
@@ -35,40 +45,29 @@ from datetime import date, time, timedelta
 import pandas as pd
 
 from app.domain.models.ticker_analysis import PricePoint, TickerAnalysis
-from app.services import ablation_report_service as ars
 from app.services import analysis_tools as at
 from app.services import multi_timeframe as mtf
-from app.services import statistical_structure as stats_structure
 from app.services import technical_analysis as ta
 from app.services.backtest_engine import (
     VERTICAL_BARRIER_HORIZONS,
     TripleBarrierBacktestResult,
     run_triple_barrier_backtest,
 )
-from app.services.entry_timing import EntryTiming, assess_entry_timing
-from app.services.kelly_criterion import KellyResult, recommend_position_size, win_probability_from_barriers
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, closed_bar_cutoff_for_ticker
-from app.services.markov_chain_model import MarkovChainResult, analyze_markov_chain
-from app.services.monte_carlo_simulation import MonteCarloResult, simulate_and_analyze
 from app.services.recommendation_engine import Recommendation, build_recommendation
-from app.services.statistical_structure import StatisticalStructure, compute_statistical_structure
-from app.services.volatility_model import GarchResult, fit_garch
-from app.services.walk_forward_backtest import WalkForwardBacktestResult, run_walk_forward_backtest
 
 HISTORY_YEARS = 10
 CHART_BARS = 504  # ~2 trading years
 MIN_BARS_REQUIRED = 60
 
-# Monte Carlo horizon presets, keyed by the API's `horizon` query param. Each
-# checkpoint tuple picks meaningful sub-horizons for that preset (roughly
-# 1 week / 1-3 months out) rather than mechanically quartering n_days.
-MONTE_CARLO_HORIZON_PRESETS: dict[str, tuple[int, tuple[int, ...]]] = {
-    "1m": (21, (5, 10, 15, 21)),
-    "3m": (63, (5, 21, 42, 63)),
-    "6m": (126, (21, 42, 84, 126)),
-}
+# 2026-09: used to also key a Monte Carlo horizon preset (1m/3m/6m -> a day
+# count + a set of forecast checkpoints); Monte Carlo is gone (see module
+# docstring), so `horizon` now only labels the persisted
+# RecommendationSnapshotORM row - kept as a parameter through
+# TickerAnalysisService.analyze()/compute_core_signals() for that reason and
+# for API-contract stability, but it no longer changes what gets computed.
 DEFAULT_HORIZON = "3m"
 
 # Segunda auditoría, Bloque 2: fixed at this portfolio's actual holding
@@ -129,7 +128,6 @@ class CoreTickerSignals:
     nearest_support: ta.PriceLevel | None
     nearest_resistance: ta.PriceLevel | None
     obv_divergence: str | None
-    statistical_structure: StatisticalStructure | None
     market_trend: ta.TrendState | None  # informational only - see recommendation_engine.py docstring
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
     is_intraday_snapshot: bool
@@ -150,39 +148,22 @@ class CoreTickerSignals:
     # instead of the live frame - `None` when there's nothing to separate
     # from (the last bar is already settled, so `recommendation` itself is
     # already the confirmed read; see `is_intraday_snapshot`). Deliberately
-    # reuses the already-computed markov/garch/obv_divergence/fundamentals
-    # reads rather than refitting them on one bar less of history - those
-    # are continuous statistical estimates, not discrete signals that
-    # repaint the way a moving-average cross does.
+    # reuses the already-computed obv_divergence/fundamentals reads rather
+    # than refitting them on one bar less of history - those are continuous
+    # reads, not discrete signals that repaint the way a moving-average
+    # cross does.
     confirmed_recommendation: Recommendation | None
-    # Segunda auditoría, Bloque 4: which of `recommendation`'s own *triggered*
-    # factors map to a factor the ablation study (scripts/factor_ablation_study.py,
-    # already-saved CSVs - see ablation_report_service.py) measured with a
-    # sign opposite the weight it's currently scored with, at this portfolio's
-    # actual holding horizon (~21 sessions). Empty when nothing's flagged -
-    # either every triggered factor is directionally consistent, or none of
-    # them has an ablation entry at all. Never changes the score itself; the
-    # UI shows this as a disclosure, not a correction.
-    sign_contradicted_factors: list[str]
-    entry_timing: EntryTiming | None  # see entry_timing.py - a timing read, not a second verdict
-    markov: MarkovChainResult | None
-    garch: GarchResult | None
-    monte_carlo: MonteCarloResult | None
-    backtest: WalkForwardBacktestResult | None
-    # Segunda auditoría, Bloque 2: `backtest` above (walk_forward_backtest.py)
-    # measures a naive fixed-horizon buy-and-hold return - it ignores the
-    # very stop_loss/take_profit `recommendation` proposes at that same bar,
-    # so it validates a strategy nobody actually executes (see
-    # backtest_engine.py's own module docstring). Kept for now (existing UI
-    # contract, and premium_watchlist_service.py's not-yet-reworked
-    # `backtest_contradicts` gate still reads it - Bloque 3), but this is the
-    # honest one: triple-barrier labeling, real Chandelier trailing, costs
-    # net, at this portfolio's actual holding horizon. `None` unless the
-    # caller opted into `include_triple_barrier_backtest` - see
-    # `compute_core_signals`'s own docstring for why this one, unlike every
-    # other field here, isn't computed unconditionally.
+    # 2026-09: `backtest` (walk_forward_backtest.py) measures a naive
+    # fixed-horizon buy-and-hold return - it ignores the very stop_loss/
+    # take_profit `recommendation` proposes at that same bar, so it validates
+    # a strategy nobody actually executes (see backtest_engine.py's own
+    # module docstring). This is the honest one: triple-barrier labeling,
+    # real Chandelier trailing, costs net, at this portfolio's actual holding
+    # horizon. `None` unless the caller opted into
+    # `include_triple_barrier_backtest` - see `compute_core_signals`'s own
+    # docstring for why this one, unlike every other field here, isn't
+    # computed unconditionally.
     triple_barrier_backtest: TripleBarrierBacktestResult | None
-    position_sizing: KellyResult | None
 
 
 def _last(series: pd.Series) -> float | None:
@@ -207,10 +188,7 @@ def _nearest_level(levels: list[ta.PriceLevel], kind: str) -> ta.PriceLevel | No
 def _confirmed_recommendation(
     daily_df: pd.DataFrame,
     rs_rating: int | None,
-    markov: MarkovChainResult | None,
-    garch: GarchResult | None,
     obv_div: str | None,
-    mean_reverting_structure: bool,
     revenue_growth: float | None,
     profit_margins: float | None,
     debt_to_equity: float | None,
@@ -272,14 +250,11 @@ def _confirmed_recommendation(
         nearest_support=_nearest_level(levels, "support"),
         nearest_resistance=_nearest_level(levels, "resistance"),
         minervini_range_confirmed=minervini_range_confirmed,
-        markov=markov,
-        garch=garch,
         obv_divergence=obv_div,
         revenue_growth=revenue_growth,
         fast_pair_bearish_signal=ta.detect_fast_pair_bearish_veto(close),
         profit_margins=profit_margins,
         debt_to_equity=debt_to_equity,
-        mean_reverting_structure=mean_reverting_structure,
     )
 
 
@@ -320,9 +295,6 @@ def compute_core_signals(
         return None
     closed_bar_cutoff = closed_bar_cutoff_for_ticker(ticker) if ticker else None
 
-    mc_days, mc_checkpoints = MONTE_CARLO_HORIZON_PRESETS.get(
-        horizon, MONTE_CARLO_HORIZON_PRESETS[DEFAULT_HORIZON]
-    )
     price = float(close.iloc[-1])
     # yfinance includes today's bar as soon as the session opens, with a
     # "close" that's really just the latest traded price, not a confirmed
@@ -353,39 +325,16 @@ def compute_core_signals(
     plus_di_s, minus_di_s = ta.dmi(high, low, close)
     atr_s = ta.atr(high, low, close)
 
-    returns = close.pct_change()
-    garch = fit_garch(returns)
-    markov = analyze_markov_chain(returns)
-    # horizon_days matches the same 1m/3m/6m horizon already selected for the
-    # Monte Carlo simulation (mc_days), not the module's own 21-day default.
-    # scripts/factor_ablation_study.py (2026-08, ~217 tickers x 10y) found
-    # trend/stage/momentum factors show short-term *mean reversion* at 21
-    # trading days - the reversal zone documented since Jegadeesh (1990) - and
-    # only become directionally consistent with their intended
-    # trend-following read at 63/126 days, matching the classic
-    # Jegadeesh-Titman (1993) 3-12 month momentum window. Backtesting this
-    # system's trend-following verdicts at a horizon shorter than its own
-    # design intent would understate (or invert) its real edge.
-    backtest = run_walk_forward_backtest(
-        close,
-        sma20_s,
-        sma50_s,
-        sma150_s,
-        sma200_s,
-        rsi_s,
-        adx_s,
-        plus_di_s,
-        minus_di_s,
-        atr_s,
-        horizon_days=mc_days,
-        volume=volume,
-    )
+    # 2026-09: this used to feed a per-ticker GARCH(1,1) fit, whose only
+    # surviving consumer was the Chandelier Exit's volatility-regime bucket -
+    # see technical_analysis.volatility_regime_from_atr_percentile.
+    vol_regime = ta.volatility_regime_from_atr_percentile(ta.atr_percentile(atr_s / close))
     triple_barrier_backtest = None
     if include_triple_barrier_backtest:
         triple_barrier_backtest = run_triple_barrier_backtest(
             close, high, low, open_, sma20_s, sma50_s, sma150_s, sma200_s, rsi_s, adx_s, plus_di_s, minus_di_s,
             atr_s, horizon_days=TRIPLE_BARRIER_HORIZON_DAYS, volume=volume,
-            vol_regime=garch.regime if garch else None,
+            vol_regime=vol_regime,
         )
 
     sma20, sma50, sma150, sma200 = _last(sma20_s), _last(sma50_s), _last(sma150_s), _last(sma200_s)
@@ -440,8 +389,6 @@ def compute_core_signals(
     # this isn't scored): the benchmark/VIX regime at the moment of analysis,
     # surfaced for context but not fed into the verdict.
     market_trend, vix_regime_label = ta.market_regime_inputs(benchmark_close, vix_close)
-    structure = compute_statistical_structure(close)
-    mean_reverting_structure = structure.regime == stats_structure.REGIME_MEAN_REVERTING
     fast_pair_veto = ta.detect_fast_pair_bearish_veto(close)
 
     recommendation = build_recommendation(
@@ -460,53 +407,18 @@ def compute_core_signals(
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
         minervini_range_confirmed=minervini_range_confirmed,
-        markov=markov,
-        garch=garch,
         obv_divergence=obv_div,
         revenue_growth=revenue_growth,
         fast_pair_bearish_signal=fast_pair_veto,
         profit_margins=profit_margins,
         debt_to_equity=debt_to_equity,
-        mean_reverting_structure=mean_reverting_structure,
     )
 
     confirmed_recommendation = None
     if is_intraday_snapshot:
         confirmed_recommendation = _confirmed_recommendation(
-            daily_df, rs_rating, markov, garch, obv_div, mean_reverting_structure,
-            revenue_growth, profit_margins, debt_to_equity, cutoff=closed_bar_cutoff,
+            daily_df, rs_rating, obv_div, revenue_growth, profit_margins, debt_to_equity, cutoff=closed_bar_cutoff,
         )
-
-    sign_contradicted_factors = ars.triggered_factors_with_contradicted_sign(
-        recommendation.factors, SIGN_CHECK_HORIZON_DAYS
-    )
-
-    entry_timing = assess_entry_timing(atr_multiple, nearest_support, trend)
-
-    monte_carlo = simulate_and_analyze(
-        returns,
-        price,
-        garch,
-        stop_loss=recommendation.stop_loss,
-        take_profit=recommendation.take_profit,
-        n_days=mc_days,
-        checkpoints=mc_checkpoints,
-    )
-
-    position_sizing = None
-    has_trade_setup = recommendation.verdict == "comprar" and recommendation.risk_reward is not None
-    if has_trade_setup and monte_carlo is not None:
-        win_prob = None
-        if monte_carlo.probability_target_before_stop is not None:
-            win_prob = win_probability_from_barriers(
-                monte_carlo.probability_target_before_stop, monte_carlo.probability_stop_before_target
-            )
-        if win_prob is not None:
-            position_sizing = recommend_position_size(
-                win_probability=win_prob,
-                reward_risk_ratio=recommendation.risk_reward,
-                vol_regime=garch.regime if garch is not None else None,
-            )
 
     return CoreTickerSignals(
         price=price,
@@ -547,21 +459,13 @@ def compute_core_signals(
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
         obv_divergence=obv_div,
-        statistical_structure=structure,
         market_trend=market_trend,
         vix_regime=vix_regime_label,
         is_intraday_snapshot=is_intraday_snapshot,
         recommendation=recommendation,
         multi_timeframe=multi_timeframe,
         confirmed_recommendation=confirmed_recommendation,
-        sign_contradicted_factors=sign_contradicted_factors,
-        entry_timing=entry_timing,
-        markov=markov,
-        garch=garch,
-        monte_carlo=monte_carlo,
-        backtest=backtest,
         triple_barrier_backtest=triple_barrier_backtest,
-        position_sizing=position_sizing,
     )
 
 
@@ -640,7 +544,7 @@ class TickerAnalysisService:
         # Chart-only series: analyze() needs the full per-bar history for the price
         # chart/RSI-MACD panel, which compute_core_signals() doesn't expose (it only
         # returns final scalar values). Recomputing these is cheap (vectorized pandas,
-        # not the GARCH/backtest/Monte Carlo work compute_core_signals already did once).
+        # not the triple-barrier backtest work compute_core_signals already did once).
         sma20_s, sma50_s = ta.sma(close, 20), ta.sma(close, 50)
         sma150_s, sma200_s = ta.sma(close, 150), ta.sma(close, 200)
         rsi_s = ta.rsi(close)
@@ -728,13 +632,11 @@ class TickerAnalysisService:
             minervini_pass=core.minervini_pass,
             support_resistance=core.support_resistance,
             obv_divergence=core.obv_divergence,
-            statistical_structure=core.statistical_structure,
             market_trend=core.market_trend,
             vix_regime=core.vix_regime,
             is_intraday_snapshot=core.is_intraday_snapshot,
             multi_timeframe=core.multi_timeframe,
             confirmed_recommendation=core.confirmed_recommendation,
-            sign_contradicted_factors=core.sign_contradicted_factors,
             price_history=price_history,
             news=news,
             fundamentals=info,
@@ -742,11 +644,5 @@ class TickerAnalysisService:
             seasonality=seasonality,
             historical_analogs=historical_analogs,
             recommendation=core.recommendation,
-            entry_timing=core.entry_timing,
-            markov=core.markov,
-            garch=core.garch,
-            monte_carlo=core.monte_carlo,
-            backtest=core.backtest,
             triple_barrier_backtest=core.triple_barrier_backtest,
-            position_sizing=core.position_sizing,
         )
