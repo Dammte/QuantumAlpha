@@ -13,8 +13,6 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
-      - key: FRED_API_KEY
-        sync: false
       - key: ENVIRONMENT
         value: production
       - key: MARKET_DATA_PROVIDER

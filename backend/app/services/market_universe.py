@@ -375,17 +375,6 @@ BENCHMARK_INDICES: dict[str, str] = {
 VIX_TICKER = "^VIX"
 VIX_3M_TICKER = "^VIX3M"
 
-# Instruments used only for the market-context composite (Fear & Greed proxy, liquidity).
-MACRO_TICKERS: dict[str, str] = {
-    "spx": "^GSPC",
-    "vix": "^VIX",
-    "treasury_long": "TLT",
-    "high_yield_bonds": "HYG",
-    "investment_grade_bonds": "LQD",
-    "dollar_index": "UUP",  # ETF proxy for DXY - more reliably available via yfinance
-}
-
-
 def sector_of(ticker: str) -> str | None:
     # Combined across both regions, same rationale as cap_tier_of.
     for industry in INDUSTRIES + EUROPE_INDUSTRIES:

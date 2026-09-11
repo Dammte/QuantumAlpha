@@ -168,42 +168,17 @@ class VixSnapshotResponse(BaseModel):
     term_structure: str | None
 
 
-class FearGreedResponse(BaseModel):
-    score: float
-    label: str
-    components: dict[str, float]
-
-
-class LiquidityResponse(BaseModel):
-    proxy_ticker: str
-    trend: str
-    headwind: bool
-
-
 class MarketRegimeResponse(BaseModel):
     verdict: str
     headline: str
     reasons: list[str]
 
 
-class MacroSnapshotResponse(BaseModel):
-    yield_curve_spread: float | None
-    yield_curve_date: str | None
-    yield_curve_inverted: bool
-    unemployment_rate: float | None
-    unemployment_date: str | None
-    cpi_yoy_change: float | None
-    cpi_date: str | None
-
-
 class MarketContextResponse(BaseModel):
     indices: list[IndexSnapshotResponse]
     vix: VixSnapshotResponse
-    fear_greed: FearGreedResponse
-    liquidity: LiquidityResponse
     regime: MarketRegimeResponse
     news: list[NewsArticleResponse]
-    macro: MacroSnapshotResponse | None
 
 
 class WatchlistItemResponse(BaseModel):

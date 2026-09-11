@@ -14,9 +14,7 @@ from app.infrastructure.db.repositories.position_signal_snapshot_repository impo
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.infrastructure.db.session import get_db
-from app.infrastructure.macro_data.fred_client import FredClient
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider
-from app.services.macro_data_service import MacroDataService
 from app.services.market_context_service import MarketContextService
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
@@ -57,19 +55,6 @@ def get_market_context_service(
     market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
 ) -> MarketContextService:
     return MarketContextService(market_data)
-
-
-@lru_cache
-def get_fred_client() -> FredClient:
-    settings: Settings = get_settings()
-    return FredClient(api_key=settings.fred_api_key)
-
-
-@lru_cache
-def get_macro_data_service(
-    client: Annotated[FredClient, Depends(get_fred_client)],
-) -> MacroDataService:
-    return MacroDataService(client)
 
 
 def get_ticker_analysis_service(

@@ -16,11 +16,6 @@ class Settings(BaseSettings):
     market_data_provider: str = "yfinance"
     risk_free_rate: float = 0.04
 
-    # Optional: free instant-signup key at fredaccount.stlouisfed.org/apikeys -
-    # unlocks real macro data (yield curve, unemployment, inflation) in Contexto.
-    # Left unset, that section is simply omitted rather than erroring.
-    fred_api_key: str | None = None
-
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

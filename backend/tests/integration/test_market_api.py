@@ -333,20 +333,19 @@ def test_relationship_map_unknown_ticker_returns_empty_layers_not_an_error(clien
     assert body["disclosed_available"] is False
 
 
-def test_market_context_has_indices_vix_fear_greed_and_liquidity(client: TestClient) -> None:
+def test_market_context_has_indices_vix_and_regime(client: TestClient) -> None:
     response = client.get("/api/v1/market/context")
     assert response.status_code == 200
     body = response.json()
     assert len(body["indices"]) == 6
     assert {"level", "sma50", "regime", "term_structure"} <= body["vix"].keys()
-    assert 0 <= body["fear_greed"]["score"] <= 100
-    assert body["fear_greed"]["label"]
-    assert {"proxy_ticker", "trend", "headwind"} <= body["liquidity"].keys()
     assert body["regime"]["verdict"] in {"favorable", "precaucion", "evitar"}
     assert body["regime"]["headline"]
     assert len(body["regime"]["reasons"]) > 0
     assert isinstance(body["news"], list)
-    assert "macro" in body  # None without a configured FRED_API_KEY - key must still be present
+    assert "fear_greed" not in body
+    assert "liquidity" not in body
+    assert "macro" not in body
 
 
 def test_market_endpoints_survive_a_missing_computation_cache_table(client: TestClient, engine: Engine) -> None:

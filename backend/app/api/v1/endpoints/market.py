@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import (
     DbSession,
-    get_macro_data_service,
     get_market_context_service,
     get_market_data_service,
     get_market_screener_service,
@@ -14,12 +13,9 @@ from app.api.deps import (
 from app.domain.models.ticker_snapshot import IndustryPerformance, TickerSnapshot
 from app.schemas.market import (
     DisclosedRelationResponse,
-    FearGreedResponse,
     IndexSnapshotResponse,
     IndustryPerformanceResponse,
     IndustryUniverseResponse,
-    LiquidityResponse,
-    MacroSnapshotResponse,
     MarketContextResponse,
     MarketRegimeResponse,
     MoversResponse,
@@ -39,7 +35,6 @@ from app.schemas.market import (
     WatchlistItemResponse,
     WatchlistResponse,
 )
-from app.services.macro_data_service import MacroDataService
 from app.services.market_context_service import MarketContextService, assess_market_regime
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import (
@@ -343,27 +338,18 @@ def get_relationship_map(
 @router.get("/context", response_model=MarketContextResponse)
 def get_market_context(
     context_service: Annotated[MarketContextService, Depends(get_market_context_service)],
-    screener_service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-    macro_service: Annotated[MacroDataService, Depends(get_macro_data_service)],
-    db: DbSession,
 ) -> MarketContextResponse:
-    universe_snapshot = screener_service.get_universe_snapshot(db=db)
+    """2026-09: Fear & Greed, dollar liquidity and the FRED macro read were
+    retired from this panel (see market_context_service.py's module
+    docstring) - VIX is what's left driving `regime`."""
     indices = context_service.get_indices()
     vix = context_service.get_vix()
-    fear_greed = context_service.get_fear_greed(universe_snapshot)
-    liquidity = context_service.get_liquidity()
-    macro = macro_service.get_macro_snapshot()
-    regime = assess_market_regime(vix, fear_greed, liquidity, macro)
+    regime = assess_market_regime(vix)
     news = context_service.get_market_news()
 
     return MarketContextResponse(
         indices=[IndexSnapshotResponse(**asdict(i)) for i in indices],
         vix=VixSnapshotResponse(**asdict(vix)),
-        fear_greed=FearGreedResponse(
-            score=fear_greed.score, label=fear_greed.label, components=fear_greed.components
-        ),
-        liquidity=LiquidityResponse(**asdict(liquidity)),
         regime=MarketRegimeResponse(**asdict(regime)),
         news=[NewsArticleResponse(**asdict(n)) for n in news],
-        macro=MacroSnapshotResponse(**asdict(macro)) if macro is not None else None,
     )
