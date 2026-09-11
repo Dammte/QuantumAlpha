@@ -3,7 +3,7 @@ from datetime import date
 
 from app.domain.models.price_bar import PriceBar
 from app.domain.models.price_quote import PriceQuote
-from app.domain.models.ticker_info import HoldersSummary, NewsArticle, TickerInfo
+from app.domain.models.ticker_info import NewsArticle, TickerInfo
 
 
 class MarketDataProvider(ABC):
@@ -52,13 +52,6 @@ class MarketDataProvider(ABC):
 
     @abstractmethod
     def get_ticker_news(self, ticker: str, limit: int = 8) -> list[NewsArticle]:
-        ...
-
-    @abstractmethod
-    def get_holders(self, ticker: str) -> HoldersSummary | None:
-        """Institutional/insider ownership - a directional "who's holding this"
-        signal, not authoritative (see YFinanceProvider for caveats). Returns
-        None if the provider has no holders data for this ticker."""
         ...
 
     @abstractmethod

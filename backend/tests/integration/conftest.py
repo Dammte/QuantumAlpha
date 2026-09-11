@@ -17,7 +17,7 @@ from app.api.deps import (
 from app.domain.interfaces.market_data_provider import MarketDataProvider
 from app.domain.models.price_bar import PriceBar
 from app.domain.models.price_quote import PriceQuote
-from app.domain.models.ticker_info import HoldersSummary, InstitutionalHolder, NewsArticle, TickerInfo
+from app.domain.models.ticker_info import NewsArticle, TickerInfo
 from app.infrastructure.db import models  # noqa: F401 - registers ORM tables on Base.metadata
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
@@ -114,9 +114,6 @@ class FakeMarketDataProvider(MarketDataProvider):
             dividend_yield=0.01,
             beta=1.1,
             average_volume=1_000_000.0,
-            analyst_recommendation="buy",
-            analyst_target_mean_price=175.0,
-            analyst_opinion_count=20,
             revenue_growth=0.12,
             profit_margins=0.18,
             debt_to_equity=45.0,
@@ -134,23 +131,6 @@ class FakeMarketDataProvider(MarketDataProvider):
             )
             for i in range(min(limit, 3))
         ]
-
-    def get_holders(self, ticker: str) -> HoldersSummary | None:
-        if ticker == "UNKNOWN":
-            return None
-        return HoldersSummary(
-            pct_held_by_institutions=0.62,
-            pct_held_by_insiders=0.03,
-            top_institutional_holders=[
-                InstitutionalHolder(
-                    holder="Fake Capital Management",
-                    shares=1_000_000.0,
-                    value=150_000_000.0,
-                    pct_held=0.05,
-                    date_reported="2026-06-30",
-                )
-            ],
-        )
 
 
 @pytest.fixture()

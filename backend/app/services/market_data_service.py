@@ -4,7 +4,7 @@ import pandas as pd
 
 from app.domain.interfaces.market_data_provider import MarketDataProvider
 from app.domain.models.price_quote import PriceQuote
-from app.domain.models.ticker_info import HoldersSummary, NewsArticle, TickerInfo
+from app.domain.models.ticker_info import NewsArticle, TickerInfo
 
 
 class MarketDataService:
@@ -60,9 +60,6 @@ class MarketDataService:
 
     def get_ticker_news(self, ticker: str, limit: int = 8) -> list[NewsArticle]:
         return self.provider.get_ticker_news(ticker, limit)
-
-    def get_holders(self, ticker: str) -> HoldersSummary | None:
-        return self.provider.get_holders(ticker)
 
     def get_next_earnings_date(self, ticker: str) -> date | None:
         return self.provider.get_next_earnings_date(ticker)

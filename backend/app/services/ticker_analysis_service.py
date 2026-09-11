@@ -8,12 +8,11 @@ history and a couple of slower per-ticker calls (fundamentals, news).
 
 `compute_core_signals()` holds the quant core of that deep dive (recommendation
 plus walk-forward backtest) as a function of a plain OHLCV frame, with none of
-the extra per-ticker network calls (fundamentals/news/holders) or chart-only
-series. It exists so the premium watchlist and the portfolio-position risk
-check can run the *exact same* analysis "Analizar activo" would - not a
-cheaper approximation of it - which is the whole point of both features: a
-ticker is never called "premium" or a holding never flagged "sell" on a
-different, laxer basis than what you'd see by searching it directly.
+the extra per-ticker network calls (fundamentals/news) or chart-only series.
+It exists so the portfolio-position risk check can run the *exact same*
+analysis "Analizar activo" would - not a cheaper approximation of it - so a
+holding is never flagged "sell" on a different, laxer basis than what you'd
+see by searching it directly.
 
 2026-09: Markov chain, GARCH, Monte Carlo, Kelly sizing, the Hurst/ADF
 statistical-structure read and the entry-timing badge were removed from this
@@ -26,17 +25,16 @@ remaining real use - bucketing the Chandelier Exit's volatility multiplier -
 now comes from `technical_analysis.volatility_regime_from_atr_percentile`
 instead of a per-ticker model fit.
 
-One deliberate, documented exception: the recommendation engine's fundamentals
-factor (revenue growth, profit margin, leverage - see `recommendation_engine.py`)
-needs a `TickerInfo.info()` call per ticker, which is exactly the N-extra-calls
-cost that made the portfolio-risk endpoint hang in production once already (see
-`PortfolioRiskService`'s docstring). `compute_core_signals()` accepts
-`revenue_growth`/`profit_margins`/`debt_to_equity` as optional pre-fetched
-inputs (default None, contributing nothing) rather than fetching them itself -
-only `TickerAnalysisService.analyze()`, which already pays for a fundamentals
-fetch for the info card, passes them in. Volume/OBV divergence has no such
-cost (it's derived from the same OHLCV frame every caller already has) and is
-always computed for everyone.
+2026-09 (reconstruction, Fase 1): the recommendation engine's fundamentals
+factor (revenue growth, profit margin, leverage) was retired too - never
+measured by `scripts/factor_ablation_study.py`, see
+`recommendation_engine.py`'s module docstring - so `compute_core_signals()`
+no longer accepts or forwards those inputs at all. `TickerAnalysisService.
+analyze()` still fetches `TickerInfo` (shown as plain informational context
+in the deep-dive's Fundamentals tab), it just no longer feeds anything into
+the score. Institutional/insider holders data and analyst-consensus fields
+were retired the same round, for lack of any decision this app actually
+makes with them (see `docs/quant_methodology.md`).
 """
 
 from dataclasses import dataclass
@@ -189,9 +187,6 @@ def _confirmed_recommendation(
     daily_df: pd.DataFrame,
     rs_rating: int | None,
     obv_div: str | None,
-    revenue_growth: float | None,
-    profit_margins: float | None,
-    debt_to_equity: float | None,
     cutoff: time | None = None,
 ) -> Recommendation | None:
     """Re-derives the verdict/stop/target from `technical_analysis.closed_bars`
@@ -251,10 +246,7 @@ def _confirmed_recommendation(
         nearest_resistance=_nearest_level(levels, "resistance"),
         minervini_range_confirmed=minervini_range_confirmed,
         obv_divergence=obv_div,
-        revenue_growth=revenue_growth,
         fast_pair_bearish_signal=ta.detect_fast_pair_bearish_veto(close),
-        profit_margins=profit_margins,
-        debt_to_equity=debt_to_equity,
     )
 
 
@@ -267,9 +259,6 @@ def compute_core_signals(
     benchmark_close: pd.Series | None,
     rs_rating: int | None,
     horizon: str = DEFAULT_HORIZON,
-    revenue_growth: float | None = None,
-    profit_margins: float | None = None,
-    debt_to_equity: float | None = None,
     vix_close: pd.Series | None = None,
     ticker: str | None = None,
     include_triple_barrier_backtest: bool = False,
@@ -408,16 +397,13 @@ def compute_core_signals(
         nearest_resistance=nearest_resistance,
         minervini_range_confirmed=minervini_range_confirmed,
         obv_divergence=obv_div,
-        revenue_growth=revenue_growth,
         fast_pair_bearish_signal=fast_pair_veto,
-        profit_margins=profit_margins,
-        debt_to_equity=debt_to_equity,
     )
 
     confirmed_recommendation = None
     if is_intraday_snapshot:
         confirmed_recommendation = _confirmed_recommendation(
-            daily_df, rs_rating, obv_div, revenue_growth, profit_margins, debt_to_equity, cutoff=closed_bar_cutoff,
+            daily_df, rs_rating, obv_div, cutoff=closed_bar_cutoff,
         )
 
     return CoreTickerSignals(
@@ -510,10 +496,10 @@ class TickerAnalysisService:
 
         close, high, low, volume, open_ = df["close"], df["high"], df["low"], df["volume"], df["open"]
         rs_rating = self._rs_rating_for(ticker)
-        # Fetched here (not after, as it used to be) so the fundamentals factor
-        # can actually feed into the recommendation - this is the one path that
-        # supplies it, see compute_core_signals()'s docstring for why the other
-        # two callers (portfolio risk, premium watchlist) deliberately don't.
+        # Used for the Fundamentals tab's plain informational display
+        # (name/sector/industry/market cap/growth/margin/leverage) - no
+        # longer feeds the recommendation score itself (see
+        # recommendation_engine.py's module docstring).
         info = self.market_data.get_ticker_info(ticker)
         # Tercera auditoría, Bloque F-9: a breakout 3 days before earnings
         # isn't the same trade as one with no event risk in the holding
@@ -531,9 +517,6 @@ class TickerAnalysisService:
             benchmark_close,
             rs_rating,
             horizon,
-            revenue_growth=info.revenue_growth if info else None,
-            profit_margins=info.profit_margins if info else None,
-            debt_to_equity=info.debt_to_equity if info else None,
             vix_close=vix_close,
             ticker=ticker,
             include_triple_barrier_backtest=True,
@@ -584,7 +567,6 @@ class TickerAnalysisService:
         ]
 
         news = self.market_data.get_ticker_news(ticker)
-        holders = self.market_data.get_holders(ticker)
         seasonality = at.seasonality_by_month(close)
         historical_analogs = at.historical_analogs(close, vix_close=vix_close)
 
@@ -640,7 +622,6 @@ class TickerAnalysisService:
             price_history=price_history,
             news=news,
             fundamentals=info,
-            holders=holders,
             seasonality=seasonality,
             historical_analogs=historical_analogs,
             recommendation=core.recommendation,

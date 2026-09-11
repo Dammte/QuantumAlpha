@@ -84,7 +84,6 @@ def _ticker_info(market_cap: float | None, currency: str = "USD") -> TickerInfo:
     return TickerInfo(
         ticker="X", name=None, sector=None, industry=None, market_cap=market_cap, currency=currency,
         trailing_pe=None, forward_pe=None, dividend_yield=None, beta=None, average_volume=None,
-        analyst_recommendation=None, analyst_target_mean_price=None, analyst_opinion_count=None,
         revenue_growth=None, profit_margins=None, debt_to_equity=None,
     )
 

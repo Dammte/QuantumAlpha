@@ -1972,13 +1972,6 @@
   font-style: italic;
 }
 
-.holders-card__disclaimer {
-  font-size: 11px;
-  color: var(--text);
-  margin: 16px 0 0;
-  font-style: italic;
-}
-
 /* Triple-barrier backtest card (shared table/disclaimer styling - the legacy
    walk-forward BacktestCard.jsx these were originally written for was
    retired 2026-09, see quant_methodology.md) */

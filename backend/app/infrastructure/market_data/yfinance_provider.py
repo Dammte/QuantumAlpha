@@ -7,11 +7,9 @@ import yfinance as yf
 from app.domain.interfaces.market_data_provider import MarketDataProvider
 from app.domain.models.price_bar import PriceBar
 from app.domain.models.price_quote import PriceQuote
-from app.domain.models.ticker_info import HoldersSummary, InstitutionalHolder, NewsArticle, TickerInfo
+from app.domain.models.ticker_info import NewsArticle, TickerInfo
 
 logger = logging.getLogger(__name__)
-
-MAX_INSTITUTIONAL_HOLDERS = 10
 
 # London Stock Exchange quotes most stocks in pence (GBp/GBX), not pounds - not
 # a real ISO 4217 currency an FX pair exists for, so it's normalized to GBP/100
@@ -132,15 +130,13 @@ class YFinanceProvider(MarketDataProvider):
             dividend_yield=info.get("dividendYield"),
             beta=info.get("beta"),
             average_volume=info.get("averageVolume"),
-            analyst_recommendation=info.get("recommendationKey"),
-            analyst_target_mean_price=info.get("targetMeanPrice"),
-            analyst_opinion_count=info.get("numberOfAnalystOpinions"),
             # `earningsGrowth` is the more commonly-cited CANSLIM-style metric but is
             # null specifically whenever trailing EPS growth is undefined (negative
             # or zero prior-period earnings) - confirmed empirically across several
             # tickers, not random missingness. `revenueGrowth` doesn't have that
             # failure mode and was populated for every ticker checked, so it's the
-            # one fed into the recommendation engine's fundamentals factor.
+            # one shown in the Fundamentals tab (informational only since 2026-09 -
+            # see recommendation_engine.py's module docstring).
             revenue_growth=info.get("revenueGrowth"),
             profit_margins=info.get("profitMargins"),
             debt_to_equity=info.get("debtToEquity"),
@@ -172,48 +168,6 @@ class YFinanceProvider(MarketDataProvider):
                 )
             )
         return articles
-
-    def get_holders(self, ticker: str) -> HoldersSummary | None:
-        try:
-            t = yf.Ticker(ticker)
-            major = t.major_holders
-            institutional = t.institutional_holders
-        except Exception:
-            logger.exception("Failed to fetch holders for %s", ticker)
-            return None
-
-        pct_institutions = None
-        pct_insiders = None
-        if major is not None and not major.empty and "Value" in major.columns:
-            values = major["Value"]
-            pct_institutions = _safe_float(values.get("institutionsPercentHeld"))
-            pct_insiders = _safe_float(values.get("insidersPercentHeld"))
-
-        top_holders: list[InstitutionalHolder] = []
-        if institutional is not None and not institutional.empty:
-            for _, row in institutional.head(MAX_INSTITUTIONAL_HOLDERS).iterrows():
-                holder_name = row.get("Holder")
-                if not holder_name or pd.isna(holder_name):
-                    continue
-                date_reported = row.get("Date Reported")
-                top_holders.append(
-                    InstitutionalHolder(
-                        holder=str(holder_name),
-                        shares=_safe_float(row.get("Shares")),
-                        value=_safe_float(row.get("Value")),
-                        pct_held=_safe_float(row.get("pctHeld")),
-                        date_reported=str(date_reported) if date_reported is not None else None,
-                    )
-                )
-
-        if pct_institutions is None and pct_insiders is None and not top_holders:
-            return None
-
-        return HoldersSummary(
-            pct_held_by_institutions=pct_institutions,
-            pct_held_by_insiders=pct_insiders,
-            top_institutional_holders=top_holders,
-        )
 
     def get_next_earnings_date(self, ticker: str) -> date | None:
         try:

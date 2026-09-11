@@ -1,12 +1,4 @@
-import { formatCurrency, formatPercent } from '../../../format'
-
-const RECOMMENDATION_LABELS = {
-  strong_buy: 'Compra fuerte',
-  buy: 'Compra',
-  hold: 'Mantener',
-  underperform: 'Bajo rendimiento',
-  sell: 'Venta',
-}
+import { formatPercent } from '../../../format'
 
 function formatMarketCap(value) {
   if (value === null || value === undefined) return '—'
@@ -16,10 +8,8 @@ function formatMarketCap(value) {
   return value.toLocaleString('en-US')
 }
 
-function FundamentalsCard({ fundamentals, price, currency }) {
+function FundamentalsCard({ fundamentals }) {
   if (!fundamentals) return <p className="empty-state">Datos fundamentales no disponibles para este ticker.</p>
-
-  const targetUpside = fundamentals.analyst_target_mean_price ? fundamentals.analyst_target_mean_price / price - 1 : null
 
   return (
     <div className="fundamentals-grid">
@@ -50,25 +40,7 @@ function FundamentalsCard({ fundamentals, price, currency }) {
         </p>
       </div>
       <div>
-        <p className="fundamentals-grid__label">Consenso analistas</p>
-        <p className="fundamentals-grid__value">
-          {RECOMMENDATION_LABELS[fundamentals.analyst_recommendation] ?? fundamentals.analyst_recommendation ?? '—'}
-          {fundamentals.analyst_opinion_count ? ` (${fundamentals.analyst_opinion_count})` : ''}
-        </p>
-      </div>
-      <div>
-        <p className="fundamentals-grid__label">Precio objetivo (analistas)</p>
-        <p className="fundamentals-grid__value">
-          {formatCurrency(fundamentals.analyst_target_mean_price, currency)}
-          {targetUpside !== null && (
-            <span className={targetUpside >= 0 ? 'delta-up' : 'delta-down'}> ({formatPercent(targetUpside, { signed: true })})</span>
-          )}
-        </p>
-      </div>
-      <div>
-        <p className="fundamentals-grid__label" title="Alimenta el factor de crecimiento de la recomendación">
-          Crecimiento de ingresos (interanual)
-        </p>
+        <p className="fundamentals-grid__label">Crecimiento de ingresos (interanual)</p>
         <p className="fundamentals-grid__value">
           {fundamentals.revenue_growth !== null ? (
             <span className={fundamentals.revenue_growth >= 0 ? 'delta-up' : 'delta-down'}>
@@ -80,9 +52,7 @@ function FundamentalsCard({ fundamentals, price, currency }) {
         </p>
       </div>
       <div>
-        <p className="fundamentals-grid__label" title="Alimenta el factor de rentabilidad de la recomendación">
-          Margen neto
-        </p>
+        <p className="fundamentals-grid__label">Margen neto</p>
         <p className="fundamentals-grid__value">
           {fundamentals.profit_margins !== null ? (
             <span className={fundamentals.profit_margins >= 0 ? 'delta-up' : 'delta-down'}>
@@ -94,9 +64,7 @@ function FundamentalsCard({ fundamentals, price, currency }) {
         </p>
       </div>
       <div>
-        <p className="fundamentals-grid__label" title="Alimenta el factor de apalancamiento de la recomendación">
-          Deuda / Patrimonio
-        </p>
+        <p className="fundamentals-grid__label">Deuda / Patrimonio</p>
         <p className="fundamentals-grid__value">
           {fundamentals.debt_to_equity !== null ? `${fundamentals.debt_to_equity.toFixed(0)}%` : '—'}
         </p>

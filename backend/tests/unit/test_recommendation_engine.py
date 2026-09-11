@@ -377,65 +377,6 @@ def test_obv_divergence_none_triggers_no_volume_factor():
     assert not any("volumen" in f.label.lower() for f in rec.factors if f.triggered)
 
 
-def test_strong_revenue_growth_adds_a_point():
-    rec = re.build_recommendation(**_neutral_kwargs(), revenue_growth=0.20)
-    assert rec.score == 1
-
-
-def test_contracting_revenue_subtracts_a_point():
-    rec = re.build_recommendation(**_neutral_kwargs(), revenue_growth=-0.05)
-    assert rec.score == -1
-
-
-def test_healthy_profit_margin_adds_a_point():
-    rec = re.build_recommendation(**_neutral_kwargs(), profit_margins=0.22)
-    assert rec.score == 1
-
-
-def test_negative_profit_margin_subtracts_a_point():
-    rec = re.build_recommendation(**_neutral_kwargs(), profit_margins=-0.10)
-    assert rec.score == -1
-
-
-def test_high_leverage_subtracts_a_point():
-    rec = re.build_recommendation(**_neutral_kwargs(), debt_to_equity=250.0)
-    assert rec.score == -1
-
-
-def test_moderate_leverage_no_penalty():
-    rec = re.build_recommendation(**_neutral_kwargs(), debt_to_equity=80.0)
-    assert rec.score == 0
-
-
-def test_fundamentals_none_by_default_contributes_nothing():
-    # Every fundamentals param defaults to None - a caller that doesn't pass
-    # them (portfolio risk, premium watchlist) must see zero contribution,
-    # not an error or a silent zero-as-bad-fundamentals penalty.
-    rec = re.build_recommendation(**_neutral_kwargs())
-    assert not any(
-        label in {f.label for f in rec.factors if f.triggered}
-        for label in [
-            "Crecimiento de ingresos sólido (≥15% interanual)",
-            "Ingresos en contracción (crecimiento interanual negativo)",
-            "Margen neto saludable (≥15%)",
-            "Empresa no rentable (margen neto negativo)",
-            "Apalancamiento elevado (deuda/patrimonio > 200%)",
-        ]
-    )
-    assert rec.score == 0
-
-
-def test_all_new_factors_combine_additively_without_interfering():
-    rec = re.build_recommendation(
-        **_neutral_kwargs(),
-        obv_divergence="bullish",
-        revenue_growth=0.20,
-        profit_margins=0.22,
-        debt_to_equity=80.0,
-    )
-    assert rec.score == 3  # +1 obv, +1 growth, +1 margin, +0 leverage (below threshold)
-
-
 def test_build_recommendation_has_no_market_regime_params():
     # Regression guard for a deliberate reversal, not an oversight: an earlier
     # version of this audit scored a benchmark-below-SMA200 / VIX-panic
@@ -468,6 +409,21 @@ def test_build_recommendation_has_no_markov_garch_or_hurst_params():
     assert "markov" not in params
     assert "garch" not in params
     assert "mean_reverting_structure" not in params
+
+
+def test_build_recommendation_has_no_fundamentals_params():
+    # 2026-09 (reconstruction, Fase 1): same kind of regression guard - the
+    # fundamentals factor (revenue growth/profit margin/leverage) was never
+    # run through factor_ablation_study.py, so its weights were retired along
+    # with Markov/GARCH/Hurst above (see the module docstring). The raw
+    # numbers still reach the UI (TickerInfo/FundamentalsResponse), just not
+    # this function.
+    import inspect
+
+    params = inspect.signature(re.build_recommendation).parameters
+    assert "revenue_growth" not in params
+    assert "profit_margins" not in params
+    assert "debt_to_equity" not in params
 
 
 def test_overbought_not_penalized_inside_a_strong_confirmed_uptrend():

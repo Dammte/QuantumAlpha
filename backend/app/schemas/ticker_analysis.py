@@ -39,20 +39,6 @@ class NewsArticleResponse(BaseModel):
     published_at: str | None
 
 
-class InstitutionalHolderResponse(BaseModel):
-    holder: str
-    shares: float | None
-    value: float | None
-    pct_held: float | None
-    date_reported: str | None
-
-
-class HoldersSummaryResponse(BaseModel):
-    pct_held_by_institutions: float | None
-    pct_held_by_insiders: float | None
-    top_institutional_holders: list[InstitutionalHolderResponse]
-
-
 class FundamentalsResponse(BaseModel):
     name: str | None
     sector: str | None
@@ -64,9 +50,6 @@ class FundamentalsResponse(BaseModel):
     dividend_yield: float | None
     beta: float | None
     average_volume: float | None
-    analyst_recommendation: str | None
-    analyst_target_mean_price: float | None
-    analyst_opinion_count: int | None
     revenue_growth: float | None
     profit_margins: float | None
     debt_to_equity: float | None
@@ -162,7 +145,6 @@ class TickerAnalysisResponse(BaseModel):
     price_history: list[PricePointResponse]
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None
-    holders: HoldersSummaryResponse | None
     seasonality: list[MonthSeasonalityResponse]
     historical_analogs: HistoricalAnalogsResponse | None
     recommendation: RecommendationResponse

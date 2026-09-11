@@ -9,7 +9,6 @@ import VolumeChart from './VolumeChart'
 import RsiMacdChart from './RsiMacdChart'
 import RecommendationCard from './RecommendationCard'
 import FundamentalsCard from './FundamentalsCard'
-import HoldersCard from './HoldersCard'
 import NewsList from './NewsList'
 import SeasonalityChart from './SeasonalityChart'
 import HistoricalAnalogsCard from './HistoricalAnalogsCard'
@@ -238,22 +237,16 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
           )}
 
           {tab === 'fundamentals' && (
-            <>
-              <div className="grid-2">
-                <section className="panel panel--nested">
-                  <h3>Fundamentales y consenso de analistas</h3>
-                  <FundamentalsCard fundamentals={analysis.fundamentals} price={analysis.price} currency={analysis.currency ?? 'USD'} />
-                </section>
-                <section className="panel panel--nested">
-                  <h3>Noticias recientes</h3>
-                  <NewsList news={analysis.news} />
-                </section>
-              </div>
+            <div className="grid-2">
               <section className="panel panel--nested">
-                <h3>Tenedores institucionales e iniciados</h3>
-                <HoldersCard holders={analysis.holders} currency={analysis.currency ?? 'USD'} />
+                <h3>Fundamentales</h3>
+                <FundamentalsCard fundamentals={analysis.fundamentals} />
               </section>
-            </>
+              <section className="panel panel--nested">
+                <h3>Noticias recientes</h3>
+                <NewsList news={analysis.news} />
+              </section>
+            </div>
           )}
 
           {tab === 'seasonality' && (

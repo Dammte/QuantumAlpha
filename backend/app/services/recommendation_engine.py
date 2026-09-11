@@ -32,10 +32,6 @@ rather than duplicate each other** (audited 2026-08, see
 - OBV divergence is the only volume-based factor - a second, independent data
   source (participation, not just price) that price-only indicators cannot
   see by construction (Wyckoff's "effort vs result").
-- Fundamentals (revenue growth, profit margin, leverage) are the only factors
-  that don't come from price/volume at all - a CANSLIM/quality-factor-style
-  check that a technical setup is backed by a business that's actually
-  growing and solvent, not just a chart pattern.
 - Market regime (benchmark below its own 200-day SMA, VIX in panic/crisis) was
   tried and deliberately walked back, not shipped: an external audit correctly
   pointed out this was computed for the "Contexto" dashboard but never reached
@@ -71,6 +67,16 @@ bucket (`technical_analysis.volatility_regime_from_atr_percentile`, fed by an
 ATR percentile instead of a per-ticker model fit) - it no longer touches this
 score.
 
+2026-09 (reconstruction, Fase 1): the fundamentals factor (revenue growth,
+profit margin, leverage) is retired from this checklist too, for the same
+reason as the market-regime attempt above - CLAUDE.md's rule that no weight
+enters or stays without `scripts/factor_ablation_study.py` evidence behind it
+was never actually applied to `REVENUE_GROWTH_STRONG`/`PROFIT_MARGIN_HEALTHY`/
+`DEBT_TO_EQUITY_HIGH`; they were first-pass thresholds that were never
+measured. The raw numbers themselves aren't gone - revenue growth, margin and
+leverage are still shown in the ticker deep-dive's Fundamentals tab as plain
+informational context - they just no longer move this score.
+
 BUY_THRESHOLD/AVOID_THRESHOLD are first-pass values inherited from before this
 audit; `scripts/factor_ablation_study.py` measures each factor's actual
 marginal forward-return contribution across the full ~217-ticker universe and
@@ -98,8 +104,10 @@ from app.services.technical_analysis import PriceLevel, Stage, TrendState
 # docstring) - the first step of the reconstruction toward a levels/triggers
 # gate (docs/quant_methodology.md). The gate itself, when it replaces this
 # checklist wholesale, gets its own version string ("...-v6-levels") rather
-# than reusing this intermediate one.
-ENGINE_VERSION = "2026-09-audit-v6"
+# than reusing this intermediate one. v7: the fundamentals factor (revenue
+# growth/profit margin/leverage) removed from the checklist too - same
+# never-measured-weight reasoning, see module docstring.
+ENGINE_VERSION = "2026-09-audit-v7"
 
 BUY_THRESHOLD = 5
 AVOID_THRESHOLD = -3
@@ -107,9 +115,6 @@ ATR_STOP_MULTIPLE = 2.5
 REWARD_RISK_RATIO = 2.0
 MAX_RESISTANCE_TARGET_DISTANCE = 0.30
 SUPPORT_PROXIMITY = 0.03
-REVENUE_GROWTH_STRONG = 0.15
-PROFIT_MARGIN_HEALTHY = 0.15
-DEBT_TO_EQUITY_HIGH = 200.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,9 +221,6 @@ def build_recommendation(
     nearest_resistance: PriceLevel | None,
     minervini_range_confirmed: bool = False,
     obv_divergence: str | None = None,
-    revenue_growth: float | None = None,
-    profit_margins: float | None = None,
-    debt_to_equity: float | None = None,
     fast_pair_bearish_signal: str | None = None,
 ) -> Recommendation:
     factors: list[RecommendationFactor] = []
@@ -303,36 +305,6 @@ def build_recommendation(
         "Divergencia alcista de volumen (OBV): la presión vendedora se agota pese a la caída de precio",
         1,
         obv_divergence == "bullish",
-    )
-
-    # Fundamentals: the only non-price/volume factors. Kept optional (None by
-    # default) and deliberately NOT wired into the portfolio-risk/premium-
-    # watchlist hot paths (see ticker_analysis_service.py) - an extra
-    # per-ticker network call there re-introduces exactly the N-ticker
-    # latency problem already found and fixed once in production (see
-    # PortfolioRiskService's docstring). Only the single-ticker "Analizar
-    # activo" deep dive, which already pays for a fundamentals fetch, feeds
-    # these in.
-    add(
-        "Crecimiento de ingresos sólido (≥15% interanual)",
-        1,
-        revenue_growth is not None and revenue_growth >= REVENUE_GROWTH_STRONG,
-    )
-    add(
-        "Ingresos en contracción (crecimiento interanual negativo)",
-        -1,
-        revenue_growth is not None and revenue_growth < 0,
-    )
-    add(
-        "Margen neto saludable (≥15%)",
-        1,
-        profit_margins is not None and profit_margins >= PROFIT_MARGIN_HEALTHY,
-    )
-    add("Empresa no rentable (margen neto negativo)", -1, profit_margins is not None and profit_margins < 0)
-    add(
-        "Apalancamiento elevado (deuda/patrimonio > 200%)",
-        -1,
-        debt_to_equity is not None and debt_to_equity > DEBT_TO_EQUITY_HIGH,
     )
 
     score = sum(f.points for f in factors)

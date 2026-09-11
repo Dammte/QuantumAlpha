@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import date
 
-from app.domain.models.ticker_info import HoldersSummary, NewsArticle, TickerInfo
+from app.domain.models.ticker_info import NewsArticle, TickerInfo
 from app.services.analysis_tools import HistoricalAnalogs, MonthSeasonality
 from app.services.backtest_engine import TripleBarrierBacktestResult
 from app.services.multi_timeframe import MultiTimeframeRead
@@ -88,7 +88,6 @@ class TickerAnalysis:
     price_history: list[PricePoint]
     news: list[NewsArticle]
     fundamentals: TickerInfo | None
-    holders: HoldersSummary | None
     seasonality: list[MonthSeasonality]
     historical_analogs: HistoricalAnalogs | None
     recommendation: Recommendation
