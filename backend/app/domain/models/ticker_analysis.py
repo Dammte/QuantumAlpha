@@ -4,8 +4,8 @@ from datetime import date
 from app.domain.models.ticker_info import NewsArticle, TickerInfo
 from app.services.analysis_tools import HistoricalAnalogs, MonthSeasonality
 from app.services.backtest_engine import TripleBarrierBacktestResult
+from app.services.levels_engine import GateResult
 from app.services.multi_timeframe import MultiTimeframeRead
-from app.services.recommendation_engine import Recommendation
 from app.services.technical_analysis import ImminentCross, PriceLevel, Stage, TrendState
 
 
@@ -83,11 +83,11 @@ class TickerAnalysis:
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
     is_intraday_snapshot: bool
     multi_timeframe: MultiTimeframeRead
-    confirmed_recommendation: Recommendation | None
+    confirmed_gate: GateResult | None
     price_history: list[PricePoint]
     news: list[NewsArticle]
     fundamentals: TickerInfo | None
     seasonality: list[MonthSeasonality]
     historical_analogs: HistoricalAnalogs | None
-    recommendation: Recommendation
+    gate: GateResult
     triple_barrier_backtest: TripleBarrierBacktestResult | None

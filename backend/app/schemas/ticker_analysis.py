@@ -4,9 +4,9 @@ from pydantic import BaseModel
 
 from app.schemas.common import PriceLevelResponse
 from app.schemas.quant_analysis import (
+    GateResultResponse,
     ImminentCrossResponse,
     MultiTimeframeResponse,
-    RecommendationResponse,
     TripleBarrierBacktestResponse,
 )
 
@@ -141,11 +141,11 @@ class TickerAnalysisResponse(BaseModel):
     vix_regime: str | None
     is_intraday_snapshot: bool
     multi_timeframe: MultiTimeframeResponse
-    confirmed_recommendation: RecommendationResponse | None
+    confirmed_gate: GateResultResponse | None
     price_history: list[PricePointResponse]
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None
     seasonality: list[MonthSeasonalityResponse]
     historical_analogs: HistoricalAnalogsResponse | None
-    recommendation: RecommendationResponse
+    gate: GateResultResponse
     triple_barrier_backtest: TripleBarrierBacktestResponse | None

@@ -8,16 +8,22 @@ network/quant-suite cost added to it - see `PortfolioRiskService`'s docstring
 for the per-ticker latency incident this is careful not to repeat), and
 reconstructing from point-in-time history produces the *same* stop/target
 number a live capture would have (identical formula -
-`recommendation_engine.compute_stop_and_target` - identical historical
-window). The one thing this genuinely can't reconstruct is *why* the position
-was opened - nobody but the person doing the buying can fill in a thesis, so
-a reconstructed plan says so honestly (`RECONSTRUCTED_THESIS`) rather than
+`trade_geometry.compute_stop_and_target` - identical historical window). The
+one thing this genuinely can't reconstruct is *why* the position was opened -
+nobody but the person doing the buying can fill in a thesis, so a
+reconstructed plan says so honestly (`RECONSTRUCTED_THESIS`) rather than
 inventing one.
 
 Trailing-stop updates (Chandelier Exit) and scaled exits are `trade_manager.py`'s
 job - this module only ever sets `current_stop` once, equal to `initial_stop`,
 at creation; `trade_manager.py` computes what it should trail to afterward
 and persists it via `TradePlanRepositoryPort.update_trailing`.
+
+2026-09 (reconstruction, Fase 4): the plan's own `engine_version` now stamps
+`levels_engine.GATE_VERSION`, not `recommendation_engine.ENGINE_VERSION` -
+the same "which live engine generation produced this" marker, now pointed at
+whichever module is actually live (see `portfolio_risk_service.py`'s own
+Fase 4 note).
 """
 
 from datetime import date
@@ -29,7 +35,8 @@ from app.domain.models.trade_plan import TradePlan
 from app.domain.models.transaction import Transaction, TransactionType
 from app.services import exit_engine as ee
 from app.services import technical_analysis as ta
-from app.services.recommendation_engine import ENGINE_VERSION, StopAndTarget, compute_stop_and_target
+from app.services.levels_engine import GATE_VERSION
+from app.services.trade_geometry import StopAndTarget, compute_stop_and_target
 
 RECONSTRUCTED_THESIS = (
     "Plan reconstruido retroactivamente a partir del histórico de precio en la fecha de entrada - "
@@ -80,10 +87,10 @@ def current_held_quantity(transactions: list[Transaction], ticker: str) -> float
 
 
 def reconstruct_stop_and_target(entry_price: float, ohlcv_as_of_entry: pd.DataFrame) -> StopAndTarget:
-    """Runs the exact math `build_recommendation` uses for a fresh "comprar"
-    signal (`compute_stop_and_target`) against the ticker's OWN history *as
-    of the entry date* - `ohlcv_as_of_entry` must already be sliced to end
-    there, so this never looks at a bar that hadn't happened yet."""
+    """Runs the exact math a fresh passing gate uses (`compute_stop_and_target`)
+    against the ticker's OWN history *as of the entry date* -
+    `ohlcv_as_of_entry` must already be sliced to end there, so this never
+    looks at a bar that hadn't happened yet."""
     close, high, low = ohlcv_as_of_entry["close"], ohlcv_as_of_entry["high"], ohlcv_as_of_entry["low"]
     raw_atr = ta.atr(high, low, close).iloc[-1] if len(close) else None
     atr14 = None if raw_atr is None or pd.isna(raw_atr) else float(raw_atr)
@@ -161,7 +168,7 @@ def ensure_trade_plan(
         initial_target=stop_target.take_profit,
         initial_quantity=initial_quantity,
         thesis=RECONSTRUCTED_THESIS,
-        engine_version=ENGINE_VERSION,
+        engine_version=GATE_VERSION,
     )
 
 

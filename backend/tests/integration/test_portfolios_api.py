@@ -268,9 +268,9 @@ def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
         assert p["signal"] in {"exit_warning", "add_candidate", "watch", "hold"}
         assert isinstance(p["score"], int)
         assert len(p["reasons"]) > 0
-        # The same recommendation pipeline "Analizar activo" runs backs every holding now
-        assert "recommendation" in p["signals"]
-        assert p["signals"]["recommendation"]["verdict"] in {"comprar", "esperar", "evitar"}
+        # The same gate pipeline "Analizar activo" runs backs every holding now
+        assert "gate" in p["signals"]
+        assert isinstance(p["signals"]["gate"]["passes"], bool)
 
 
 def test_portfolio_risk_includes_exit_engine_and_trade_plan_fields(client: TestClient) -> None:

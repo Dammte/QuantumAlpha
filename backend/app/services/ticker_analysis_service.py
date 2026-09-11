@@ -1,18 +1,27 @@
 """Orchestrates the single-ticker "deep dive": every indicator this app knows how
-to compute, a Gann fan, seasonality, historical analogs, news, and a rule-based
-buy/wait/avoid recommendation, all for one ticker on demand.
+to compute, a Gann fan, seasonality, historical analogs, news, and the
+levels/triggers gate's pass/fail read, all for one ticker on demand.
 
 Unlike the market screener (which scans ~170 tickers and has to stay fast and
 cheap per-ticker), this runs once per user search, so it can afford a decade of
 history and a couple of slower per-ticker calls (fundamentals, news).
 
-`compute_core_signals()` holds the quant core of that deep dive (recommendation
-plus walk-forward backtest) as a function of a plain OHLCV frame, with none of
+`compute_core_signals()` holds the quant core of that deep dive (the gate plus
+the triple-barrier backtest) as a function of a plain OHLCV frame, with none of
 the extra per-ticker network calls (fundamentals/news) or chart-only series.
 It exists so the portfolio-position risk check can run the *exact same*
 analysis "Analizar activo" would - not a cheaper approximation of it - so a
 holding is never flagged "sell" on a different, laxer basis than what you'd
 see by searching it directly.
+
+2026-09 (reconstruction, Fase 4): the live verdict here is now
+`levels_engine.evaluate_gate` (`GateResult` - `gate`/`confirmed_gate` below),
+not `recommendation_engine.build_recommendation`'s weighted checklist.
+`recommendation_engine.py` itself is not deleted - `scripts/
+factor_ablation_study.py` still measures its old checklist until Fase 8
+reorients that script at trigger outcomes instead - but nothing in this file,
+and therefore nothing in the live "Analizar activo"/portfolio-risk paths that
+build on it, calls it anymore. See docs/quant_methodology.md.
 
 2026-09: Markov chain, GARCH, Monte Carlo, Kelly sizing, the Hurst/ADF
 statistical-structure read and the entry-timing badge were removed from this
@@ -51,10 +60,10 @@ from app.services.backtest_engine import (
     TripleBarrierBacktestResult,
     run_triple_barrier_backtest,
 )
+from app.services.levels_engine import GateResult, evaluate_gate
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, closed_bar_cutoff_for_ticker
-from app.services.recommendation_engine import Recommendation, build_recommendation
 
 HISTORY_YEARS = 10
 CHART_BARS = 504  # ~2 trading years
@@ -129,28 +138,27 @@ class CoreTickerSignals:
     market_trend: ta.TrendState | None  # informational only - see recommendation_engine.py docstring
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
     is_intraday_snapshot: bool
-    recommendation: Recommendation
-    # Segunda auditoría, Bloque 2: `recommendation` above (and every field on
-    # this dataclass) is computed on the raw, possibly still-forming last
-    # bar - live, real-time, but not repaint-proof (see D6/`closed_bars`'
+    gate: GateResult
+    # Segunda auditoría, Bloque 2: `gate` above (and every field on this
+    # dataclass) is computed on the raw, possibly still-forming last bar -
+    # live, real-time, but not repaint-proof (see D6/`closed_bars`'
     # docstring). `multi_timeframe` gives the weekly/daily read off *closed*
     # bars only, reusing the exact same machinery `portfolio_risk_service.py`
     # already runs for open positions - before this, "Analizar activo" never
     # referenced `analyze_multi_timeframe`/`closed_bars` at all, so a weekly
     # bearish crossover already visible on higher timeframes was invisible
-    # here regardless of what the daily-only verdict said.
+    # here regardless of what the daily-only read said.
     multi_timeframe: mtf.MultiTimeframeRead
-    # The same verdict/stop/target `recommendation` carries, recomputed with
-    # every discrete technical input (trend, stage, cross, Minervini,
-    # support/resistance) re-derived from `technical_analysis.closed_bars`
-    # instead of the live frame - `None` when there's nothing to separate
-    # from (the last bar is already settled, so `recommendation` itself is
-    # already the confirmed read; see `is_intraday_snapshot`). Deliberately
-    # reuses the already-computed obv_divergence/fundamentals reads rather
-    # than refitting them on one bar less of history - those are continuous
-    # reads, not discrete signals that repaint the way a moving-average
-    # cross does.
-    confirmed_recommendation: Recommendation | None
+    # The same pass/fail and stop/target `gate` carries, recomputed with
+    # every discrete technical input (trend, stage, support/resistance)
+    # re-derived from `technical_analysis.closed_bars` instead of the live
+    # frame - `None` when there's nothing to separate from (the last bar is
+    # already settled, so `gate` itself is already the confirmed read; see
+    # `is_intraday_snapshot`). Deliberately reuses the already-computed
+    # obv_divergence read rather than refitting it on one bar less of
+    # history - that's a continuous read, not a discrete signal that
+    # repaints the way a moving-average cross does.
+    confirmed_gate: GateResult | None
     # This is the honest backtest: triple-barrier labeling, real Chandelier
     # trailing, costs net, at this portfolio's actual holding horizon - see
     # `backtest_engine.py`'s own module docstring for the full reasoning,
@@ -182,18 +190,24 @@ def _nearest_level(levels: list[ta.PriceLevel], kind: str) -> ta.PriceLevel | No
     return min(candidates, key=lambda lv: abs(lv.distance_pct)) if candidates else None
 
 
-def _confirmed_recommendation(
+def _confirmed_gate(
     daily_df: pd.DataFrame,
-    rs_rating: int | None,
     obv_div: str | None,
     cutoff: time | None = None,
-) -> Recommendation | None:
-    """Re-derives the verdict/stop/target from `technical_analysis.closed_bars`
-    instead of the live frame - the same discrete-technical-inputs mirror
+) -> GateResult | None:
+    """Re-derives the gate from `technical_analysis.closed_bars` instead of
+    the live frame - the same discrete-technical-inputs mirror
     `compute_core_signals` builds for the live read, just bound to settled
     bars. `None` when there aren't enough closed bars left to say anything
     (a data-thin ticker whose last closed bar is also its only usable one).
-    `cutoff` - see `market_universe.closed_bar_cutoff_for_ticker`."""
+    `cutoff` - see `market_universe.closed_bar_cutoff_for_ticker`.
+
+    2026-09 (reconstruction, Fase 4): no longer takes `rs_rating` - RS Rating
+    was never wired into the gate as a hard condition (see
+    `levels_engine.py`'s own docstring), so there's nothing here that needs
+    it; the Minervini-checklist recomputation this used to do purely to feed
+    `build_recommendation` is gone for the same reason - `evaluate_gate`
+    doesn't take `minervini_pass`/`ma_cross` either."""
     closed = ta.closed_bars(daily_df, cutoff=cutoff)
     if len(closed) < MIN_BARS_REQUIRED:
         return None
@@ -202,48 +216,30 @@ def _confirmed_recommendation(
 
     sma20_s, sma50_s = ta.sma(close, 20), ta.sma(close, 50)
     sma150_s, sma200_s = ta.sma(close, 150), ta.sma(close, 200)
-    sma20, sma50, sma150, sma200 = _last(sma20_s), _last(sma50_s), _last(sma150_s), _last(sma200_s)
+    sma20, sma50, sma200 = _last(sma20_s), _last(sma50_s), _last(sma200_s)
     trend = ta.classify_trend(price, sma20, sma50, sma200)
 
-    stage, ma_cross = None, None
-    if len(close) >= 200:
-        stage = ta.classify_stage(price, sma150_s)
-        ma_cross = ta.detect_recent_cross(sma50_s, sma200_s, lookback=5)
+    stage = ta.classify_stage(price, sma150_s) if len(close) >= 200 else None
 
     adx_s = ta.adx(high, low, close)
     plus_di_s, minus_di_s = ta.dmi(high, low, close)
     atr_s = ta.atr(high, low, close)
     atr_multiple = ta.atr_multiple_from_sma(close, high, low)
 
-    sma200_trending_up = ta.sma_slope_positive(sma200_s)
-    price_52w_low = ta.rolling_extreme_price(close, 252, "low")
-    price_52w_high = ta.rolling_extreme_price(close, 252, "high")
-    criteria = ta.minervini_checklist(
-        price, sma50, sma150, sma200, sma200_trending_up, price_52w_low, price_52w_high, rs_rating
-    )
-    minervini_pass = all(criteria.values())
-    minervini_range_confirmed = (
-        criteria["price_25pct_above_52w_low"] and criteria["price_within_25pct_of_52w_high"]
-    )
-
     levels = ta.support_resistance_levels(high, low, close)
 
-    return build_recommendation(
+    return evaluate_gate(
         price=price,
         trend=trend,
         stage=stage,
-        ma_cross=ma_cross,
         rsi14=_last(ta.rsi(close)),
         adx14=_last(adx_s),
         plus_di=_last(plus_di_s),
         minus_di=_last(minus_di_s),
         atr14=_last(atr_s),
         atr_multiple=atr_multiple,
-        rs_rating=rs_rating,
-        minervini_pass=minervini_pass,
         nearest_support=_nearest_level(levels, "support"),
         nearest_resistance=_nearest_level(levels, "resistance"),
-        minervini_range_confirmed=minervini_range_confirmed,
         obv_divergence=obv_div,
         fast_pair_bearish_signal=ta.detect_fast_pair_bearish_veto(close),
     )
@@ -263,7 +259,7 @@ def compute_core_signals(
     include_triple_barrier_backtest: bool = False,
 ) -> CoreTickerSignals | None:
     """`ticker`, when given, picks a region-aware settlement cutoff for
-    `multi_timeframe`/`confirmed_recommendation` (`market_universe.closed_bar_cutoff_for_ticker`
+    `multi_timeframe`/`confirmed_gate` (`market_universe.closed_bar_cutoff_for_ticker`
     - Segunda auditoría, Bloque 2) instead of the US-centric default. Optional
     (not every caller has traced a ticker string this far down, and every
     other field here is computable without one) - `None` just means "assume
@@ -358,12 +354,6 @@ def compute_core_signals(
     )
     minervini_score = sum(criteria.values())
     minervini_pass = all(criteria.values())
-    # Scored independently in the recommendation engine - see its comment on
-    # `minervini_range_confirmed` for why this specific pair of criteria is
-    # pulled out of the 8/8 AND-gate rather than only counted as part of it.
-    minervini_range_confirmed = (
-        criteria["price_25pct_above_52w_low"] and criteria["price_within_25pct_of_52w_high"]
-    )
 
     levels = ta.support_resistance_levels(high, low, close)
     nearest_support = _nearest_level(levels, "support")
@@ -378,31 +368,25 @@ def compute_core_signals(
     market_trend, vix_regime_label = ta.market_regime_inputs(benchmark_close, vix_close)
     fast_pair_veto = ta.detect_fast_pair_bearish_veto(close)
 
-    recommendation = build_recommendation(
+    gate = evaluate_gate(
         price=price,
         trend=trend,
         stage=stage,
-        ma_cross=ma_cross,
         rsi14=_last(rsi_s),
         adx14=_last(adx_s),
         plus_di=_last(plus_di_s),
         minus_di=_last(minus_di_s),
         atr14=atr14,
         atr_multiple=atr_multiple,
-        rs_rating=rs_rating,
-        minervini_pass=minervini_pass,
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
-        minervini_range_confirmed=minervini_range_confirmed,
         obv_divergence=obv_div,
         fast_pair_bearish_signal=fast_pair_veto,
     )
 
-    confirmed_recommendation = None
+    confirmed_gate = None
     if is_intraday_snapshot:
-        confirmed_recommendation = _confirmed_recommendation(
-            daily_df, rs_rating, obv_div, cutoff=closed_bar_cutoff,
-        )
+        confirmed_gate = _confirmed_gate(daily_df, obv_div, cutoff=closed_bar_cutoff)
 
     return CoreTickerSignals(
         price=price,
@@ -446,9 +430,9 @@ def compute_core_signals(
         market_trend=market_trend,
         vix_regime=vix_regime_label,
         is_intraday_snapshot=is_intraday_snapshot,
-        recommendation=recommendation,
+        gate=gate,
         multi_timeframe=multi_timeframe,
-        confirmed_recommendation=confirmed_recommendation,
+        confirmed_gate=confirmed_gate,
         triple_barrier_backtest=triple_barrier_backtest,
     )
 
@@ -615,12 +599,12 @@ class TickerAnalysisService:
             vix_regime=core.vix_regime,
             is_intraday_snapshot=core.is_intraday_snapshot,
             multi_timeframe=core.multi_timeframe,
-            confirmed_recommendation=core.confirmed_recommendation,
+            confirmed_gate=core.confirmed_gate,
             price_history=price_history,
             news=news,
             fundamentals=info,
             seasonality=seasonality,
             historical_analogs=historical_analogs,
-            recommendation=core.recommendation,
+            gate=core.gate,
             triple_barrier_backtest=core.triple_barrier_backtest,
         )

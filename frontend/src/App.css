@@ -1760,10 +1760,6 @@
   background: rgba(12, 163, 12, 0.16);
   color: var(--series-good);
 }
-.recommendation-card__badge--down {
-  background: rgba(208, 59, 59, 0.16);
-  color: var(--series-critical);
-}
 .recommendation-card__badge--neutral {
   background: var(--code-bg);
   color: var(--text-h);
@@ -1774,54 +1770,11 @@
   color: var(--text);
 }
 
-.score-gauge {
-  margin-bottom: 18px;
-}
-
-.score-gauge__track {
-  position: relative;
-  display: flex;
-  height: 8px;
-  border-radius: 4px;
-  overflow: visible;
-}
-
-.score-gauge__zone {
-  height: 100%;
-}
-.score-gauge__zone--down {
-  background: var(--series-critical);
-  opacity: 0.35;
-  border-radius: 4px 0 0 4px;
-}
-.score-gauge__zone--neutral {
-  background: var(--chart-muted);
-  opacity: 0.35;
-}
-.score-gauge__zone--up {
-  background: var(--series-good);
-  opacity: 0.35;
-  border-radius: 0 4px 4px 0;
-}
-
-.score-gauge__marker {
-  position: absolute;
-  top: 50%;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid var(--surface);
-  box-shadow: 0 0 0 1px var(--accent-border);
-  transform: translate(-50%, -50%);
-}
-
-.score-gauge__labels {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--text);
-  margin-top: 6px;
+.recommendation-card__trigger {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
 }
 
 .recommendation-card__levels {
@@ -1872,23 +1825,6 @@
   color: var(--text);
   margin: 0;
   font-style: italic;
-}
-
-/* Cuarta auditoría, Bloque B (B-1.3): puntuación de compra suspendida por el
-   veto del par rápido EMA21/55 - tono de aviso, no de rechazo (el checklist
-   sigue siendo favorable, solo se pospone la entrada). */
-.recommendation-card__veto-warning {
-  font-size: 12.5px;
-  color: var(--text-h);
-  background: rgba(237, 161, 0, 0.1);
-  border: 1px solid var(--cat-4);
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin: 10px 0;
-}
-.recommendation-card__veto-warning p {
-  margin: 6px 0 0;
-  font-weight: 400;
 }
 
 /* Fundamentals */

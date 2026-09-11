@@ -1,7 +1,7 @@
 """Full quant risk read on every held ticker: the *exact same* pipeline
-"Analizar activo" runs on demand (recommendation, walk-forward backtest - see
-`compute_core_signals()` in `ticker_analysis_service.py`), applied to real
-capital already on the table.
+"Analizar activo" runs on demand (the levels/triggers gate, triple-barrier
+backtest - see `compute_core_signals()` in `ticker_analysis_service.py`),
+applied to real capital already on the table.
 
 This used to be a deliberately lighter subset to keep one request scoring
 every holding fast, then a much heavier one once GARCH/Markov/Monte
@@ -15,6 +15,13 @@ holding still gets the exact same analysis, just a cheaper one now. The
 OHLCV history for every holding + the benchmark is still fetched in a single
 batched call (see `get_bulk_ohlcv`), so scoring N holdings is one network
 round-trip, not N.
+
+2026-09 (reconstruction, Fase 4): `signal` (EXIT_WARNING/ADD_CANDIDATE/WATCH/
+HOLD below) is now driven by `signals.gate.passes` instead of
+`signals.recommendation.verdict` - see `assess_position_risk`'s own docstring
+for the one deliberate behavior change this brings (EXIT_WARNING no longer
+ever comes from the buy-side signal alone, only from the independent exit
+engine).
 """
 
 import logging
@@ -33,6 +40,7 @@ from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 from app.services import trade_manager as tm
 from app.services import trade_plan_service as tps
+from app.services.levels_engine import GATE_VERSION
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import (
     VIX_TICKER,
@@ -40,7 +48,6 @@ from app.services.market_universe import (
     closed_bar_cutoff_for_ticker,
     currency_of,
 )
-from app.services.recommendation_engine import ENGINE_VERSION
 from app.services.ticker_analysis_service import HISTORY_YEARS, CoreTickerSignals, compute_core_signals
 
 logger = logging.getLogger(__name__)
@@ -90,7 +97,7 @@ class PositionRisk:
     nearest_support: ta.PriceLevel | None
     nearest_resistance: ta.PriceLevel | None
     signal: str
-    score: int
+    score: int  # how many of the gate's 6 conditions passed (2026-09, was the old checklist's point total)
     reasons: list[str]
     signals: CoreTickerSignals  # the full quant suite backing this signal
     # Added for the independent exit engine (exit_engine.py, see its
@@ -134,6 +141,20 @@ def assess_position_risk(
     trade_plan_repo: TradePlanRepositoryPort | None = None,
     position_signal_snapshot_repo: PositionSignalSnapshotRepositoryPort | None = None,
 ) -> PositionRisk | None:
+    """2026-09 (reconstruction, Fase 4) - one deliberate behavior change from
+    the pre-gate version: `signal` can no longer become `EXIT_WARNING` from
+    the buy-side read alone. The old weighted checklist's "evitar" verdict
+    (score <= AVOID_THRESHOLD, several bearish factors at once) had enough
+    accumulated weight to read as a real warning; the gate is a boolean
+    pass/fail, and a *failing* entry gate on an already-open position isn't
+    the same claim - ordinary noise (RSI pinned high outside a strong trend,
+    a temporary ATR extension) fails it too, on names with nothing actually
+    wrong. Conflating "not a fresh buy today" with "you should be worried
+    about this holding" is exactly the entry/exit conflation `exit_engine.py`
+    was built to avoid (see its own module docstring) - this function no
+    longer makes that same mistake one level up. `EXIT_WARNING` now comes
+    exclusively from the independent exit engine's own EXIT_NOW/REDUCE
+    escalation below, never from `signals.gate.passes` being `False`."""
     signals = compute_core_signals(
         df["close"],
         df["high"],
@@ -148,6 +169,13 @@ def assess_position_risk(
     if signals is None:
         return None
 
+    # How many of the gate's conditions passed (0-6) - the closest honest
+    # equivalent to the old weighted checklist's `score` for the two places
+    # (the persisted audit trail, `PositionRisk.score`) that still expect a
+    # plain int. Nothing branches on its value; it's display/export-only
+    # (decision_journal_export.py, the position card's score badge).
+    gate_score = sum(1 for c in signals.gate.conditions if c.passed)
+
     near_support = (
         signals.nearest_support is not None and abs(signals.nearest_support.distance_pct) <= PROXIMITY_THRESHOLD
     )
@@ -155,33 +183,33 @@ def assess_position_risk(
         signals.nearest_resistance is not None
         and abs(signals.nearest_resistance.distance_pct) <= PROXIMITY_THRESHOLD
     )
-    # A *confirmed* death cross already factors into the recommendation engine's
-    # score (and from there, often the "evitar" verdict above). These are the
-    # earlier, still-projected cases: nothing else has flagged this position
-    # yet, but a pair of moving averages is converging - worth active
-    # attention before it's a lagging confirmation, not after. Both the
-    # SMA50/SMA200 (medium/long-term) and SMA20/SMA50 (short-term - relevant
-    # for a position actively managed on a shorter horizon, which can turn
-    # well before the longer-term picture does) versions count here. See
+    # A *confirmed* death cross already factors into the gate (via trend/
+    # stage). These are the earlier, still-projected cases: nothing else has
+    # flagged this position yet, but a pair of moving averages is converging -
+    # worth active attention before it's a lagging confirmation, not after.
+    # Both the SMA50/SMA200 (medium/long-term) and SMA20/SMA50 (short-term -
+    # relevant for a position actively managed on a shorter horizon, which can
+    # turn well before the longer-term picture does) versions count here. See
     # technical_analysis.detect_imminent_cross.
     imminent_death_cross = signals.imminent_cross is not None and signals.imminent_cross.direction == "death"
     imminent_death_cross_short = (
         signals.imminent_cross_short_term is not None and signals.imminent_cross_short_term.direction == "death"
     )
     # The one price-action pattern checked here rather than left to the
-    # recommendation engine's score: a bearish engulfing candle is a
-    # single-session event, not a multi-day trend read like everything else
-    # this checklist scores - worth surfacing immediately on the position
-    # that just printed one, not waiting for it to show up in slower-moving
-    # indicators. See technical_analysis.detect_engulfing_pattern.
+    # gate: a bearish engulfing candle is a single-session event, not a
+    # multi-day trend read like everything else the gate weighs - worth
+    # surfacing immediately on the position that just printed one, not
+    # waiting for it to show up in slower-moving indicators. See
+    # technical_analysis.detect_engulfing_pattern.
     bearish_engulfing = signals.candlestick_pattern == "bearish_engulfing"
 
     watch_worthy = (
         near_support or near_resistance or imminent_death_cross or imminent_death_cross_short or bearish_engulfing
     )
-    if signals.recommendation.verdict == "evitar":
-        signal = EXIT_WARNING
-    elif signals.recommendation.verdict == "comprar":
+    # See this function's own docstring: a failing gate alone no longer
+    # produces EXIT_WARNING here - only the independent exit engine's
+    # EXIT_NOW/REDUCE escalation below can.
+    if signals.gate.passes:
         signal = ADD_CANDIDATE
     elif watch_worthy:
         signal = WATCH
@@ -190,15 +218,15 @@ def assess_position_risk(
 
     # Deliberately *not* gated by which `signal` tier this landed in: an
     # add_candidate position with a strong short-term breakdown projected
-    # (a "comprar" verdict absolutely can carry one - the recommendation
-    # engine looks at the whole picture, this looks at one specific,
-    # narrower thing) still deserves that context visible, not silently
-    # dropped because the headline signal was upbeat. A real gap this
-    # closes: a held position can score "comprar" (ADD_CANDIDATE) while
-    # SMA20/SMA50 are actively converging toward a short-term death cross -
-    # exactly the situation a short-term-managed position needs a heads-up
-    # on, regardless of what the primary badge says.
-    reasons = [f"{f.label} ({f.points:+d})" for f in signals.recommendation.factors if f.triggered]
+    # (a passing gate absolutely can carry one - the gate looks at the whole
+    # entry picture, this looks at one specific, narrower thing) still
+    # deserves that context visible, not silently dropped because the
+    # headline signal was upbeat. A real gap this closes: a held position can
+    # pass the gate (ADD_CANDIDATE) while SMA20/SMA50 are actively converging
+    # toward a short-term death cross - exactly the situation a short-term-
+    # managed position needs a heads-up on, regardless of what the primary
+    # badge says.
+    reasons = [c.label for c in signals.gate.conditions if not c.passed]
     if near_support or near_resistance:
         nearest = signals.nearest_support if near_support else signals.nearest_resistance
         kind_label = "soporte" if nearest.kind == "support" else "resistencia"
@@ -233,13 +261,15 @@ def assess_position_risk(
         reasons.append("Vela envolvente alcista en la última sesión")
 
     if not reasons:
-        reasons.append("Sin señales técnicas relevantes en este momento")
+        # Every gate condition passed and none of the independent technical
+        # flags above fired - a genuinely clean read, not "nothing to say".
+        reasons.append("Cumple las condiciones del gate de entrada, sin señales técnicas adicionales relevantes")
 
     # --- Independent exit engine (D2/D3 fix - see exit_engine.py's docstring) ---
     # Only runs when the caller supplies portfolio context: a bare technical
     # read (e.g. from a caller that only wants "Analizar activo"-style
-    # signals, or an as-yet-unupdated test double) still gets the legacy
-    # verdict-based `signal` above unchanged, just without this layered on
+    # signals, or an as-yet-unupdated test double) still gets the gate-based
+    # `signal` above unchanged, just without this layered on
     # top - `exit_urgency` stays `None` in that case, never a guess.
     exit_urgency: str | None = None
     exit_reasons: list[str] = []
@@ -396,10 +426,10 @@ def assess_position_risk(
                 ticker=ticker,
                 signal=signal,
                 exit_urgency=exit_urgency,
-                score=signals.recommendation.score,
+                score=gate_score,
                 price=signals.price,
                 r_multiple=r_multiple,
-                engine_version=ENGINE_VERSION,
+                engine_version=GATE_VERSION,
             )
 
     return PositionRisk(
@@ -413,7 +443,7 @@ def assess_position_risk(
         nearest_support=signals.nearest_support,
         nearest_resistance=signals.nearest_resistance,
         signal=signal,
-        score=signals.recommendation.score,
+        score=gate_score,
         reasons=reasons,
         signals=signals,
         exit_urgency=exit_urgency,

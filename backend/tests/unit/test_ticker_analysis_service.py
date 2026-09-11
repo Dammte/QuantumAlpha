@@ -31,7 +31,7 @@ def test_returns_a_fully_populated_result_for_an_uptrend():
     assert signals is not None
     assert signals.trend == tas.ta.TrendState.UPTREND
     assert signals.rs_rating == 85
-    assert signals.recommendation is not None
+    assert signals.gate is not None
 
 
 def test_rs_rating_passed_through_unchanged():
@@ -65,19 +65,19 @@ def test_multi_timeframe_is_always_populated():
     assert signals.multi_timeframe.daily is not None
 
 
-def test_confirmed_recommendation_is_none_when_the_last_bar_is_already_settled():
+def test_confirmed_gate_is_none_when_the_last_bar_is_already_settled():
     # These fixtures end well in the past (see _series) - is_intraday_snapshot
-    # is False, so there is nothing to separate the live verdict from.
+    # is False, so there is nothing to separate the live read from.
     close, high, low, volume, open_ = _series(100 + np.arange(260) * 0.4)
     signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
     assert signals is not None
     assert signals.is_intraday_snapshot is False
-    assert signals.confirmed_recommendation is None
+    assert signals.confirmed_gate is None
 
 
-def test_confirmed_recommendation_is_populated_when_the_last_bar_is_still_forming():
+def test_confirmed_gate_is_populated_when_the_last_bar_is_still_forming():
     # A series whose last bar is dated *today* - the live read is real but not
-    # repaint-proof, so confirmed_recommendation must be filled in from
+    # repaint-proof, so confirmed_gate must be filled in from
     # technical_analysis.closed_bars instead of silently staying None.
     n = 260
     # Calendar days (not bdate_range) so the last bar lands on "today"
@@ -89,7 +89,7 @@ def test_confirmed_recommendation_is_populated_when_the_last_bar_is_still_formin
     signals = tas.compute_core_signals(close_s, high, low, volume, close_s, None, rs_rating=None)
     assert signals is not None
     assert signals.is_intraday_snapshot is True
-    assert signals.confirmed_recommendation is not None
+    assert signals.confirmed_gate is not None
 
 
 def test_triple_barrier_backtest_is_populated_with_enough_history():
@@ -119,17 +119,18 @@ def test_triple_barrier_backtest_is_skipped_by_default():
     assert signals.triple_barrier_backtest is None
 
 
-def test_52_week_range_factor_never_fires_with_only_60_bars():
-    # D11: rolling_extreme_price/distance_to_rolling_extreme now require the
-    # full 252-bar window by default - a ticker with only 60 bars (the
-    # minimum MIN_BARS_REQUIRED accepts at all) must not have its "52-week
-    # range" answered with whatever 60 days happen to be available. This
-    # backs the single most validated factor in the checklist (see
-    # docs/quant_methodology.md), so it's the highest-stakes instance of D11.
+def test_52_week_range_fields_never_fabricated_with_only_60_bars():
+    # D11: rolling_extreme_price/distance_to_rolling_extreme require the full
+    # 252-bar window by default - a ticker with only 60 bars (the minimum
+    # MIN_BARS_REQUIRED accepts at all) must not have its "52-week range"
+    # answered with whatever 60 days happen to be available (CLAUDE.md: "no
+    # inventes datos"). The old checklist's own range-confirmed factor that
+    # used to be asserted here was retired with the rest of the weighted
+    # checklist (2026-09, Fase 4) - the gate has no 52-week-range condition
+    # to fire in the first place, so there's nothing left to assert about it
+    # beyond these two fields themselves staying honestly None.
     close, high, low, volume, open_ = _series(100 + np.arange(60) * 0.4)
     signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
     assert signals is not None
     assert signals.dist_52w_high is None
     assert signals.dist_52w_low is None
-    range_factor = "Movimiento confirmado: precio 25%+ sobre su mínimo anual y dentro del 25% de su máximo anual"
-    assert not any(f.triggered for f in signals.recommendation.factors if f.label == range_factor)

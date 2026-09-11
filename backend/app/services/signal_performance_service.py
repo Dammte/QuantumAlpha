@@ -103,6 +103,15 @@ def forward_return(close: pd.Series, snapshot_date: date, horizon_days: int) -> 
 # *opposite* of vindication, and nothing in the UI distinguished the two
 # readings. `mean_return`/`median_return` stay raw, unsigned either way -
 # only which side of zero counts as "hit" changes.
+
+# 2026-09 (reconstruction, Fase 4): recommendation_engine.py's checklist no
+# longer feeds the live "verdict" (levels_engine.py's gate does - see
+# ticker_analysis.py's endpoint), so no snapshot saved from now on ever
+# writes "evitar" (the gate's own remapping only ever writes "comprar"/
+# "esperar" - see that endpoint's own docstring). Kept as-is, not removed:
+# still correctly labels any pre-cutover historical snapshot that already
+# has it. Fase 8 reorients this whole module at trigger outcomes instead of
+# verdict/signal labels, which is the right place to revisit this, not here.
 BEARISH_VERDICT_LABELS = frozenset({"evitar"})
 BEARISH_SIGNAL_LABELS = frozenset({"exit_warning"})
 

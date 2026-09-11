@@ -1327,3 +1327,107 @@ entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
 `test_market_screener_service.py`, `test_watchlist_service.py`, `test_premium_watchlist_service.py`,
 `test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
 `test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
+
+## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-4
+
+Encargo explícito del propietario: sustituir el checklist ponderado de 26 factores (secciones 1-24
+arriba) por un sistema de niveles/triggers que responda exactamente 4 preguntas - qué hacer hoy con lo
+que ya se tiene, qué está a punto de disparar una entrada, si una entrada concreta es buena, y si el
+sistema está funcionando - en vez de una puntuación agregada opaca. Nota de procedencia: el texto
+literal del encargo (20 partes) salió de contexto durante la compactación de la sesión que lo ejecutó;
+el propietario dio luz verde explícita para continuar sobre la mejor reconstrucción posible de ese
+encargo en vez de repetirlo, documentando cada decisión de diseño en el propio código/commits para
+poder corregirla después. Lo que sigue es el resumen de auditoría; el razonamiento completo de cada
+decisión vive en el docstring del módulo/función correspondiente, no solo aquí.
+
+**Fase 1 — borrado de todo lo sin evidencia cruzada.** Retirados por completo (código y tests, no solo
+desconectados): Monte Carlo, cadena de Markov, GARCH(1,1), criterio de Kelly, exponente de Hurst/ADF,
+badge de entry-timing, rotación sectorial/RRG, informe de ablación peso-vs-signo, watchlist "Premium"
+(embudo de 3 niveles) y sus sugerencias de coste de oportunidad, contexto macro (curva de tipos, paro,
+IPC vía FRED), Fear & Greed compuesto, proxy de liquidez en dólares, capa de menciones SEC EDGAR del
+mapa de relaciones, y - dentro del propio checklist de recomendación - los factores de fundamentales
+(crecimiento/margen/apalancamiento), tenedores institucionales y consenso de analistas. El único
+superviviente real de GARCH es el bucket de volatilidad del Chandelier Exit, ahora alimentado por un
+percentil de ATR/precio (`technical_analysis.atr_percentile`/`volatility_regime_from_atr_percentile`)
+en vez de un ajuste de modelo por ticker. `ENGINE_VERSION` → v7 (fundamentales fuera del checklist).
+
+**Fase 2 — arquitectura de precálculo.** Seis tablas nuevas (`job_runs`, `ticker_daily_states`,
+`ticker_intraday_states`, `position_daily_states`, `trigger_events`, `daily_briefs`) y dos cron jobs:
+`daily_close.py` (Job A, recorre el universo evaluando el gate por ticker y cada cartera evaluando el
+exit engine sobre sus posiciones abiertas, absorbiendo el cómputo en vivo que antes hacía
+`market_screener_service.get_universe_snapshot` para este propósito) y `intraday_refresh.py` (Job B,
+relectura barata de cotizaciones en vivo contra el `entry_trigger_price` ya calculado al cierre, sin
+recalcular el gate completo). `render.yaml` declara ambos cron jobs (22:00 UTC L-V el primero, cada 30
+min de 08:00 a 21:00 UTC el segundo) - cableados, no activados: crear los Cron Jobs reales en Render es
+un recurso facturado aparte, decisión del propietario.
+
+**Fase 3 — el motor nuevo.** `trade_geometry.py` (la mitad "a qué precio": `compute_entry_trigger` -
+un nivel de ruptura o rebote en soporte concreto y vigilable - y `compute_stop_and_target`, movido aquí
+sin cambios desde `recommendation_engine.py`) y `levels_engine.py` (la mitad "es esta entrada buena":
+`evaluate_gate`, un AND duro de 6 condiciones transparentes - tendencia/Fase 2, sin extensión
+parabólica, sin sobrecompra extrema fuera de tendencia fuerte, sin divergencia bajista de OBV, sin veto
+del par rápido EMA21/55, relación beneficio:riesgo ≥ 1.5 - cada una visible en `GateResult.conditions`,
+nunca colapsadas a un sí/no. RS Rating y Minervini 8/8 deliberadamente NO son gates duros: un setup
+genuinamente bueno en un nombre que todavía no se ha ganado un RS Rating alto (una ruptura reciente, una
+Fase 2 temprana) es exactamente el tipo de entrada que esta reconstrucción debe seguir detectando, no
+excluir por construcción - ambos quedan visibles como contexto en el estado precalculado del ticker sin
+condicionar el trigger. `GATE_VERSION = "2026-09-levels-v1"`, misma disciplina de versionado que
+`ENGINE_VERSION`. Este reparto de condiciones es un juicio de primer trazo, no medido todavía - la Fase
+8 reorienta `factor_ablation_study.py` a resultados de triggers precisamente para poder revisarlo con
+evidencia en vez de intuición.
+
+**Fase 4 (en curso) — el cutover en vivo.**
+
+1. **Retirada de `walk_forward_backtest.py`**: su único consumidor real que sobrevivía
+   (`backtest_engine.find_triple_barrier_entries`, vía `replay_recommendation_at`) pasa a
+   `levels_engine.replay_gate_at` - mismo contrato de replay point-in-time, mismas dos simplificaciones
+   ya documentadas (sin RS Rating point-in-time, sin soporte/resistencia point-in-time), pero
+   reconstruyendo el gate en vez del checklist retirado. `_permutation_test` (rutina estadística
+   genérica) se mueve sin cambios a `scripts/factor_ablation_study.py`, su único otro consumidor. El
+   backtest de triple-barrera valida ahora las entradas que el gate propondría - coherente con que la
+   propia "Recomendación" en vivo pasa a ser el gate en el mismo paso.
+
+2. **`ticker_analysis_service.py`/`portfolio_risk_service.py` repuntados al gate**: `CoreTickerSignals.
+   recommendation` (`Recommendation`) se convierte en `.gate` (`GateResult`); `confirmed_recommendation`
+   en `confirmed_gate`. `recommendation_engine.py` NO se borra - `scripts/factor_ablation_study.py`
+   sigue midiendo su checklist antiguo hasta que la Fase 8 lo reoriente a triggers (decisión de
+   secuenciación deliberada) - pero nada en el camino en vivo ("Analizar activo", riesgo de cartera) lo
+   llama ya.
+
+3. **Cambio de comportamiento deliberado en `portfolio_risk_service.assess_position_risk`**: `signal`
+   (EXIT_WARNING/ADD_CANDIDATE/WATCH/HOLD) ya no puede convertirse en `EXIT_WARNING` solo por el lado de
+   compra. El "evitar" del checklist antiguo (score ≤ AVOID_THRESHOLD, varios factores bajistas a la
+   vez) acumulaba suficiente peso para leerse como una advertencia real; el gate es un booleano, y una
+   entrada *fallida* sobre una posición ya abierta no es la misma afirmación - ruido ordinario (RSI
+   pegado alto fuera de una tendencia fuerte, una extensión de ATR pasajera) también la hace fallar, en
+   nombres sin nada realmente mal. Confundir "no es una compra fresca hoy" con "deberías preocuparte por
+   esta posición" es exactamente la conflación entrada/salida que `exit_engine.py` ya evitaba a otro
+   nivel (docs/quant_methodology.md §8) - esta función deja de cometer el mismo error un nivel más
+   arriba. `EXIT_WARNING` viene ahora exclusivamente de la escalada propia e independiente del exit
+   engine (EXIT_NOW/REDUCE), nunca de `gate.passes` siendo falso.
+
+4. **`score` se redefine, no se elimina**: de la suma de puntos del checklist antiguo (rango abierto,
+   con signo) a cuántas de las 6 condiciones del gate se cumplen (0-6) - la tabla `PositionSignalSnapshotORM`
+   y `PositionRisk.score` siguen siendo un `int` sin migración de esquema; ningún lector real de ese
+   campo (auditado con grep antes del cambio) hacía nada más que pasarlo a través, así que redefinir su
+   significado no rompe nada más allá de lo cosmético. El snapshot persistido de "Analizar activo"
+   (`RecommendationSnapshotORM`) recibe el mismo tratamiento: `verdict` se remapea a "comprar"/"esperar"
+   (el gate no tiene un tercer estado peor que "no aprobado" - "evitar" simplemente deja de escribirse
+   nunca más), y cada condición del gate se convierte en una fila de `factors` con el mismo esquema
+   `{label, points, triggered}` que ya tenía esa columna JSON - sin migración. Los marcadores de versión
+   de las tablas del lado de salida (`TradePlanORM.engine_version`, `PositionSignalSnapshotORM.
+   engine_version`, `PositionDailyState.engine_version`) pasan de `recommendation_engine.ENGINE_VERSION`
+   a `levels_engine.GATE_VERSION` - el mismo "qué generación del motor en vivo produjo esto", apuntando
+   ahora al módulo que de verdad está vivo.
+
+**Pendiente**: Fase 5 (endpoints de solo lectura contra las tablas de Fase 2, Radar/Screener, retirar
+`watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño), Fase 6 (frontend de 4 vistas -
+Hoy/Radar/Activo/Sistema), Fase 7 (capa Gemini que nunca puntúa ni decide), Fase 8 (medición basada en
+`trigger_history`, reorientar `factor_ablation_study.py` a triggers y ejecutarlo de verdad), Fase 9
+(escenarios dorados + tests de latencia), Fase 10 (activar el universo dinámico completo, ~400 tickers).
+
+**Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
+`test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
+`test_intraday_refresh.py` + 4 de integración, 5 en `test_levels_engine_replay.py`, más las
+actualizaciones de `test_ticker_analysis_service.py`, `test_portfolio_risk_service.py`,
+`test_ticker_analysis_api.py` y `test_portfolios_api.py` para el nuevo contrato del gate.

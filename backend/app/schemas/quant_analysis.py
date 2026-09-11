@@ -1,12 +1,19 @@
-"""Response models for the quant signal suite (recommendation, walk-forward
-backtest) - shared between the single-ticker deep dive
-(`schemas/ticker_analysis.py`), the portfolio position risk endpoint, and the
-premium watchlist (`schemas/market.py`), so all three surfaces describe the
-exact same underlying analysis the exact same way.
+"""Response models for the quant signal suite (the levels/triggers gate,
+triple-barrier backtest) - shared between the single-ticker deep dive
+(`schemas/ticker_analysis.py`) and the portfolio position risk endpoint, so
+both surfaces describe the exact same underlying analysis the exact same way.
 
 2026-09: Markov chain, GARCH, Monte Carlo, Kelly sizing and the Hurst/ADF
 statistical-structure read were removed from this suite - see
 `recommendation_engine.py`'s module docstring and `docs/quant_methodology.md`.
+
+2026-09 (reconstruction, Fase 4): `RecommendationResponse`/
+`RecommendationFactorResponse` (the old weighted checklist's verdict/score/
+factors) are replaced by `GateResultResponse`/`GateConditionResponse` below -
+see `levels_engine.py`'s own docstring for why a pass/fail gate replaced a
+score. `recommendation_engine.Recommendation` still exists (measured by
+`scripts/factor_ablation_study.py` until Fase 8), it just no longer has an
+API response shape - nothing in the live API serializes it anymore.
 """
 
 from pydantic import BaseModel
@@ -14,24 +21,29 @@ from pydantic import BaseModel
 from app.schemas.common import PriceLevelResponse
 
 
-class RecommendationFactorResponse(BaseModel):
+class GateConditionResponse(BaseModel):
     label: str
-    points: int
-    triggered: bool
+    passed: bool
 
 
-class RecommendationResponse(BaseModel):
-    verdict: str
-    score: int
-    factors: list[RecommendationFactorResponse]
+class EntryTriggerResponse(BaseModel):
+    trigger_type: str  # "breakout" | "pullback_bounce"
+    trigger_price: float
+    already_triggered: bool
+
+
+class StopAndTargetResponse(BaseModel):
     stop_loss: float | None
     take_profit: float | None
     take_profit_method: str | None
     risk_reward: float | None
-    # Cuarta auditoría, Bloque B (B-1.3): non-None only when a bearish
-    # EMA21/55 signal downgraded "comprar" to "esperar" - see
-    # recommendation_engine.Recommendation.veto_reason.
-    veto_reason: str | None = None
+
+
+class GateResultResponse(BaseModel):
+    passes: bool
+    conditions: list[GateConditionResponse]
+    entry_trigger: EntryTriggerResponse | None
+    stop_and_target: StopAndTargetResponse | None
 
 
 class ImminentCrossResponse(BaseModel):
@@ -178,4 +190,4 @@ class CoreSignalsResponse(BaseModel):
     market_trend: str | None
     vix_regime: str | None
     is_intraday_snapshot: bool
-    recommendation: RecommendationResponse
+    gate: GateResultResponse

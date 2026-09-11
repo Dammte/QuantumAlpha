@@ -14,9 +14,10 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
     first_point = body["price_history"][0]
     assert {"close", "sma20", "bb_upper", "gann_1x1"} <= first_point.keys()
 
-    recommendation = body["recommendation"]
-    assert recommendation["verdict"] in {"comprar", "esperar", "evitar"}
-    assert len(recommendation["factors"]) > 0
+    gate = body["gate"]
+    assert isinstance(gate["passes"], bool)
+    assert len(gate["conditions"]) == 6
+    assert {"label", "passed"} <= gate["conditions"][0].keys()
 
     assert body["fundamentals"]["name"] == "AAPL Inc."
     assert len(body["news"]) > 0
@@ -55,15 +56,16 @@ def test_ticker_analysis_unknown_ticker_returns_404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_ticker_analysis_buy_verdict_includes_stop_loss(client: TestClient) -> None:
+def test_ticker_analysis_passing_gate_includes_stop_loss(client: TestClient) -> None:
     # The fake provider's random walk is ticker-seeded, so different tickers land in
-    # different technical states - just assert the invariant: whenever the verdict
-    # is "comprar", a stop-loss must be present (never a naked buy signal).
+    # different technical states - just assert the invariant: whenever the gate
+    # passes, a stop-loss must be present (never a naked buy signal).
     for ticker in ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL"]:
         body = client.get(f"/api/v1/market/tickers/{ticker}/analysis").json()
-        if body["recommendation"]["verdict"] == "comprar":
-            assert body["recommendation"]["stop_loss"] is not None
-            assert body["recommendation"]["stop_loss"] < body["price"]
+        if body["gate"]["passes"]:
+            stop_and_target = body["gate"]["stop_and_target"]
+            assert stop_and_target["stop_loss"] is not None
+            assert stop_and_target["stop_loss"] < body["price"]
 
 
 def test_ticker_analysis_includes_regime_context(client: TestClient) -> None:
@@ -78,6 +80,11 @@ def test_ticker_analysis_includes_regime_context(client: TestClient) -> None:
 
 
 def test_ticker_analysis_persists_a_recommendation_snapshot(client: TestClient) -> None:
+    # 2026-09 (reconstruction, Fase 4): the live read behind this snapshot is
+    # now GateResult, remapped onto this table's unchanged verdict/score/
+    # factors columns (see the endpoint's own docstring) - "evitar" simply
+    # never occurs anymore (the gate has no third, worse-than-failing state),
+    # so the enum tightens to the two values that actually get written.
     client.get("/api/v1/market/tickers/AAPL/analysis")
     response = client.get("/api/v1/market/tickers/AAPL/history")
     assert response.status_code == 200
@@ -85,10 +92,10 @@ def test_ticker_analysis_persists_a_recommendation_snapshot(client: TestClient) 
     assert len(history) >= 1
     latest = history[0]
     assert latest["ticker"] == "AAPL"
-    assert latest["verdict"] in {"comprar", "esperar", "evitar"}
+    assert latest["verdict"] in {"comprar", "esperar"}
     assert latest["horizon"] == "3m"
     assert latest["engine_version"]
-    assert len(latest["factors"]) > 0
+    assert len(latest["factors"]) == 6
     assert {"label", "points", "triggered"} <= latest["factors"][0].keys()
 
 

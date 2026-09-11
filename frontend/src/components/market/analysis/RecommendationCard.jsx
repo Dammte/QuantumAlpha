@@ -2,122 +2,90 @@ import { formatCurrency, formatRatio } from '../../../format'
 import CandlestickPatternBadge from '../CandlestickPatternBadge'
 import ImminentCrossBadge from '../ImminentCrossBadge'
 
-const VERDICT_META = {
-  comprar: { label: 'COMPRAR', tone: 'up' },
-  esperar: { label: 'ESPERAR', tone: 'neutral' },
-  evitar: { label: 'EVITAR', tone: 'down' },
-}
+// 2026-09 (reconstruction, Fase 4): shows GateResult (levels_engine.py) - a
+// boolean AND of 6 conditions, not the retired weighted checklist's
+// comprar/esperar/evitar verdict + score. Every condition is always shown,
+// passed or not (levels_engine.py's own docstring: "never collapsed to a
+// bare yes/no") - there's no more "only show what triggered" filtering,
+// since which condition(s) failed *is* the primary diagnostic value of a
+// gate that didn't pass.
 
-// Mirrors BUY_THRESHOLD / AVOID_THRESHOLD in app/services/recommendation_engine.py.
-const BUY_THRESHOLD = 5
-const AVOID_THRESHOLD = -3
-const GAUGE_MIN = -12
-const GAUGE_MAX = 12
-const GAUGE_RANGE = GAUGE_MAX - GAUGE_MIN
-
-function zoneWidth(from, to) {
-  return ((to - from) / GAUGE_RANGE) * 100
-}
-
-function scorePosition(score) {
-  const clamped = Math.max(GAUGE_MIN, Math.min(GAUGE_MAX, score))
-  return ((clamped - GAUGE_MIN) / GAUGE_RANGE) * 100
-}
-
-function ScoreGauge({ score }) {
+function GateTrigger({ entryTrigger, currency }) {
+  if (!entryTrigger) return null
+  const label = entryTrigger.trigger_type === 'breakout' ? 'Disparador de ruptura' : 'Rebote en soporte'
   return (
-    <div className="score-gauge">
-      <div className="score-gauge__track">
-        <div
-          className="score-gauge__zone score-gauge__zone--down"
-          style={{ width: `${zoneWidth(GAUGE_MIN, AVOID_THRESHOLD)}%` }}
-        />
-        <div
-          className="score-gauge__zone score-gauge__zone--neutral"
-          style={{ width: `${zoneWidth(AVOID_THRESHOLD, BUY_THRESHOLD)}%` }}
-        />
-        <div
-          className="score-gauge__zone score-gauge__zone--up"
-          style={{ width: `${zoneWidth(BUY_THRESHOLD, GAUGE_MAX)}%` }}
-        />
-        <div className="score-gauge__marker" style={{ left: `${scorePosition(score)}%` }} title={`Puntuación: ${score}`} />
-      </div>
-      <div className="score-gauge__labels">
-        <span>Evitar (≤ {AVOID_THRESHOLD})</span>
-        <span>Esperar</span>
-        <span>Comprar (≥ {BUY_THRESHOLD})</span>
-      </div>
+    <div className="recommendation-card__trigger">
+      <p className="recommendation-card__level-label">{label}</p>
+      <p className="recommendation-card__level-value">
+        {formatCurrency(entryTrigger.trigger_price, currency)}
+        {entryTrigger.already_triggered && <span className="delta-up"> · ya disparado</span>}
+      </p>
     </div>
   )
 }
 
 function RecommendationCard({
-  recommendation,
+  gate,
   imminentCross,
   imminentCrossShortTerm,
   candlestickPattern,
   currency,
 }) {
-  const meta = VERDICT_META[recommendation.verdict] ?? { label: recommendation.verdict, tone: 'neutral' }
-  const triggered = recommendation.factors.filter((f) => f.triggered)
+  const passingCount = gate.conditions.filter((c) => c.passed).length
+  const tone = gate.passes ? 'up' : 'neutral'
 
   return (
-    <div className={`recommendation-card recommendation-card--${meta.tone}`}>
+    <div className={`recommendation-card recommendation-card--${tone}`}>
       <div className="recommendation-card__verdict">
-        <span className={`recommendation-card__badge recommendation-card__badge--${meta.tone}`}>{meta.label}</span>
-        <span className="recommendation-card__score">Puntuación: {recommendation.score}</span>
+        <span className={`recommendation-card__badge recommendation-card__badge--${tone}`}>
+          {gate.passes ? 'GATE APROBADO' : 'GATE NO APROBADO'}
+        </span>
+        <span className="recommendation-card__score">
+          {passingCount}/{gate.conditions.length} condiciones
+        </span>
       </div>
 
-      <ScoreGauge score={recommendation.score} />
-
-      {recommendation.veto_reason && (
-        <div className="recommendation-card__veto-warning">
-          <strong>⚠️ Puntuación de compra ({recommendation.score}), pero el veredicto quedó en ESPERAR</strong>
-          <p>
-            {recommendation.veto_reason}. El par EMA21/EMA55 es un chequeo propio y aparte de los cruces que se
-            muestran abajo (SMA50/200 y SMA21/50) - cuando dispara en contra justo antes de entrar, se pospone la
-            compra sin tocar la puntuación del checklist: el veredicto vuelve a ser COMPRAR en cuanto la señal se
-            resuelva.
-          </p>
-        </div>
-      )}
-
-      <ImminentCrossBadge imminentCross={imminentCross} verdict={recommendation.verdict} />
-      <ImminentCrossBadge imminentCross={imminentCrossShortTerm} shortTerm verdict={recommendation.verdict} />
+      <ImminentCrossBadge imminentCross={imminentCross} gatePasses={gate.passes} />
+      <ImminentCrossBadge imminentCross={imminentCrossShortTerm} shortTerm gatePasses={gate.passes} />
       <CandlestickPatternBadge pattern={candlestickPattern} />
 
-      {recommendation.verdict === 'comprar' && (
+      <GateTrigger entryTrigger={gate.entry_trigger} currency={currency} />
+
+      {gate.passes && gate.stop_and_target && (
         <div className="recommendation-card__levels">
           <div>
             <p className="recommendation-card__level-label">Stop-loss sugerido</p>
-            <p className="recommendation-card__level-value delta-down">{formatCurrency(recommendation.stop_loss, currency)}</p>
+            <p className="recommendation-card__level-value delta-down">
+              {formatCurrency(gate.stop_and_target.stop_loss, currency)}
+            </p>
           </div>
           <div>
             <p className="recommendation-card__level-label">Objetivo estimado</p>
-            <p className="recommendation-card__level-value delta-up">{formatCurrency(recommendation.take_profit, currency)}</p>
-            <p className="recommendation-card__level-hint">{recommendation.take_profit_method}</p>
+            <p className="recommendation-card__level-value delta-up">
+              {formatCurrency(gate.stop_and_target.take_profit, currency)}
+            </p>
+            <p className="recommendation-card__level-hint">{gate.stop_and_target.take_profit_method}</p>
           </div>
           <div>
             <p className="recommendation-card__level-label">Ratio riesgo/beneficio</p>
-            <p className="recommendation-card__level-value">{formatRatio(recommendation.risk_reward)} : 1</p>
+            <p className="recommendation-card__level-value">{formatRatio(gate.stop_and_target.risk_reward)} : 1</p>
           </div>
         </div>
       )}
 
       <ul className="recommendation-card__factors">
-        {triggered.map((f) => (
-          <li key={f.label} className={f.points >= 0 ? 'delta-up' : 'delta-down'}>
-            <span>{f.points >= 0 ? '▲' : '▼'}</span> {f.label} ({f.points >= 0 ? '+' : ''}
-            {f.points})
+        {gate.conditions.map((c) => (
+          <li key={c.label} className={c.passed ? 'delta-up' : 'delta-down'}>
+            <span>{c.passed ? '✓' : '✗'}</span> {c.label}
           </li>
         ))}
-        {triggered.length === 0 && <li className="empty-state">Sin factores técnicos destacables ahora mismo.</li>}
       </ul>
       <p className="recommendation-card__disclaimer">
-        Puntuación transparente basada en reglas técnicas propias (tendencia, fases de Weinstein, Minervini, RS
-        Rating, ADX, RSI, soportes/resistencias, divergencia de volumen OBV, crecimiento y rentabilidad
-        fundamental). Los pesos se calibran contra un estudio de ablación estadístico sobre el universo completo de
-        tickers, no a ojo - ver metodología. No es asesoramiento financiero.
+        Gate transparente de reglas técnicas propias: tendencia o Fase 2 de Weinstein, sin extensión parabólica, sin
+        sobrecompra extrema fuera de tendencia fuerte, sin divergencia bajista de volumen (OBV), sin veto del par
+        rápido EMA21/55, y una relación beneficio:riesgo mínima - las 6 condiciones deben cumplirse a la vez, no una
+        suma de puntos. RS Rating y Minervini se muestran aparte, como contexto, sin condicionar el gate. No es
+        asesoramiento financiero.
       </p>
     </div>
   )

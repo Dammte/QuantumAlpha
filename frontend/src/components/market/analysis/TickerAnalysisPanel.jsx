@@ -205,9 +205,9 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
           {tab === 'summary' && (
             <>
               <section className="panel panel--nested">
-                <h3>Recomendación</h3>
+                <h3>Gate de entrada</h3>
                 <RecommendationCard
-                  recommendation={analysis.recommendation}
+                  gate={analysis.gate}
                   imminentCross={analysis.imminent_cross}
                   imminentCrossShortTerm={analysis.imminent_cross_short_term}
                   candlestickPattern={analysis.candlestick_pattern}

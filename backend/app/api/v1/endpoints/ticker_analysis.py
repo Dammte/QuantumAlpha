@@ -8,7 +8,7 @@ from app.api.deps import get_recommendation_snapshot_repository, get_ticker_anal
 from app.domain.models.ticker_analysis import TickerAnalysis
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
 from app.schemas.ticker_analysis import RecommendationSnapshotResponse, TickerAnalysisResponse
-from app.services.recommendation_engine import ENGINE_VERSION
+from app.services.levels_engine import GATE_VERSION
 from app.services.ticker_analysis_service import TickerAnalysisService
 
 logger = logging.getLogger(__name__)
@@ -29,17 +29,32 @@ def _save_snapshot_best_effort(
 ) -> None:
     """The audit trail (see RecommendationSnapshotORM's docstring) must never
     be able to break the actual analysis response a user is waiting on - a
-    logging failure isn't a reason to 500 an otherwise-successful read."""
+    logging failure isn't a reason to 500 an otherwise-successful read.
+
+    2026-09 (reconstruction, Fase 4): the live read is now `GateResult`
+    (pass/fail conditions), not the old weighted `Recommendation` - remapped
+    onto this table's unchanged verdict/score/factors columns rather than
+    migrating the schema: `verdict` is "comprar"/"esperar" (the gate has no
+    third, "evitar"-strength state - see `portfolio_risk_service.py`'s own
+    Fase 4 note for why that state doesn't carry over), `score` is how many
+    of the gate's conditions passed, and each condition becomes a `factors`
+    entry with `points` 1 (passed) or 0 (didn't) - the same {label, points,
+    triggered} shape this column already had, so no migration needed for a
+    purely internal representation change."""
     try:
+        gate = analysis.gate
+        factors = [
+            {"label": c.label, "points": 1 if c.passed else 0, "triggered": c.passed} for c in gate.conditions
+        ]
         repository.save(
             ticker=analysis.ticker,
-            verdict=analysis.recommendation.verdict,
-            score=analysis.recommendation.score,
+            verdict="comprar" if gate.passes else "esperar",
+            score=sum(1 for c in gate.conditions if c.passed),
             price=analysis.price,
             currency=analysis.currency or "USD",
             horizon=horizon,
-            engine_version=ENGINE_VERSION,
-            factors=[asdict(f) for f in analysis.recommendation.factors],
+            engine_version=GATE_VERSION,
+            factors=factors,
         )
     except Exception:
         logger.exception("Failed to persist recommendation snapshot for %s", analysis.ticker)

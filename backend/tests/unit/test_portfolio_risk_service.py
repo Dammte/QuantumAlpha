@@ -10,7 +10,6 @@ from app.domain.models.transaction import Transaction, TransactionType
 from app.services import exit_engine as ee
 from app.services import multi_timeframe as mtf
 from app.services import portfolio_risk_service as prs
-from app.services import recommendation_engine as re
 from app.services import technical_analysis as ta
 
 
@@ -33,8 +32,8 @@ def _ohlc(close: np.ndarray, wiggle: float = 1.0) -> pd.DataFrame:
 
 
 def _stub_signals(
-    verdict="esperar",
-    score=0,
+    gate_passes=False,
+    gate_conditions=None,
     imminent_cross=None,
     imminent_cross_short_term=None,
     candlestick_pattern=None,
@@ -51,7 +50,9 @@ def _stub_signals(
     fields (obv_divergence/relative_volume/rsi14/adx14/atr_multiple/
     multi_timeframe) default to None/unset, same "only what's needed"
     philosophy - they're only read at all when a test supplies portfolio_id/
-    transactions/trade_plan_repo to exercise that branch."""
+    transactions/trade_plan_repo to exercise that branch. `gate_conditions`
+    defaults to empty - only tests that actually assert on `reasons` derived
+    from failed conditions need to supply real ones."""
     return SimpleNamespace(
         price=105.0,
         trend=ta.TrendState.SIDEWAYS,
@@ -60,7 +61,7 @@ def _stub_signals(
         rs_rating=None,
         nearest_support=None,
         nearest_resistance=None,
-        recommendation=SimpleNamespace(verdict=verdict, score=score, factors=[]),
+        gate=SimpleNamespace(passes=gate_passes, conditions=gate_conditions or []),
         imminent_cross=imminent_cross,
         imminent_cross_short_term=imminent_cross_short_term,
         candlestick_pattern=candlestick_pattern,
@@ -125,14 +126,19 @@ def test_none_when_not_enough_bars():
     assert prs.assess_position_risk("XYZ", df) is None
 
 
-def test_exit_warning_for_a_clear_downtrend():
+def test_gate_failing_alone_is_never_exit_warning():
+    # 2026-09 (reconstruction, Fase 4): a failing gate on its own can no
+    # longer produce EXIT_WARNING - see assess_position_risk's own docstring
+    # for why. Without portfolio context (no open trade plan to escalate
+    # from), the worst a bare technical read can produce is WATCH.
     close = 200 - np.arange(260) * 0.3
     df = _ohlc(close)
     result = prs.assess_position_risk("XYZ", df)
     assert result is not None
-    assert result.signal == prs.EXIT_WARNING
     assert result.trend == "downtrend"
-    assert any("bajista" in reason for reason in result.reasons)
+    assert result.signals.gate.passes is False
+    assert result.signal != prs.EXIT_WARNING
+    assert result.signal != prs.ADD_CANDIDATE
 
 
 def test_uptrend_never_flagged_as_exit_warning():
@@ -164,15 +170,24 @@ def test_strong_setup_near_resistance_is_add_candidate_not_watch():
     # The bug this module used to have: a leading stock making new highs sits
     # near a resistance/prior-high pivot by definition - the old logic flagged
     # ANY nearby level (support or resistance) as "watch" once it wasn't a
-    # support-proximity add-candidate, so a stock that would score "comprar"
-    # on the deep dive could show "vigilar" here for the same reason it's
-    # strong. rs_rating=85 plus the uptrend/stage/support-adjacent factors is
-    # enough to clear the recommendation engine's comprar threshold.
-    rise = 100 + np.arange(220) * 0.4
-    spike = rise[-1] + np.array([2.0, 4.0, 6.0, 4.5])
-    pull_back = spike[-1] - np.array([0.5, 1.0])
-    close = np.concatenate([rise, spike, pull_back])
-    df = _ohlc(close)
+    # support-proximity add-candidate, so a stock whose gate genuinely passes
+    # could still show "vigilar" here for the same reason it's strong.
+    # rs_rating isn't even a gate input (see levels_engine.py's own
+    # docstring) - what actually clears the gate here is the uptrend plus the
+    # not-parabolic/not-overbought/reward:risk conditions. Mild noise (same
+    # technique test_signal_matches_gate_pass_fail uses) keeps a 220-bar climb
+    # from reading as parabolic on its own - a perfectly straight-line rise
+    # this long drifts ATR-multiple past the gate's own extension ceiling
+    # regardless of any actual spike, which would defeat the point of this
+    # fixture (a genuinely clean setup, not an extended one).
+    rng = np.random.default_rng(11)
+    n = 220
+    trend = 100 + np.arange(n) * 0.4
+    noise = rng.normal(0, 1.2, n).cumsum() * 0.15
+    rise = trend + noise
+    pull_back = rise[-1] - np.array([0.5, 1.0, 0.7])  # small pullback turns the recent peak into nearby resistance
+    close = np.concatenate([rise, pull_back])
+    df = _ohlc(close, wiggle=1.5)
 
     result = prs.assess_position_risk("XYZ", df, rs_rating=85)
 
@@ -181,18 +196,19 @@ def test_strong_setup_near_resistance_is_add_candidate_not_watch():
     assert result.nearest_resistance is not None
     assert abs(result.nearest_resistance.distance_pct) <= prs.PROXIMITY_THRESHOLD
     assert result.signal == prs.ADD_CANDIDATE
-    assert result.score >= 5
+    assert result.signals.gate.passes is True
+    assert result.signals.gate.passes is True
 
 
-def test_signal_is_consistent_with_recommendation_engine_thresholds():
+def test_signal_matches_gate_pass_fail():
     downtrend = _ohlc(200 - np.arange(260) * 0.3)
     # A perfectly straight-line uptrend (no noise at all) is a pathological
     # fixture for a real indicator set: RSI pins at exactly 100, and the
     # ever-growing distance from a near-flat ATR trips the parabolic-extension
-    # *caution* factor right alongside the bullish trend/stage/RS ones - the
-    # engine correctly treating an unrealistically
-    # smooth, already-extended move with caution, not a bug. Mild noise around
-    # the same slope keeps this a genuine, clean uptrend without that artifact.
+    # gate condition right alongside the bullish trend one - the gate
+    # correctly treating an unrealistically smooth, already-extended move
+    # with caution, not a bug. Mild noise around the same slope keeps this a
+    # genuine, clean uptrend without that artifact.
     rng = np.random.default_rng(7)
     trend = 100 + np.arange(260) * 0.4
     noise = rng.normal(0, 1.2, 260).cumsum() * 0.15
@@ -201,9 +217,9 @@ def test_signal_is_consistent_with_recommendation_engine_thresholds():
     exit_result = prs.assess_position_risk("DOWN", downtrend)
     add_result = prs.assess_position_risk("UP", uptrend, rs_rating=90)
 
-    assert exit_result.score <= re.AVOID_THRESHOLD
-    assert exit_result.signal == prs.EXIT_WARNING
-    assert add_result.score >= re.BUY_THRESHOLD
+    assert exit_result.signals.gate.passes is False
+    assert exit_result.signal != prs.ADD_CANDIDATE
+    assert add_result.signals.gate.passes is True
     assert add_result.signal == prs.ADD_CANDIDATE
 
 
@@ -229,8 +245,8 @@ def _ohlc_dated(n: int, start: float = 100.0, slope: float = 0.0, wiggle: float 
 # urgency (already covered, thoroughly, in test_exit_engine.py).
 
 
-def _setup_exit_engine_context(monkeypatch, urgency: ee.ExitUrgency, verdict: str = "comprar"):
-    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(verdict=verdict, score=8))
+def _setup_exit_engine_context(monkeypatch, urgency: ee.ExitUrgency, gate_passes: bool = True):
+    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(gate_passes=gate_passes))
     monkeypatch.setattr(
         prs.ee, "evaluate_exit", lambda **kwargs: ee.ExitAssessment(urgency=urgency, reasons=["motivo de prueba"])
     )
@@ -318,7 +334,7 @@ def test_trailing_stop_never_uses_a_pre_entry_high(monkeypatch):
     # a `.daily` to look at.
     monkeypatch.setattr(
         prs, "compute_core_signals",
-        lambda *a, **k: _stub_signals(verdict="esperar", score=0, multi_timeframe=mtf.analyze_multi_timeframe(df)),
+        lambda *a, **k: _stub_signals(gate_passes=False, multi_timeframe=mtf.analyze_multi_timeframe(df)),
     )
     entry_date = dates[15]
     transactions = [
@@ -363,8 +379,8 @@ def test_hold_stays_hold_without_an_imminent_cross(monkeypatch):
 
 def test_hold_gets_an_informational_note_when_golden_cross_is_imminent(monkeypatch):
     """An imminent golden cross doesn't itself clear the bar for add_candidate
-    (that still requires the full recommendation engine's "comprar" verdict) -
-    purely informational for a HOLD, not an escalation."""
+    (that still requires the gate to actually pass) - purely informational
+    for a HOLD, not an escalation."""
     imminent = ta.ImminentCross(direction="golden", bars_until=4, r_squared=0.9)
     monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: _stub_signals(imminent_cross=imminent))
 
@@ -372,17 +388,6 @@ def test_hold_gets_an_informational_note_when_golden_cross_is_imminent(monkeypat
 
     assert result.signal == prs.HOLD
     assert any("cruce de medias alcista" in r for r in result.reasons)
-
-
-def test_exit_warning_unaffected_by_imminent_cross(monkeypatch):
-    """The recommendation engine's own "evitar" verdict already takes priority
-    - an imminent-cross projection doesn't need to (and shouldn't) change
-    anything about an already-urgent signal."""
-    imminent = ta.ImminentCross(direction="golden", bars_until=3, r_squared=0.9)
-    stub = _stub_signals(verdict="evitar", score=-5, imminent_cross=imminent)
-    monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: stub)
-    result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))
-    assert result.signal == prs.EXIT_WARNING
 
 
 def test_add_candidate_still_surfaces_an_imminent_short_term_death_cross(monkeypatch):
@@ -393,7 +398,7 @@ def test_add_candidate_still_surfaces_an_imminent_short_term_death_cross(monkeyp
     managing that position on a shorter horizon that must not be silently
     dropped just because the headline signal is upbeat."""
     imminent_short = ta.ImminentCross(direction="death", bars_until=5, r_squared=0.85)
-    stub = _stub_signals(verdict="comprar", score=6, imminent_cross_short_term=imminent_short)
+    stub = _stub_signals(gate_passes=True, imminent_cross_short_term=imminent_short)
     monkeypatch.setattr(prs, "compute_core_signals", lambda *a, **k: stub)
 
     result = prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)))

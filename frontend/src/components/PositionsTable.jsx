@@ -7,7 +7,10 @@ const BASE_COLUMN_COUNT = 8 // ticker, cantidad, precio medio, precio actual, va
 const RISK_COLUMN_COUNT = 2 // señal de tendencia + detalle
 
 function riskTooltip(risk) {
-  const parts = [`Puntuación: ${risk.score}`, risk.reasons.join(' · ')]
+  const parts = [
+    `Condiciones del gate: ${risk.score}/${risk.signals.gate.conditions.length}`,
+    risk.reasons.join(' · '),
+  ]
   return parts.join(' · ')
 }
 
@@ -125,7 +128,7 @@ function PositionsTable({ positions, colorScale, totalMarketValue, riskByTicker,
                           <div className="positions-table__signal-cell">
                             <span className={`signal-badge signal-badge--${risk.signal}`} title={riskTooltip(risk)}>
                               {SIGNAL_LABELS[risk.signal] ?? risk.signal}
-                              <span className="signal-badge__score"> ({risk.score >= 0 ? '+' : ''}{risk.score})</span>
+                              <span className="signal-badge__score"> ({risk.score}/{risk.signals.gate.conditions.length})</span>
                             </span>
                             <MultiTimeframeSemaphore multiTimeframe={risk.multi_timeframe} compact />
                           </div>

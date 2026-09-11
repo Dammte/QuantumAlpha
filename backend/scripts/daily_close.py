@@ -64,7 +64,6 @@ from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.portfolio_risk_service import PositionRisk, get_portfolio_positions_risk
-from app.services.recommendation_engine import ENGINE_VERSION
 from app.services.ticker_analysis_service import MIN_BARS_REQUIRED
 
 logger = logging.getLogger(__name__)
@@ -204,7 +203,7 @@ def position_daily_state_from_risk(
         price=risk.price,
         r_multiple=risk.r_multiple,
         current_stop=risk.trade_plan.current_stop if risk.trade_plan else None,
-        engine_version=ENGINE_VERSION,
+        engine_version=le.GATE_VERSION,
     )
 
 
