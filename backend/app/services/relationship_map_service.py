@@ -4,7 +4,7 @@ nuevas opciones."
 
 No existe ninguna fuente gratuita y fiable de cadena de suministro
 estructurada (FactSet Supply Chain y similares son de pago). Este módulo
-construye el mapa en tres capas, de la más fiable/objetiva a la más
+construye el mapa en dos capas, de la más fiable/objetiva a la más
 especulativa - etiquetadas visualmente distintas por el frontend, nunca
 mezcladas como si fueran la misma clase de evidencia:
 
@@ -17,48 +17,26 @@ mezcladas como si fueran la misma clase de evidencia:
    universo entero - cero llamadas de red nuevas por par.
 2. **Pares de sector/industria** (gratis, ya en el repo): mismos
    `market_universe.Industry.tickers`, con su fuerza relativa (RS Rating) y
-   estado técnico actual. (El cuadrante RRG del Bloque E no está
-   implementado en esta pasada - Bloque E quedó fuera del alcance de esta
-   sesión; si se implementa después, es la adición natural aquí.)
-3. **Relaciones declaradas en documentos SEC** (la que responde
-   literalmente a "le compra a tal"): búsqueda de texto completo en EDGAR
-   (gratuita, sin clave) de qué otras empresas mencionan a la empresa
-   analizada en su propio 10-K/10-Q - la señal de relación comercial más
-   literal disponible sin pagar por un feed. Solo funciona para tickers
-   estadounidenses (EDGAR no cubre emisores no domiciliados en EE.UU. de la
-   misma forma) - para Europa, `disclosed_available=False` explícito, nunca
-   una lista vacía silenciosa que parezca "sin relaciones". Cacheado 30+
-   días vía `durable_cache` (las relaciones de un 10-K cambian una vez al
-   año, no en cada request) y nunca llamado desde un camino caliente - un
-   único ticker por análisis, igual que `get_ticker_info`. Si EDGAR falla o
-   va lento, degrada a las capas 1 y 2 sin romper la pantalla.
+   estado técnico actual.
 
-    Alcance explícito, no implementado en esta pasada: extraer la sección de
-    concentración de clientes del propio 10-K de la empresa (el otro sentido
-    de la relación que el encargo pide) necesitaría resolver el CIK del
-    ticker y parsear el documento completo, no solo la búsqueda de texto
-    completo - más frágil de lo que esta pasada puede verificar con
-    confianza sin pruebas contra la API real. Queda para una iteración
-    posterior, señalado aquí en vez de construido a medias.
+2026-09: la tercera capa (menciones en documentos SEC EDGAR - qué otras
+empresas citan a la analizada en su propio 10-K/10-Q) se retiró: lenta, solo
+cubría tickers estadounidenses, y una mención en un 10-K no mueve un trade
+de días (ver docs/quant_methodology.md). Las dos capas que quedan no tenían
+esa dependencia de horizonte ni de red - sobreviven sin cambios.
 """
 
-import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
-import requests
 from sqlalchemy.orm import Session
 
 from app.domain.models.ticker_snapshot import TickerSnapshot
-from app.services import durable_cache
 from app.services import watchlist_service as wl
-from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
-from app.services.market_universe import DEFAULT_REGION, region_config, sector_of
-
-logger = logging.getLogger(__name__)
+from app.services.market_universe import region_config, sector_of
 
 # --- Layer 1: statistical relations -----------------------------------------
 
@@ -274,133 +252,6 @@ def compute_sector_peers(ticker: str, region: str, universe_snapshot: list[Ticke
     return peers
 
 
-# --- Layer 3: SEC EDGAR full-text search (US tickers only) ------------------
-
-EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
-# SEC's own documented etiquette (sec.gov/os/webmaster-faq#developers): a
-# descriptive User-Agent identifying the client, same rationale as
-# dynamic_universe_service.py's WIKIPEDIA_USER_AGENT.
-EDGAR_USER_AGENT = "QuantumAlphaPortfolioTool/1.0 (personal-use research tool; contact via repository)"
-EDGAR_CACHE_TTL_DAYS = 30  # the brief's own floor: 10-K-derived relationships change once a year, not per request
-EDGAR_LOOKBACK_DAYS = 365 * 2  # only recent filings - a mention in a 10-K from 5 years ago may no longer hold
-EDGAR_MAX_RESULTS = 10
-EDGAR_TIMEOUT_SECONDS = 10
-
-
-@dataclass(frozen=True, slots=True)
-class DisclosedRelation:
-    """One SEC full-text search hit: another company's 10-K/10-Q that
-    mentions the analyzed company by name - the most literal available
-    signal of a real commercial relationship, and (per the module docstring)
-    the most speculative layer: a text match, not a verified fact. Always
-    carries its own source form and filing date so a caller can judge
-    whether it's still current (a 10-K from 2022 may describe a relationship
-    that's since ended)."""
-
-    filer_name: str
-    filer_ticker: str | None
-    form: str
-    filing_date: date
-
-
-def _fetch_edgar_mentions(company_name: str) -> list[DisclosedRelation] | None:
-    """Raw EDGAR full-text search for `company_name` inside other filers' own
-    10-K/10-Q text - `None` (not `[]`) on any failure (network, malformed
-    response, rate limit), so the caller can tell "genuinely found nothing"
-    apart from "couldn't check"."""
-    end = date.today()
-    start = end - timedelta(days=EDGAR_LOOKBACK_DAYS)
-    params = {
-        "q": f'"{company_name}"',
-        "forms": "10-K,10-Q",
-        "dateRange": "custom",
-        "startdt": start.isoformat(),
-        "enddt": end.isoformat(),
-    }
-    try:
-        response = requests.get(
-            EDGAR_SEARCH_URL, params=params, headers={"User-Agent": EDGAR_USER_AGENT},
-            timeout=EDGAR_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception:
-        logger.exception("EDGAR full-text search failed for %r", company_name)
-        return None
-
-    hits = payload.get("hits", {}).get("hits", []) if isinstance(payload, dict) else []
-    relations = []
-    for hit in hits[:EDGAR_MAX_RESULTS]:
-        source = hit.get("_source", {}) if isinstance(hit, dict) else {}
-        display_names = source.get("display_names") or []
-        filer_name = display_names[0] if display_names else None
-        if not filer_name:
-            continue
-        filing_date_raw = source.get("file_date")
-        try:
-            filing_date = pd.Timestamp(filing_date_raw).date() if filing_date_raw else None
-        except Exception:
-            filing_date = None
-        if filing_date is None:
-            continue
-        relations.append(
-            DisclosedRelation(
-                filer_name=str(filer_name),
-                filer_ticker=None,  # the search index doesn't reliably carry the filer's own ticker
-                form=str(source.get("form") or source.get("root_form") or "?"),
-                filing_date=filing_date,
-            )
-        )
-    return relations
-
-
-def get_disclosed_relations(
-    ticker: str, company_name: str | None, db: Session | None
-) -> tuple[list[DisclosedRelation] | None, bool]:
-    """Returns (relations, available). `available=False` means "don't even
-    show this layer" (non-US ticker, or no company name to search for) -
-    distinct from `relations=[]` with `available=True` ("checked EDGAR,
-    genuinely found nothing"). Cached >= EDGAR_CACHE_TTL_DAYS via
-    durable_cache, keyed by ticker - a 10-K's disclosed relationships don't
-    change between requests the way a live quote does."""
-    if company_name is None:
-        return None, False
-
-    cache_key = f"edgar_mentions:{ticker}"
-    max_age = timedelta(days=EDGAR_CACHE_TTL_DAYS)
-    if db is not None:
-
-        def _reconstruct(payload: list[dict]) -> list[DisclosedRelation]:
-            return [
-                DisclosedRelation(
-                    filer_name=r["filer_name"], filer_ticker=r["filer_ticker"], form=r["form"],
-                    filing_date=pd.Timestamp(r["filing_date"]).date(),
-                )
-                for r in payload
-            ]
-
-        cached = durable_cache.load_fresh_as(db, cache_key, max_age, _reconstruct)
-        if cached is not None:
-            return cached, True
-
-    relations = _fetch_edgar_mentions(company_name)
-    if relations is None:
-        return None, False  # EDGAR itself failed - degrade silently, never show a broken/empty layer as "checked"
-
-    if db is not None:
-        durable_cache.save(
-            db, cache_key,
-            [
-                {
-                    "filer_name": r.filer_name, "filer_ticker": r.filer_ticker, "form": r.form,
-                    "filing_date": r.filing_date.isoformat(),
-                }
-                for r in relations
-            ],
-        )
-    return relations, True
-
-
 # --- Orchestration ------------------------------------------------------------
 
 
@@ -410,8 +261,6 @@ class RelationshipMap:
     region: str
     statistical: list[StatisticalRelation]
     sector_peers: list[SectorPeer]
-    disclosed: list[DisclosedRelation] | None
-    disclosed_available: bool
     computed_at: datetime
 
 
@@ -419,35 +268,21 @@ def build_relationship_map(
     ticker: str,
     region: str,
     screener: MarketScreenerService,
-    market_data: MarketDataService,
     db: Session | None = None,
 ) -> RelationshipMap:
-    """The full three-layer map for one ticker - "buscar nuevas opciones" is
-    the whole point, so every related name carries its own current setup/
-    percentile_score when it has one, not just a static label. Layer 3
-    (EDGAR) only ever runs for `region == "us"` - EDGAR doesn't cover non-US
-    issuers the same way, and the brief is explicit: for Europe, say so
-    (`disclosed_available=False`), never show an empty list that reads as
-    "no relationships found"."""
+    """The two-layer map for one ticker - "buscar nuevas opciones" is the
+    whole point, so every related name carries its own current setup/
+    percentile_score when it has one, not just a static label."""
     universe_snapshot = screener.get_universe_snapshot(region=region, db=db)
     ohlcv_by_ticker = screener.get_cached_ohlcv(region=region)
 
     statistical = compute_statistical_relations(ticker, ohlcv_by_ticker, universe_snapshot)
     sector_peers = compute_sector_peers(ticker, region, universe_snapshot)
 
-    disclosed: list[DisclosedRelation] | None = None
-    disclosed_available = False
-    if region == DEFAULT_REGION:  # "us" - EDGAR only meaningfully covers US-domiciled filers
-        info = market_data.get_ticker_info(ticker)
-        company_name = info.name if info else None
-        disclosed, disclosed_available = get_disclosed_relations(ticker, company_name, db)
-
     return RelationshipMap(
         ticker=ticker,
         region=region,
         statistical=statistical,
         sector_peers=sector_peers,
-        disclosed=disclosed,
-        disclosed_available=disclosed_available,
         computed_at=datetime.now(UTC),
     )

@@ -1,12 +1,10 @@
 from datetime import UTC, date, datetime
-from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import ComputationCacheORM, UniverseMembershipORM
-from app.services import relationship_map_service as rms
 from app.services.market_universe import INDUSTRIES, SECTOR_ETFS, universe_tickers
 
 
@@ -256,27 +254,7 @@ def test_support_resistance_unknown_ticker_returns_404(client: TestClient) -> No
     assert response.status_code == 404
 
 
-def test_relationship_map_for_us_ticker_has_all_three_layers(client: TestClient, monkeypatch) -> None:
-    # Layer 3 (EDGAR) hits `rms.requests.get` directly, not the fake yfinance
-    # provider - mocked here the same way test_relationship_map_service.py
-    # mocks it, so this test never touches the real network.
-    mock_response = MagicMock()
-    mock_response.raise_for_status.return_value = None
-    mock_response.json.return_value = {
-        "hits": {
-            "hits": [
-                {
-                    "_source": {
-                        "display_names": ["SUPPLIER CORP (0001234567)"],
-                        "file_date": "2025-03-01",
-                        "form": "10-K",
-                    }
-                }
-            ]
-        }
-    }
-    monkeypatch.setattr(rms.requests, "get", lambda *a, **k: mock_response)
-
+def test_relationship_map_for_us_ticker_has_both_layers(client: TestClient) -> None:
     response = client.get("/api/v1/market/tickers/AAPL/relationships")
     assert response.status_code == 200
     body = response.json()
@@ -288,27 +266,16 @@ def test_relationship_map_for_us_ticker_has_all_three_layers(client: TestClient,
         assert relation["ticker"] != "AAPL"
     for peer in body["sector_peers"]:
         assert peer["ticker"] != "AAPL"
-    assert body["disclosed_available"] is True
-    assert body["disclosed"] == [
-        {
-            "filer_name": "SUPPLIER CORP (0001234567)",
-            "filer_ticker": None,
-            "form": "10-K",
-            "filing_date": "2025-03-01",
-        }
-    ]
+    assert "disclosed" not in body
+    assert "disclosed_available" not in body
 
 
-def test_relationship_map_europe_region_has_disclosed_unavailable(client: TestClient) -> None:
-    # EDGAR (Layer 3) only runs for region == "us" - no mocking needed here,
-    # a real network call would be a bug if one happened.
+def test_relationship_map_europe_region(client: TestClient) -> None:
     response = client.get("/api/v1/market/tickers/SAP.DE/relationships", params={"region": "europe"})
     assert response.status_code == 200
     body = response.json()
     assert body["ticker"] == "SAP.DE"
     assert body["region"] == "europe"
-    assert body["disclosed"] is None
-    assert body["disclosed_available"] is False
     assert any(peer["ticker"] != "SAP.DE" for peer in body["sector_peers"])
 
 
@@ -329,8 +296,6 @@ def test_relationship_map_unknown_ticker_returns_empty_layers_not_an_error(clien
     body = response.json()
     assert body["statistical"] == []
     assert body["sector_peers"] == []
-    assert body["disclosed"] is None
-    assert body["disclosed_available"] is False
 
 
 def test_market_context_has_indices_vix_and_regime(client: TestClient) -> None:

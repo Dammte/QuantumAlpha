@@ -7,12 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.api.deps import (
     DbSession,
     get_market_context_service,
-    get_market_data_service,
     get_market_screener_service,
 )
 from app.domain.models.ticker_snapshot import IndustryPerformance, TickerSnapshot
 from app.schemas.market import (
-    DisclosedRelationResponse,
     IndexSnapshotResponse,
     IndustryPerformanceResponse,
     IndustryUniverseResponse,
@@ -36,7 +34,6 @@ from app.schemas.market import (
     WatchlistResponse,
 )
 from app.services.market_context_service import MarketContextService, assess_market_regime
-from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import (
     MarketScreenerService,
     ScreenerFilters,
@@ -300,14 +297,14 @@ def get_support_resistance(
 def get_relationship_map(
     ticker: str,
     screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-    market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
     db: DbSession,
     region: str | None = Query(default=None, pattern="^(us|europe)$"),
 ) -> RelationshipMapResponse:
     """Tercera auditoría, Bloque G: "que se muestren acciones relacionadas...
-    un mapa completo del proceso para buscar nuevas opciones" - tres capas de
-    fiabilidad decreciente (estadística, sector/industria, menciones en
-    documentos SEC), ver `relationship_map_service.py`.
+    un mapa completo del proceso para buscar nuevas opciones" - dos capas de
+    fiabilidad decreciente (estadística, sector/industria), ver
+    `relationship_map_service.py`. 2026-09: la tercera capa (menciones en
+    documentos SEC EDGAR) se retiró - ver el módulo.
 
     Unlike every other market/ endpoint, `region` has no hardcoded default
     here: this is reached from a free-text "Analizar activo" search (same as
@@ -317,7 +314,7 @@ def get_relationship_map(
     exactly this "ticker typed directly, region unknown" case elsewhere
     (`technical_analysis.closed_bars`, `benchmark_for_ticker`)."""
     resolved_region = region or region_of(ticker.upper())
-    result = build_relationship_map(ticker.upper(), resolved_region, screener, market_data, db=db)
+    result = build_relationship_map(ticker.upper(), resolved_region, screener, db=db)
     return RelationshipMapResponse(
         ticker=result.ticker,
         region=result.region,
@@ -325,12 +322,6 @@ def get_relationship_map(
             StatisticalRelationResponse(**asdict(r), setup_label=r.setup_label) for r in result.statistical
         ],
         sector_peers=[SectorPeerResponse(**asdict(p), setup_label=p.setup_label) for p in result.sector_peers],
-        disclosed=(
-            [DisclosedRelationResponse(**asdict(d)) for d in result.disclosed]
-            if result.disclosed is not None
-            else None
-        ),
-        disclosed_available=result.disclosed_available,
         computed_at=result.computed_at,
     )
 

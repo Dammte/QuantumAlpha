@@ -69,10 +69,10 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetTicker?.key])
 
-  // Lazy, per-ticker: the relationship map has its own (slower, EDGAR-backed)
-  // endpoint, so it's only fetched once the user actually opens that tab, not
-  // on every "Analizar" click - and cached per ticker so flipping tabs back
-  // and forth doesn't refetch.
+  // Lazy, per-ticker: the relationship map has its own endpoint, so it's
+  // only fetched once the user actually opens that tab, not on every
+  // "Analizar" click - and cached per ticker so flipping tabs back and
+  // forth doesn't refetch.
   useEffect(() => {
     if (tab !== 'relationships' || !analysis) return
     if (relationshipMap && relationshipMap.ticker === analysis.ticker) return
@@ -273,7 +273,7 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
             <section className="panel panel--nested">
               <h3>Mapa de relaciones</h3>
               <p className="ticker-analysis__section-hint">
-                Activos relacionados con {analysis.ticker}, en tres capas ordenadas de más a menos fiable - cada
+                Activos relacionados con {analysis.ticker}, en dos capas ordenadas de más a menos fiable - cada
                 nombre es un candidato en el que se puede entrar directamente, no solo una etiqueta.
               </p>
               <RelationshipMapCard

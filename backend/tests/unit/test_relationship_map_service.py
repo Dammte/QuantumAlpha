@@ -1,11 +1,8 @@
-"""Tercera auditoría, Bloque G: relationship_map_service.py - three layers,
-tested independently. Layer 1 (statistical) and Layer 2 (sector peers) are
-pure functions over hand-built inputs; Layer 3 (EDGAR) is tested against a
-mocked HTTP response, never the real network.
+"""Tercera auditoría, Bloque G: relationship_map_service.py - two layers,
+tested independently as pure functions over hand-built inputs. A third
+layer (SEC EDGAR full-text search) existed here until 2026-09 - retired,
+see the module's own docstring.
 """
-
-from datetime import date
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -221,103 +218,3 @@ def test_sector_peer_setup_label_matches_watchlist_service_dict():
     )
     assert peer.setup_label == rms.wl.SETUP_LABELS[rms.wl.STAGE2_LEADER]
 
-
-# --- EDGAR (Layer 3): mocked HTTP, never real network -----------------------
-
-
-_EDGAR_RESPONSE = {
-    "hits": {
-        "hits": [
-            {
-                "_source": {
-                    "display_names": ["SUPPLIER CORP (0001234567)"],
-                    "file_date": "2025-03-01",
-                    "form": "10-K",
-                }
-            },
-            {
-                "_source": {
-                    "display_names": ["CUSTOMER INC (0007654321)"],
-                    "file_date": "2025-06-15",
-                    "form": "10-Q",
-                }
-            },
-        ]
-    }
-}
-
-
-def test_fetch_edgar_mentions_parses_real_shaped_response(monkeypatch):
-    mock_response = MagicMock()
-    mock_response.json.return_value = _EDGAR_RESPONSE
-    mock_response.raise_for_status.return_value = None
-    monkeypatch.setattr(rms.requests, "get", lambda *a, **k: mock_response)
-
-    relations = rms._fetch_edgar_mentions("Analyzed Company Inc")
-    assert relations is not None
-    assert len(relations) == 2
-    assert relations[0].filer_name == "SUPPLIER CORP (0001234567)"
-    assert relations[0].form == "10-K"
-    assert relations[0].filing_date == date(2025, 3, 1)
-
-
-def test_fetch_edgar_mentions_none_on_network_failure(monkeypatch):
-    def _raise(*args, **kwargs):
-        raise ConnectionError("simulated network failure")
-
-    monkeypatch.setattr(rms.requests, "get", _raise)
-    assert rms._fetch_edgar_mentions("Anything") is None
-
-
-def test_fetch_edgar_mentions_none_on_malformed_json(monkeypatch):
-    mock_response = MagicMock()
-    mock_response.json.side_effect = ValueError("not json")
-    mock_response.raise_for_status.return_value = None
-    monkeypatch.setattr(rms.requests, "get", lambda *a, **k: mock_response)
-    assert rms._fetch_edgar_mentions("Anything") is None
-
-
-def test_fetch_edgar_mentions_empty_list_when_no_hits(monkeypatch):
-    mock_response = MagicMock()
-    mock_response.json.return_value = {"hits": {"hits": []}}
-    mock_response.raise_for_status.return_value = None
-    monkeypatch.setattr(rms.requests, "get", lambda *a, **k: mock_response)
-    assert rms._fetch_edgar_mentions("Anything") == []
-
-
-# --- get_disclosed_relations: availability semantics + caching -------------
-
-
-def test_get_disclosed_relations_unavailable_with_no_company_name():
-    relations, available = rms.get_disclosed_relations("XYZ", None, db=None)
-    assert relations is None
-    assert available is False
-
-
-def test_get_disclosed_relations_available_true_with_empty_list_when_genuinely_nothing_found(monkeypatch):
-    monkeypatch.setattr(rms, "_fetch_edgar_mentions", lambda name: [])
-    relations, available = rms.get_disclosed_relations("XYZ", "XYZ Corp", db=None)
-    assert relations == []
-    assert available is True
-
-
-def test_get_disclosed_relations_unavailable_when_edgar_fetch_fails(monkeypatch):
-    monkeypatch.setattr(rms, "_fetch_edgar_mentions", lambda name: None)
-    relations, available = rms.get_disclosed_relations("XYZ", "XYZ Corp", db=None)
-    assert relations is None
-    assert available is False
-
-
-def test_get_disclosed_relations_reads_from_durable_cache_without_refetching(monkeypatch):
-    calls = []
-    monkeypatch.setattr(rms, "_fetch_edgar_mentions", lambda name: calls.append(name) or [])
-    cached_payload = [
-        {"filer_name": "CACHED CORP", "filer_ticker": None, "form": "10-K", "filing_date": "2025-01-01"}
-    ]
-    monkeypatch.setattr(
-        rms.durable_cache, "load_fresh_as", lambda db, key, max_age, reconstruct: reconstruct(cached_payload)
-    )
-    relations, available = rms.get_disclosed_relations("XYZ", "XYZ Corp", db=MagicMock())
-    assert available is True
-    assert relations[0].filer_name == "CACHED CORP"
-    assert calls == []  # never hit the network - served entirely from the durable cache

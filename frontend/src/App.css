@@ -2307,9 +2307,6 @@
 .relationship-map__layer--sector {
   border-left-color: var(--accent);
 }
-.relationship-map__layer--disclosed {
-  border-left-color: var(--border);
-}
 
 .relationship-map__layer-header h4 {
   margin: 0 0 4px;
@@ -2334,11 +2331,6 @@
   background: var(--accent-bg);
   color: var(--accent);
 }
-.relationship-map__reliability--low {
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--border);
-}
 
 .relationship-map__hint {
   margin: 0 0 10px;
@@ -2352,33 +2344,5 @@
 
 .relationship-map__divergence-badge {
   margin-left: 6px;
-}
-
-.relationship-map__disclosed-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.relationship-map__disclosed-list li {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 13px;
-}
-
-.relationship-map__disclosed-filer {
-  color: var(--text-h);
-  font-weight: 500;
-}
-
-.relationship-map__disclosed-meta {
-  color: var(--text);
-  white-space: nowrap;
 }
 

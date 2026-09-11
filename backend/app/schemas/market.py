@@ -348,20 +348,9 @@ class SectorPeerResponse(BaseModel):
     percentile_score: float | None
 
 
-class DisclosedRelationResponse(BaseModel):
-    filer_name: str
-    filer_ticker: str | None
-    form: str
-    filing_date: date
-
-
 class RelationshipMapResponse(BaseModel):
     ticker: str
     region: str
     statistical: list[StatisticalRelationResponse]
     sector_peers: list[SectorPeerResponse]
-    # `None` (not `[]`) when disclosed_available is False - a non-US ticker,
-    # or no company name to search EDGAR for. See relationship_map_service.py.
-    disclosed: list[DisclosedRelationResponse] | None
-    disclosed_available: bool
     computed_at: datetime

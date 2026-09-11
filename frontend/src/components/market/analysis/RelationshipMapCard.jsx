@@ -4,8 +4,9 @@ import TrendBadge from '../TrendBadge'
 // Tercera auditoría, Bloque G: "el mapa debe terminar en candidatos
 // accionables, no en un diagrama bonito" - every related ticker is a button
 // that jumps straight into its own full analysis (`onSelectTicker`), not just
-// a label. Three layers, ordered and labeled by decreasing reliability - see
-// `relationship_map_service.py`'s module docstring for the full reasoning.
+// a label. Two layers, ordered and labeled by decreasing reliability - see
+// `relationship_map_service.py`'s module docstring for the full reasoning
+// (a third, SEC-EDGAR-based layer was retired 2026-09).
 
 function SetupTag({ setup, setupLabel, percentileScore }) {
   if (!setup) return <span className="relationship-map__no-setup">—</span>
@@ -134,44 +135,12 @@ function SectorPeersTable({ peers, onSelectTicker }) {
   )
 }
 
-function DisclosedRelationsList({ available, relations }) {
-  if (!available) {
-    return (
-      <p className="empty-state">
-        No disponible para este activo: EDGAR solo cubre emisores domiciliados en EE.UU., o no se pudo resolver el
-        nombre exacto de la empresa.
-      </p>
-    )
-  }
-  if (relations.length === 0) {
-    return (
-      <p className="empty-state">
-        Ninguna otra empresa menciona a este activo por su nombre en un 10-K/10-Q propio de los últimos 2 años.
-      </p>
-    )
-  }
-  return (
-    <ul className="relationship-map__disclosed-list">
-      {relations.map((d, i) => (
-        // No stable id from EDGAR's own search index for a single hit - filer
-        // name + form + date is unique enough within one ticker's result set.
-        <li key={`${d.filer_name}-${d.form}-${d.filing_date}-${i}`}>
-          <span className="relationship-map__disclosed-filer">{d.filer_name}</span>
-          <span className="relationship-map__disclosed-meta">
-            {d.form} · {d.filing_date}
-          </span>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
 function RelationshipMapCard({ relationshipMap, loading, error, onSelectTicker }) {
   if (loading) return <p className="empty-state">Buscando activos relacionados…</p>
   if (error) return <div className="banner banner--error">{error}</div>
   if (!relationshipMap) return null
 
-  const { ticker, statistical, sector_peers: sectorPeers, disclosed, disclosed_available: disclosedAvailable } = relationshipMap
+  const { ticker, statistical, sector_peers: sectorPeers } = relationshipMap
 
   return (
     <div className="relationship-map">
@@ -199,21 +168,6 @@ function RelationshipMapCard({ relationshipMap, loading, error, onSelectTicker }
           </p>
         </div>
         <SectorPeersTable peers={sectorPeers} onSelectTicker={onSelectTicker} />
-      </section>
-
-      <section className="relationship-map__layer relationship-map__layer--disclosed">
-        <div className="relationship-map__layer-header">
-          <h4>
-            3. Relaciones declaradas en SEC (10-K/10-Q){' '}
-            <span className="relationship-map__reliability relationship-map__reliability--low">más especulativa</span>
-          </h4>
-          <p className="relationship-map__hint">
-            Otras empresas que mencionan a este activo por su nombre en su propio 10-K/10-Q reciente - la señal
-            más literal de una relación comercial real, y también la menos verificada (una coincidencia de texto,
-            no un hecho confirmado).
-          </p>
-        </div>
-        <DisclosedRelationsList available={disclosedAvailable} relations={disclosed ?? []} />
       </section>
     </div>
   )
