@@ -62,8 +62,8 @@ SETUP_LABELS = {
 # Tercera auditoría, Bloque F-2: the "weekly" (MEDIUM_TERM) tier's three
 # setup types - see _MEDIUM_TERM_SETUP_DETECTORS below for why these replace
 # the old single OR-blob of Minervini 8/8 + Stage 2/RS≥80 + golden cross
-# SMA50/SMA200 (months-scale signals on a tier meant for a *weekly* review
-# cadence, per premium_watchlist_service.CACHE_TTL[WEEKLY]).
+# SMA50/SMA200 (months-scale signals on a tier meant for a *weekly*, not
+# daily, review cadence).
 FAST_GOLDEN_CROSS = "fast_golden_cross"
 FAST_CROSS_IMMINENT = "fast_cross_imminent"
 STAGE2_LEADER = "stage2_leader"
@@ -296,15 +296,17 @@ def _percentile_ranks(values: list[float | None]) -> list[float | None]:
 
 def percentile_rank_by_ticker(snapshots: list[TickerSnapshot], field: str) -> dict[str, float]:
     """Cross-sectional 0-100 percentile rank of one `TickerSnapshot` field,
-    keyed by ticker (skipping tickers where the field is `None`) - the
-    general building block `setup_percentile_scores` is made from, exposed
-    directly for callers that need a single field's percentile rather than a
-    blended composite. Tercera auditoría, Bloque F-3: `premium_watchlist_service.py`
-    uses this to build a same-scale (0-100, cross-sectional) substitute for
-    `rs_rating` (which is itself only ever an IBD-style 1-99 percentile) on
-    the daily tier - see that module for why a raw 3-12-month RS Rating
-    shouldn't score a 5-21 day trade the same as the 5-21-day setup
-    percentile that's supposed to be doing that job already."""
+    keyed by ticker (skipping tickers where the field is `None`) - built from
+    the same `_percentile_ranks` primitive as `setup_percentile_scores`
+    below, exposed directly for callers that need a single field's
+    percentile rather than a blended composite. Tercera auditoría, Bloque
+    F-3: a same-scale (0-100, cross-sectional) substitute for `rs_rating`
+    (which is itself only ever an IBD-style 1-99 percentile) - a raw
+    3-12-month RS Rating shouldn't score a 5-21 day trade the same way the
+    5-21-day setup percentile already does. 2026-09: its original caller
+    (`premium_watchlist_service.py`) was retired (see
+    docs/quant_methodology.md); kept as a small, independently tested
+    building block for whatever surface (Fase 5's Radar) needs this next."""
     values = [getattr(s, field) for s in snapshots]
     ranks = _percentile_ranks(values)
     return {s.ticker: r for s, r in zip(snapshots, ranks, strict=True) if r is not None}

@@ -276,10 +276,9 @@ def compute_core_signals(
     unlike every other computation here, which is vectorized pandas). The
     brief's own ask for this (Segunda auditoría, Bloque 2) was specifically
     "Analizar activo" - `TickerAnalysisService.analyze()` is the only caller
-    that opts in; `portfolio_risk_service`/`premium_watchlist_service` run
-    this same function per held position / per candidate on every cache
-    refresh, where that 3x would compound across 15+ tickers for a field
-    neither of those views shows."""
+    that opts in; `portfolio_risk_service` runs this same function per held
+    position on every cache refresh, where that 3x would compound across
+    the whole portfolio for a field that view doesn't show."""
     if len(close) < MIN_BARS_REQUIRED:
         return None
     closed_bar_cutoff = closed_bar_cutoff_for_ticker(ticker) if ticker else None
@@ -504,8 +503,7 @@ class TickerAnalysisService:
         # Tercera auditoría, Bloque F-9: a breakout 3 days before earnings
         # isn't the same trade as one with no event risk in the holding
         # window - only fetched here (a single-ticker deep-dive already
-        # paying for get_ticker_info) and in premium_watchlist_service.py's
-        # bounded candidate loop, never for the whole universe screener.
+        # paying for get_ticker_info), never for the whole universe screener.
         next_earnings = self.market_data.get_next_earnings_date(ticker)
         days_to_earnings = (next_earnings - date.today()).days if next_earnings else None
         core = compute_core_signals(

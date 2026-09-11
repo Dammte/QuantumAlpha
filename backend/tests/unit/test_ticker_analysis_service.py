@@ -110,9 +110,9 @@ def test_triple_barrier_backtest_is_populated_with_enough_history():
 
 def test_triple_barrier_backtest_is_skipped_by_default():
     # Measured at ~3x this function's own cost - portfolio_risk_service.py
-    # and premium_watchlist_service.py (which run this per held position /
-    # per candidate on every cache refresh) must not pay for a field neither
-    # of those views shows. Only TickerAnalysisService.analyze() opts in.
+    # (which runs this per held position on every cache refresh) must not
+    # pay for a field that view doesn't show. Only TickerAnalysisService.
+    # analyze() opts in.
     close, high, low, volume, open_ = _series(100 + np.arange(400) * 0.4)
     signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
     assert signals is not None

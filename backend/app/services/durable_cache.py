@@ -1,7 +1,6 @@
 """Durable, DB-backed read-through/write-through cache for expensive market
 computations - a companion to (not a replacement for) each service's own
-in-process cache (see `market_screener_service.py`, `portfolio_risk_service.py`,
-`premium_watchlist_service.py`).
+in-process cache (see `market_screener_service.py`, `portfolios.py`).
 
 Why both layers exist: the in-process cache is free to read and write, and is
 all that's needed while the process stays up. But this is a `plan: starter`

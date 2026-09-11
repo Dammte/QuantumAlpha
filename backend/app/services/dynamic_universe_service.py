@@ -1,7 +1,7 @@
 """Dynamic, monthly-refreshed investable universe (D14 - Segunda auditoría,
 Bloque 3): `market_universe.py`'s curated dict has no survivorship-bias
 protection - a ticker delisted or dropped from an index simply isn't in
-today's hardcoded list, so nothing built on it (the premium watchlist, the
+today's hardcoded list, so nothing built on it (the watchlist, the
 ablation study) can ever see that failure. This fetches real index
 constituents (S&P 500, S&P 400, STOXX Europe 600) from their public
 Wikipedia pages, applies a hard liquidity filter, and persists one dated
@@ -26,10 +26,10 @@ much as network - a user should never be the one paying for this by chance.
 The read side (`read_dynamic_universe`) is a plain DB read, cheap enough for
 `market_screener_service.get_universe_snapshot` to call directly - and
 (Tercera auditoría, Bloque F-1) it now actually does, which
-`premium_watchlist_service.py`/`watchlist_service.py` inherit for free since
-both build on that same shared snapshot. Connecting it in one step wasn't
-actually cheap: full indicator computation on the ~1000 constituents this
-table can hold is the real cost that blocked the decision (Segunda
+`watchlist_service.py` inherits for free by building on that same shared
+snapshot. Connecting it in one step wasn't actually cheap: full indicator
+computation on the ~1000 constituents this table can hold is the real cost
+that blocked the decision (Segunda
 auditoría, Bloque 3's own note on this), so `get_universe_snapshot` cheaply
 screens the snapshot down to `CHEAP_SCREEN_KEEP_TOP_N` by price/volume alone
 (`apply_cheap_price_volume_screen`, no per-ticker network call) *before*
@@ -370,10 +370,10 @@ def is_refresh_due(repo: UniverseMembershipRepositoryPort, region: str, today: d
 def read_dynamic_universe(
     repo: UniverseMembershipRepositoryPort, region: str, as_of_date: date | None = None
 ) -> dict[str, str | None] | None:
-    """Cheap DB read for the actual candidate-generation paths
-    (`premium_watchlist_service.py`/`watchlist_service.py`) - `ticker ->
-    sector`, same shape `market_universe.all_sector_tickers` returns, so
-    either can be dropped in as the universe source. `None` (not `{}`) when
+    """Cheap DB read for the actual candidate-generation path
+    (`watchlist_service.py`) - `ticker -> sector`, same shape
+    `market_universe.all_sector_tickers` returns, so either can be dropped in
+    as the universe source. `None` (not `{}`) when
     nothing is on file yet for this region, so the caller can tell "not
     refreshed yet - use the curated universe" apart from "refreshed, but
     genuinely empty"."""

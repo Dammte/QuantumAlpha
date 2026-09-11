@@ -41,8 +41,7 @@ class TickerAnalysis:
     market_cap: float | None
     # Tercera auditoría, Bloque F-9: a per-ticker deep-dive field (like
     # market_cap above) - never computed for the whole universe screener,
-    # only here and in premium_watchlist_service.py's bounded candidate
-    # loop, to avoid a per-ticker network call in a hot path.
+    # to avoid a per-ticker network call in a hot path.
     days_to_earnings: int | None
     price: float
     change_1d: float | None

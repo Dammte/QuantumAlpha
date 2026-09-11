@@ -154,9 +154,9 @@ class PositionSignalSnapshotORM(Base):
 
 class ComputationCacheORM(Base):
     """Durable, restart-proof companion to each service's own in-process cache
-    (see `market_screener_service.py`, `portfolio_risk_service.py`,
-    `premium_watchlist_service.py`) - keyed by an arbitrary string the caller
-    controls (e.g. "portfolio_risk:3", "universe_snapshot:us"), holding
+    (see `market_screener_service.py`, `portfolios.py`) - keyed by an
+    arbitrary string the caller controls (e.g. "portfolio_risk:3",
+    "universe_snapshot:us"), holding
     whatever JSON-safe payload that cache slot last computed plus when.
 
     Exists because this is a `plan: starter` Render web service: it doesn't
