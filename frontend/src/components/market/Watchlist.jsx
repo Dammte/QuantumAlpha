@@ -53,16 +53,6 @@ function WatchlistCard({ item }) {
           )}
         </span>
       )}
-      {item.setup_outcome_stats && (
-        <p className="watchlist-card__setup-outcome">
-          Histórico de este setup ({item.setup_outcome_stats.n} casos):{' '}
-          {formatPercent(item.setup_outcome_stats.win_rate)} aciertos, expectancy{' '}
-          {item.setup_outcome_stats.expectancy_r >= 0 ? '+' : ''}
-          {item.setup_outcome_stats.expectancy_r.toFixed(2)}R, duración mediana{' '}
-          {item.setup_outcome_stats.median_bars_held} sesiones, MAE p80 −
-          {item.setup_outcome_stats.mae_p80_pct.toFixed(1)}%
-        </p>
-      )}
       <div className="watchlist-card__stats">
         <span>{formatCurrency(item.snapshot.price, item.snapshot.currency)}</span>
         <span className={item.snapshot.change_1d >= 0 ? 'delta-up' : 'delta-down'}>

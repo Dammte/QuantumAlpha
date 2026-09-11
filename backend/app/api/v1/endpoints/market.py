@@ -32,7 +32,6 @@ from app.schemas.market import (
     RelationshipMapResponse,
     SectorPeerResponse,
     SectorPerformanceResponse,
-    SetupOutcomeStatsResponse,
     StatisticalRelationResponse,
     SupportResistanceResponse,
     TickerSnapshotResponse,
@@ -45,7 +44,6 @@ from app.schemas.market import (
     WatchlistResponse,
 )
 from app.schemas.quant_analysis import CoreSignalsResponse
-from app.services import ablation_report_service as ars
 from app.services import durable_cache
 from app.services.macro_data_service import MacroDataService
 from app.services.market_context_service import MarketContextService, assess_market_regime
@@ -67,7 +65,7 @@ from app.services.premium_watchlist_service import (
     PremiumWatchlistService,
 )
 from app.services.relationship_map_service import build_relationship_map
-from app.services.ticker_analysis_service import SIGN_CHECK_HORIZON_DAYS, CoreTickerSignals
+from app.services.ticker_analysis_service import CoreTickerSignals
 from app.services.watchlist_service import build_watchlist
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -104,19 +102,6 @@ def _to_response(snapshot: TickerSnapshot) -> TickerSnapshotResponse:
     return TickerSnapshotResponse(**data)
 
 
-def _setup_outcome_response(setup: str | None) -> SetupOutcomeStatsResponse | None:
-    """Tercera auditoría, Bloque F-6: the setup's own historical trading
-    outcome (win rate/expectancy in R/median duration/MAE p80), at this
-    portfolio's real 21-session holding horizon (SIGN_CHECK_HORIZON_DAYS,
-    same fixed reference the sign-contradiction check already uses) - `None`
-    for a medium/long-term item (no setup) or a setup the v3 study run
-    hasn't measured (yet)."""
-    if setup is None:
-        return None
-    stats = ars.setup_outcome_by_name(SIGN_CHECK_HORIZON_DAYS).get(setup)
-    return SetupOutcomeStatsResponse(**asdict(stats)) if stats is not None else None
-
-
 def _industry_to_response(perf: IndustryPerformance) -> IndustryPerformanceResponse:
     data = asdict(perf)
     data["leaders"] = [_to_response(leader) for leader in perf.leaders]
@@ -147,7 +132,6 @@ def _premium_item_to_response(item: PremiumWatchlistItem) -> PremiumWatchlistIte
         setup_label=item.setup_label,
         also_matched_setups=item.also_matched_setups,
         also_matched_setup_labels=item.also_matched_setup_labels,
-        setup_outcome_stats=_setup_outcome_response(item.setup),
         days_to_earnings=item.days_to_earnings,
     )
 
@@ -309,7 +293,6 @@ def get_watchlist(
                 setup=item.setup,
                 setup_label=item.setup_label,
                 percentile_score=item.percentile_score,
-                setup_outcome_stats=_setup_outcome_response(item.setup),
             )
             for item in items
         ],

@@ -206,22 +206,6 @@ class MarketContextResponse(BaseModel):
     macro: MacroSnapshotResponse | None
 
 
-class SetupOutcomeStatsResponse(BaseModel):
-    """Tercera auditoría, Bloque F-6: the setup's own historical, realized
-    trading outcome (win rate/expectancy in R/median duration/MAE p80) from
-    `scripts/factor_ablation_study.py`'s v3 run - see
-    `ablation_report_service.SetupOutcomeResult`. `None` on the item itself
-    when that setup hasn't been measured yet (no v3 CSV on file) - never a
-    fabricated number."""
-
-    setup: str
-    n: int
-    win_rate: float
-    expectancy_r: float
-    median_bars_held: float
-    mae_p80_pct: float
-
-
 class WatchlistItemResponse(BaseModel):
     ticker: str
     sector: str
@@ -240,7 +224,6 @@ class WatchlistItemResponse(BaseModel):
     # WatchlistItem.setup_label's docstring).
     setup_label: str | None = None
     percentile_score: float | None = None
-    setup_outcome_stats: SetupOutcomeStatsResponse | None = None
 
 
 class PremiumWatchlistItemResponse(BaseModel):
@@ -263,7 +246,6 @@ class PremiumWatchlistItemResponse(BaseModel):
     setup_label: str | None = None
     also_matched_setups: list[str] = []
     also_matched_setup_labels: list[str] = []
-    setup_outcome_stats: SetupOutcomeStatsResponse | None = None
     days_to_earnings: int | None = None
 
 

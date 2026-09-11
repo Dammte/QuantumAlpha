@@ -118,7 +118,4 @@ export const api = {
     request(`/api/v1/market/tickers/${ticker}/relationships${toQueryString({ region })}`),
 
   getSignalPerformance: () => request('/api/v1/system/signal-performance'),
-
-  getFactorAblation: ({ horizonDays } = {}) =>
-    request(`/api/v1/system/factor-ablation${toQueryString({ horizon_days: horizonDays })}`),
 }

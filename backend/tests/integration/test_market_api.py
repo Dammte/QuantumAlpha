@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import ComputationCacheORM, UniverseMembershipORM
 from app.services import relationship_map_service as rms
-from app.services import watchlist_service as wl
 from app.services.market_universe import INDUSTRIES, SECTOR_ETFS, universe_tickers
 
 
@@ -222,33 +221,6 @@ def test_watchlist_returns_items_with_reasons(client: TestClient) -> None:
         assert len(item["reasons"]) > 0
         assert item["snapshot"]["ticker"] == item["ticker"]
         assert item["sector_rs_rank"] is None or 1 <= item["sector_rs_rank"] <= 99
-
-
-def test_watchlist_items_carry_setup_outcome_stats_when_measured(
-    client: TestClient, monkeypatch, tmp_path
-) -> None:
-    # Tercera auditoría, Bloque F-6: whichever setup a real item matched
-    # (deterministic fake universe - which ticker matches which setup isn't
-    # pinned down here, so this seeds stats for every possible setup and
-    # checks whatever comes back is wired through correctly).
-    from app.services import ablation_report_service as ars
-
-    header = "setup,n,win_rate,expectancy_r,median_bars_held,mae_p80_pct"
-    rows = [f"{setup},50,0.55,0.3,7.0,2.5" for setup in wl.SHORT_TERM_SETUPS + wl.MEDIUM_TERM_SETUPS]
-    (tmp_path / "factor_ablation_report_v3_h21_setup_outcomes.csv").write_text(
-        "\n".join([header, *rows]) + "\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(ars, "DOCS_DIR", tmp_path)
-
-    response = client.get("/api/v1/market/watchlist")
-    assert response.status_code == 200
-    items_with_setup = [item for item in response.json()["items"] if item["setup"] is not None]
-    assert items_with_setup  # the fake universe must produce at least one setup match
-    for item in items_with_setup:
-        stats = item["setup_outcome_stats"]
-        assert stats is not None
-        assert stats["setup"] == item["setup"]
-        assert stats["win_rate"] == 0.55
 
 
 def test_watchlist_filters_by_horizon(client: TestClient) -> None:

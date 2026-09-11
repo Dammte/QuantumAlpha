@@ -1561,15 +1561,6 @@
   margin: 0 0 10px;
 }
 
-/* Tercera auditoría, Bloque F-6: the setup's own historical, realized
-   outcome - a plain, muted line, not another badge competing for attention. */
-.watchlist-card__setup-outcome {
-  font-size: 11px;
-  color: var(--text);
-  margin: 0 0 8px;
-  line-height: 1.4;
-}
-
 .premium-watchlist-card {
   display: flex;
   flex-direction: column;
@@ -2422,18 +2413,6 @@
   letter-spacing: 0.04em;
   color: var(--text);
   font-weight: 600;
-}
-
-/* Segunda auditoría, Bloque 4: peso vs. signo medido */
-
-.system-performance__row--mismatch {
-  background: rgba(208, 59, 59, 0.06);
-}
-
-.system-performance__mismatch-tag {
-  color: var(--series-critical);
-  font-weight: 600;
-  font-size: 12px;
 }
 
 /* Tercera auditoría, Bloque G: relationship map - three layers, each visually
