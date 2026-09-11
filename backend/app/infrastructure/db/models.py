@@ -176,6 +176,143 @@ class ComputationCacheORM(Base):
     payload: Mapped[dict] = mapped_column(JSON)
 
 
+class JobRunORM(Base):
+    """Reconstruction (2026-09), Fase 2: one execution of a precompute cron
+    job (`daily_close.py`, `intraday_refresh.py`,
+    `refresh_universe_membership.py`) - see `JobRun` (domain) for why this
+    exists."""
+
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_name: Mapped[str] = mapped_column(String(60), index=True)
+    started_at: Mapped[datetime] = mapped_column(index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(String(20))  # "running" | "success" | "failed"
+    rows_processed: Mapped[int] = mapped_column(default=0)
+    error_message: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+
+
+class TickerDailyStateORM(Base):
+    """Reconstruction (2026-09), Fase 2: one ticker's precomputed
+    levels/triggers read for one trading day - see `TickerDailyState`
+    (domain) for the full reasoning. `gate_conditions` mirrors
+    `levels_engine.GateCondition` as plain JSON-safe dicts, same choice
+    `RecommendationSnapshotORM.factors` already made."""
+
+    __tablename__ = "ticker_daily_states"
+    __table_args__ = (
+        UniqueConstraint("region", "ticker", "trade_date", name="uq_ticker_daily_state_region_ticker_date"),
+        Index("ix_ticker_daily_states_region_date", "region", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    region: Mapped[str] = mapped_column(String(20))
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    trade_date: Mapped[date] = mapped_column()
+    computed_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    price: Mapped[float] = mapped_column(Numeric(20, 8))
+    currency: Mapped[str] = mapped_column(String(3))
+    trend: Mapped[str] = mapped_column(String(20))
+    stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    rs_rating: Mapped[int | None] = mapped_column(nullable=True)
+    adx14: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    atr_multiple: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    rsi14: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    gate_passes: Mapped[bool] = mapped_column()
+    gate_conditions: Mapped[list] = mapped_column(JSON)
+    gate_version: Mapped[str] = mapped_column(String(40))
+    entry_trigger_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    entry_trigger_price: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
+    entry_already_triggered: Mapped[bool] = mapped_column(default=False)
+    stop_loss: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit_method: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    risk_reward: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+
+
+class TickerIntradayStateORM(Base):
+    """Reconstruction (2026-09), Fase 2: the latest intraday quote/trigger
+    re-check for one ticker - see `TickerIntradayState` (domain). Always
+    overwritten in place (primary key is just the ticker), never a history -
+    `TriggerEventORM` is where a genuine intraday trigger firing gets
+    permanently recorded."""
+
+    __tablename__ = "ticker_intraday_states"
+
+    ticker: Mapped[str] = mapped_column(String(20), primary_key=True)
+    region: Mapped[str] = mapped_column(String(20))
+    updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    price: Mapped[float] = mapped_column(Numeric(20, 8))
+    entry_already_triggered: Mapped[bool | None] = mapped_column(nullable=True)
+
+
+class PositionDailyStateORM(Base):
+    """Reconstruction (2026-09), Fase 2: one open position's precomputed
+    exit_engine read for one trading day - see `PositionDailyState`
+    (domain)."""
+
+    __tablename__ = "position_daily_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "portfolio_id", "ticker", "trade_date", name="uq_position_daily_state_portfolio_ticker_date"
+        ),
+        Index("ix_position_daily_states_portfolio_date", "portfolio_id", "trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    trade_date: Mapped[date] = mapped_column()
+    computed_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    urgency: Mapped[str] = mapped_column(String(20))
+    reasons: Mapped[list] = mapped_column(JSON)
+    price: Mapped[float] = mapped_column(Numeric(20, 8))
+    r_multiple: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    current_stop: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
+    engine_version: Mapped[str] = mapped_column(String(40))
+
+
+class TriggerEventORM(Base):
+    """Reconstruction (2026-09), Fase 2: append-only log of a detected state
+    change (a gate flipping, an entry firing, an exit urgency escalating) -
+    see `TriggerEvent` (domain) for why this is a separate table from the
+    daily-state ones above."""
+
+    __tablename__ = "trigger_events"
+    __table_args__ = (
+        Index("ix_trigger_events_entity", "entity_type", "entity_key"),
+        Index("ix_trigger_events_occurred_at", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String(20))  # "ticker" | "position"
+    entity_key: Mapped[str] = mapped_column(String(60))
+    event_type: Mapped[str] = mapped_column(String(40))
+    previous_value: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    new_value: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    details: Mapped[dict] = mapped_column(JSON)
+
+
+class DailyBriefORM(Base):
+    """Reconstruction (2026-09), Fase 2: one portfolio's precomputed "what
+    changed since yesterday" summary for one day - see `DailyBrief`
+    (domain)."""
+
+    __tablename__ = "daily_briefs"
+    __table_args__ = (UniqueConstraint("portfolio_id", "brief_date", name="uq_daily_brief_portfolio_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
+    brief_date: Mapped[date] = mapped_column(index=True)
+    computed_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+    positions_needing_action: Mapped[int] = mapped_column(default=0)
+    new_entry_triggers: Mapped[int] = mapped_column(default=0)
+    new_gate_passes: Mapped[int] = mapped_column(default=0)
+    headline: Mapped[str] = mapped_column(String(500))
+
+
 class UniverseMembershipORM(Base):
     """One row per (region, ticker, as_of_date) - the D14 fix (Segunda
     auditoría, Bloque 3). See `UniverseMember`'s docstring for why this
