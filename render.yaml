@@ -17,3 +17,31 @@ services:
         value: production
       - key: MARKET_DATA_PROVIDER
         value: yfinance
+
+  # Reconstruction (2026-09), Fase 2, Job A: nightly precompute for the whole
+  # universe's levels/triggers gate and every open position's exit-engine
+  # read - see scripts/daily_close.py's own docstring for the full reasoning.
+  # 22:00 UTC, Mon-Fri: safely after both the US close (20:00 UTC in EDT/
+  # summer, 21:00 UTC in EST/winter - this schedule clears the later of the
+  # two with margin) and the European close (STOXX Europe 600, mid-afternoon
+  # UTC), with a couple of hours' buffer for the data provider to settle the
+  # day's final bar before this job reads it.
+  #
+  # A Render Cron Job is a separate billed resource from the web service
+  # above - creating this in the Render dashboard (or via `render blueprint
+  # sync`) has a real cost; wiring it here in source control doesn't, so this
+  # can be reviewed/adjusted before actually enabling it on Render.
+  - name: quantumalpha-daily-close
+    type: cron
+    runtime: python
+    region: frankfurt
+    plan: starter
+    rootDir: backend
+    schedule: "0 22 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m scripts.daily_close
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: MARKET_DATA_PROVIDER
+        value: yfinance
