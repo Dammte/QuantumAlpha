@@ -10,6 +10,15 @@ place it just below the nearest support (a real, technical level), but never
 let the risk exceed a multiple of ATR (a volatility-aware ceiling) even if the
 nearest support is unusually far away.
 
+2026-09 (reconstruction, Fase 3): `StopAndTarget`/`compute_stop_and_target`
+(and their `ATR_STOP_MULTIPLE`/`REWARD_RISK_RATIO`/`MAX_RESISTANCE_TARGET_
+DISTANCE` constants) moved to `trade_geometry.py`, re-exported here unchanged
+(pure move, verified against the existing test suite - no ENGINE_VERSION
+bump) so this file and `trade_plan_service.py` keep working without edits.
+New code should import them from `trade_geometry.py` directly; `levels_engine.py`
+(same module) is where the levels/triggers gate that eventually replaces the
+checklist below is being built - see both modules' docstrings.
+
 **Ensemble design - what each factor actually contributes, so they reinforce
 rather than duplicate each other** (audited 2026-08, see
 `docs/quant_methodology.md` for the full writeup):
@@ -87,6 +96,27 @@ removed, or reweighted - see that script's own docstring for methodology.
 from dataclasses import dataclass
 
 from app.services.technical_analysis import PriceLevel, Stage, TrendState
+from app.services.trade_geometry import (
+    ATR_STOP_MULTIPLE,
+    MAX_RESISTANCE_TARGET_DISTANCE,
+    REWARD_RISK_RATIO,
+    StopAndTarget,
+    compute_stop_and_target,
+)
+
+__all__ = [
+    "ATR_STOP_MULTIPLE",
+    "AVOID_THRESHOLD",
+    "BUY_THRESHOLD",
+    "ENGINE_VERSION",
+    "MAX_RESISTANCE_TARGET_DISTANCE",
+    "REWARD_RISK_RATIO",
+    "Recommendation",
+    "RecommendationFactor",
+    "StopAndTarget",
+    "build_recommendation",
+    "compute_stop_and_target",
+]
 
 # Bumped whenever the factor list or a weight changes materially - stamped
 # onto every persisted RecommendationSnapshotORM row (see models.py) so a
@@ -111,9 +141,6 @@ ENGINE_VERSION = "2026-09-audit-v7"
 
 BUY_THRESHOLD = 5
 AVOID_THRESHOLD = -3
-ATR_STOP_MULTIPLE = 2.5
-REWARD_RISK_RATIO = 2.0
-MAX_RESISTANCE_TARGET_DISTANCE = 0.30
 SUPPORT_PROXIMITY = 0.03
 
 
@@ -140,68 +167,6 @@ class Recommendation:
     # what it actually found) - shown separately in the UI, exactly like
     # `entry_timing`/`imminent_cross` already are, never folded into `factors`.
     veto_reason: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class StopAndTarget:
-    stop_loss: float | None
-    take_profit: float | None
-    take_profit_method: str | None
-    risk_reward: float | None
-
-
-def compute_stop_and_target(
-    price: float,
-    atr14: float | None,
-    nearest_support: PriceLevel | None,
-    nearest_resistance: PriceLevel | None,
-) -> StopAndTarget:
-    """The mechanical stop/target math, isolated from the buy/wait/avoid
-    checklist below so it's independently reusable: place the stop just below
-    the nearest support (a real technical level), but never let the risk
-    exceed `ATR_STOP_MULTIPLE` x ATR (a volatility-aware ceiling) even if
-    support is unusually far away; target the nearest resistance only if it
-    still clears a minimum reward:risk, otherwise fall back to a fixed
-    `REWARD_RISK_RATIO`:1 objective.
-
-    Used by `build_recommendation` below (only when the verdict is
-    "comprar" - a stop/target is only ever offered for a fresh buy signal),
-    and independently by `trade_plan_service.py`, which runs this exact same
-    math against a ticker's point-in-time history to reconstruct what a
-    position's stop would have been at its actual entry date - regardless of
-    what today's checklist verdict happens to say, since a stop already in
-    force doesn't retroactively stop existing just because the setup no
-    longer scores as a fresh "comprar" today."""
-    if not atr14:
-        return StopAndTarget(None, None, None, None)
-
-    candidate_stops = [price - ATR_STOP_MULTIPLE * atr14]
-    if nearest_support is not None:
-        candidate_stops.append(nearest_support.price * 0.99)
-    stop_loss = max(candidate_stops)  # the tighter of the two - never risk more than the ATR ceiling
-
-    risk = price - stop_loss
-    if risk <= 0:
-        return StopAndTarget(stop_loss, None, None, None)
-
-    resistance_target = None
-    if nearest_resistance is not None and 0 < nearest_resistance.distance_pct <= MAX_RESISTANCE_TARGET_DISTANCE:
-        resistance_target = nearest_resistance.price
-
-    # Only use the nearby resistance as the target if it still clears a
-    # minimum reward:risk - a resistance sitting right on top of the entry
-    # makes for a bad trade even when the technical setup itself is strong,
-    # so fall back to the fixed 2:1 objective instead of proposing a buy
-    # with unfavorable asymmetry.
-    if resistance_target is not None and (resistance_target - price) / risk >= 1.0:
-        take_profit = resistance_target
-        take_profit_method = "resistencia más cercana"
-    else:
-        take_profit = price + REWARD_RISK_RATIO * risk
-        take_profit_method = f"objetivo {REWARD_RISK_RATIO:.0f}:1 sobre el riesgo"
-    risk_reward = (take_profit - price) / risk
-
-    return StopAndTarget(stop_loss, take_profit, take_profit_method, risk_reward)
 
 
 def build_recommendation(
