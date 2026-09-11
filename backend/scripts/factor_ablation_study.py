@@ -112,9 +112,8 @@ from app.services import watchlist_service as wl  # noqa: E402
 from app.services.market_data_service import MarketDataService  # noqa: E402
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, universe_tickers  # noqa: E402
 from app.services.recommendation_engine import ATR_STOP_MULTIPLE, REWARD_RISK_RATIO  # noqa: E402
-from app.services.walk_forward_backtest import _permutation_test  # noqa: E402
 
-WARMUP_BARS = 260  # matches walk_forward_backtest.py - enough for SMA200 + its 25-bar slope lookback
+WARMUP_BARS = 260  # enough for SMA200 + its 25-bar slope lookback
 MIN_BARS_REQUIRED = WARMUP_BARS + 100
 HISTORY_YEARS = 10
 N_PERMUTATIONS = 5000
@@ -565,6 +564,31 @@ def benjamini_hochberg_adjust(p_values: list[float]) -> list[float]:
         running_min = min(running_min, candidate)
         adjusted[idx] = min(running_min, 1.0)
     return adjusted
+
+
+def _permutation_test(
+    sample_a: np.ndarray, sample_b: np.ndarray, n_permutations: int = N_PERMUTATIONS, seed: int = 0
+) -> float:
+    """Empirical two-sided p-value for the difference in means, under the null
+    that the two samples carry no real difference (shuffled relative to the
+    pooled values). Doesn't assume normality, unlike the t-test - reported
+    alongside it in `analyze_factor` below for exactly that reason.
+
+    Moved here unchanged (2026-09, reconstruction Fase 4) from the retired
+    `walk_forward_backtest.py` - this script was always its only real
+    consumer of this specific helper (a generic statistics routine, no
+    dependency on that module's own retired scoring replay), see
+    docs/quant_methodology.md for the retirement note."""
+    rng = np.random.default_rng(seed)
+    pooled = np.concatenate([sample_a, sample_b])
+    n_a = len(sample_a)
+    observed = float(sample_a.mean() - sample_b.mean())
+
+    shuffle_idx = np.argsort(rng.random((n_permutations, len(pooled))), axis=1)
+    permuted = pooled[shuffle_idx]
+    diffs = permuted[:, :n_a].mean(axis=1) - permuted[:, n_a:].mean(axis=1)
+    count = int((np.abs(diffs) >= abs(observed)).sum())
+    return (count + 1) / (n_permutations + 1)
 
 
 @dataclass(frozen=True, slots=True)

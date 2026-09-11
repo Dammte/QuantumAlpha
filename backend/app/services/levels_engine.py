@@ -56,7 +56,17 @@ instead of intuition.
 
 from dataclasses import dataclass
 
-from app.services.technical_analysis import PriceLevel, Stage, TrendState
+import pandas as pd
+
+from app.services.technical_analysis import (
+    PriceLevel,
+    Stage,
+    TrendState,
+    classify_stage,
+    classify_trend,
+    detect_fast_pair_bearish_veto,
+    obv_divergence,
+)
 from app.services.trade_geometry import EntryTrigger, StopAndTarget, compute_entry_trigger, compute_stop_and_target
 
 # Bumped whenever a gate condition or threshold changes materially - same
@@ -144,4 +154,77 @@ def evaluate_gate(
         conditions=conditions,
         entry_trigger=entry_trigger,
         stop_and_target=stop_and_target,
+    )
+
+
+def replay_gate_at(
+    i: int,
+    close: pd.Series,
+    sma20: pd.Series,
+    sma50: pd.Series,
+    sma150: pd.Series,
+    sma200: pd.Series,
+    rsi14: pd.Series,
+    adx14: pd.Series,
+    plus_di: pd.Series,
+    minus_di: pd.Series,
+    atr14: pd.Series,
+    volume: pd.Series | None = None,
+) -> GateResult | None:
+    """Reconstruction (2026-09), Fase 4: point-in-time replay of `evaluate_gate`
+    at historical bar `i`, using only values knowable at that bar - either a
+    scalar reading at `i`, or (for the functions that need a lookback
+    window - `classify_stage`, `obv_divergence`, `detect_fast_pair_bearish_veto`)
+    a slice `[:i+1]`, still using no information beyond bar `i`.
+
+    Replaces `walk_forward_backtest.replay_recommendation_at` (retired -
+    see docs/quant_methodology.md) as `backtest_engine.find_triple_barrier_entries`'s
+    "what would the system have proposed here" replay, now against the gate
+    instead of the old weighted checklist. Same two point-in-time
+    simplifications that function documented, carried over unchanged and for
+    the same reasons:
+
+    - **RS Rating**: needs a cross-sectional universe snapshot unavailable at
+      arbitrary past dates. Actually moot here, not just worked around - RS
+      Rating was deliberately never wired into the gate as a hard condition
+      in the first place (see this module's own docstring), so there is
+      nothing to omit.
+    - **Nearest support/resistance**: the pivot scan is O(n) per call:
+      re-running it at every historical bar in a backtest is prohibitively
+      expensive. Passed as `None` to `evaluate_gate`, which (via
+      `trade_geometry.compute_stop_and_target`) falls back gracefully to the
+      ATR-ceiling stop and the fixed 2:1 target - the same graceful
+      degradation the live gate already relies on for a ticker with no
+      nearby level at all, not a special case invented for this replay.
+
+    Returns `None` when there isn't yet enough history for the trend read
+    itself (mirrors the retired function's own `None` case)."""
+    price = close.iloc[i]
+    s20, s50, s200 = sma20.iloc[i], sma50.iloc[i], sma200.iloc[i]
+    if pd.isna(s20) or pd.isna(s50) or pd.isna(s200):
+        return None
+
+    trend = classify_trend(price, s20, s50, s200)
+    s150 = sma150.iloc[i]
+    stage = classify_stage(price, sma150.iloc[: i + 1]) if not pd.isna(s150) else None
+    obv_div = obv_divergence(close.iloc[: i + 1], volume.iloc[: i + 1]) if volume is not None else None
+
+    atr_t = atr14.iloc[i]
+    has_atr = not pd.isna(atr_t) and atr_t != 0
+    atr_multiple = float((price - s50) / atr_t) if has_atr else None
+
+    return evaluate_gate(
+        price=float(price),
+        trend=trend,
+        stage=stage,
+        rsi14=None if pd.isna(rsi14.iloc[i]) else float(rsi14.iloc[i]),
+        adx14=None if pd.isna(adx14.iloc[i]) else float(adx14.iloc[i]),
+        plus_di=None if pd.isna(plus_di.iloc[i]) else float(plus_di.iloc[i]),
+        minus_di=None if pd.isna(minus_di.iloc[i]) else float(minus_di.iloc[i]),
+        atr14=float(atr_t) if has_atr else None,
+        atr_multiple=atr_multiple,
+        nearest_support=None,
+        nearest_resistance=None,
+        obv_divergence=obv_div,
+        fast_pair_bearish_signal=detect_fast_pair_bearish_veto(close.iloc[: i + 1]),
     )

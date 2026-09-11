@@ -151,13 +151,12 @@ class CoreTickerSignals:
     # reads, not discrete signals that repaint the way a moving-average
     # cross does.
     confirmed_recommendation: Recommendation | None
-    # 2026-09: `backtest` (walk_forward_backtest.py) measures a naive
-    # fixed-horizon buy-and-hold return - it ignores the very stop_loss/
-    # take_profit `recommendation` proposes at that same bar, so it validates
-    # a strategy nobody actually executes (see backtest_engine.py's own
-    # module docstring). This is the honest one: triple-barrier labeling,
-    # real Chandelier trailing, costs net, at this portfolio's actual holding
-    # horizon. `None` unless the caller opted into
+    # This is the honest backtest: triple-barrier labeling, real Chandelier
+    # trailing, costs net, at this portfolio's actual holding horizon - see
+    # `backtest_engine.py`'s own module docstring for the full reasoning,
+    # including why the older, naive fixed-horizon buy-and-hold replay it
+    # replaced (`walk_forward_backtest.py`) was retired outright rather than
+    # kept as a second field (2026-09). `None` unless the caller opted into
     # `include_triple_barrier_backtest` - see `compute_core_signals`'s own
     # docstring for why this one, unlike every other field here, isn't
     # computed unconditionally.

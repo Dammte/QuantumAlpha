@@ -1,8 +1,8 @@
 """Triple-barrier backtesting (López de Prado, *Advances in Financial
-Machine Learning*, cap. 3) - the D7 fix. `walk_forward_backtest.py` measures
-`close[i+h]/close[i] - 1`: buy-and-hold to a fixed horizon, completely
-ignoring the very `stop_loss`/`take_profit` `build_recommendation` proposes
-at that same bar. It validates a strategy nobody actually executes. This
+Machine Learning*, cap. 3) - the D7 fix. The retired `walk_forward_backtest.py`
+measured `close[i+h]/close[i] - 1`: buy-and-hold to a fixed horizon,
+completely ignoring the very `stop_loss`/`take_profit` a live signal proposes
+at that same bar. It validated a strategy nobody actually executes. This
 module labels each signal with whichever of three barriers is hit first -
 the proposed stop, the proposed target, or a maximum holding period - using
 intrabar high/low (not just the close, which would systematically understate
@@ -10,14 +10,17 @@ stop-outs), and reports the trading metrics that actually matter for a
 system managed at this scale (expectancy, profit factor, MAE/MFE, drawdown,
 net of costs), not just a mean return.
 
-`walk_forward_backtest.py` is left as-is (legacy, per the brief's own
-suggestion) - still used by `compute_core_signals()` for the per-ticker
-backtest read shown in "Analizar activo" at its own 1m/3m/6m horizons. This
-is a separate, additive engine, validated at 10/21 sessions (this
-portfolio's actual holding horizon, not 63/126), for `scripts/factor_ablation_study.py`'s
-rewrite (Fase 5) and a future "Rendimiento del sistema" view (Fase 7) - not
-yet wired into the live single-ticker analysis path, which is a follow-up
-integration, not a correctness gap in this module itself.
+2026-09 (reconstruction, Fase 4): `walk_forward_backtest.py` itself is now
+retired (see docs/quant_methodology.md) - its point-in-time replay
+(`replay_recommendation_at`, rebuilding the old weighted checklist's verdict
+bar-by-bar) is superseded by `levels_engine.replay_gate_at`, the same replay
+technique against the new gate instead. `find_triple_barrier_entries` below
+was updated to match: "comprar with a resolvable stop/target" became "the
+gate passes with a resolvable stop/target" - same non-overlapping sampling
+grid, same triple-barrier labeling, only the entry-signal source changed.
+`_permutation_test` (a generic statistics routine with no dependency on the
+retired scoring replay) moved to `scripts/factor_ablation_study.py`, its only
+other consumer.
 """
 
 from dataclasses import dataclass
@@ -26,15 +29,16 @@ import numpy as np
 import pandas as pd
 
 from app.services import trade_manager as tm
-from app.services.walk_forward_backtest import replay_recommendation_at
+from app.services.levels_engine import replay_gate_at
 
-# Same warmup this replays against in walk_forward_backtest.py - enough
-# history for SMA200 + its 25-bar slope lookback to be valid.
+# Same warmup replay_gate_at replays against - enough history for SMA200 +
+# its 25-bar slope lookback to be valid.
 WARMUP_BARS = 260
 
-# Same conservative, explicitly-not-measured assumption opportunity_cost.py
-# already documents (MIN_EXPECTED_EDGE_AFTER_COSTS) - no calibrated cost
-# model exists yet, so this is a round, documented estimate, not a fact.
+# Conservative, explicitly-not-measured assumption (no calibrated cost model
+# exists yet) - a round, documented estimate, not a fact. `opportunity_cost.py`
+# documented this same assumption before its 2026-09 retirement (Fase 1); it
+# will likely reappear in a smaller form for the Radar (Fase 5).
 ROUND_TRIP_COST_PCT = 0.002
 
 VERTICAL_BARRIER_HORIZONS = (10, 21)  # trading sessions - this portfolio's actual holding horizon, not 63/126
@@ -348,7 +352,7 @@ def random_entry_labels(
 @dataclass(frozen=True, slots=True)
 class TripleBarrierBacktestResult:
     horizon_days: int
-    n_signals_evaluated: int  # "comprar" signals with a resolvable stop/target - the tradeable subset
+    n_signals_evaluated: int  # gate passes with a resolvable stop/target - the tradeable subset
     strategy_fixed: TradingMetrics  # the proposed stop/target, held fixed
     strategy_trailing: TradingMetrics  # the same entries, run through trade_manager's real Chandelier trail
     buy_and_hold: TradingMetrics  # honest benchmark: same entries, no stop/target at all
@@ -382,8 +386,8 @@ def find_triple_barrier_entries(
 
     Returns `None` when there isn't enough history to even attempt a single
     non-overlapping window (distinct from an empty list, which means the
-    history was long enough but no "comprar" signal with a resolvable
-    stop/target ever fired)."""
+    history was long enough but the gate never passed with a resolvable
+    stop/target)."""
     n = len(close)
     last_valid_start = n - horizon_days - 1
     if last_valid_start <= warmup_bars:
@@ -391,12 +395,15 @@ def find_triple_barrier_entries(
 
     entries: list[tuple[int, float, float]] = []
     for i in range(warmup_bars, last_valid_start, horizon_days):
-        rec = replay_recommendation_at(
+        gate = replay_gate_at(
             i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, volume
         )
-        if rec is None or rec.verdict != "comprar" or rec.stop_loss is None or rec.take_profit is None:
+        if gate is None or not gate.passes:
             continue
-        entries.append((i, rec.stop_loss, rec.take_profit))
+        stop_loss, take_profit = gate.stop_and_target.stop_loss, gate.stop_and_target.take_profit
+        if stop_loss is None or take_profit is None:
+            continue
+        entries.append((i, stop_loss, take_profit))
     return entries
 
 
@@ -419,21 +426,21 @@ def run_triple_barrier_backtest(
     vol_regime: str | None = None,
     warmup_bars: int = WARMUP_BARS,
 ) -> TripleBarrierBacktestResult | None:
-    """Walks the same non-overlapping sampling grid `walk_forward_backtest.py`
-    uses (stride == horizon, avoiding the classic overlapping-window pseudo-
-    replication trap), replaying the full recommendation - verdict *and*
-    stop/target - at each point via `walk_forward_backtest.replay_recommendation_at`,
-    the single source of truth for "what would the system have proposed
-    here". Only "comprar" signals with a resolvable stop/target are actually
-    tradeable and get labeled - this validates the strategy the system
-    actually proposes, not every bar indiscriminately.
+    """Walks a non-overlapping sampling grid (stride == horizon, avoiding the
+    classic overlapping-window pseudo-replication trap), replaying the full
+    gate - pass/fail *and* stop/target - at each point via
+    `levels_engine.replay_gate_at`, the single source of truth for "what
+    would the system have proposed here". Only a passing gate with a
+    resolvable stop/target is actually tradeable and gets labeled - this
+    validates the strategy the system actually proposes, not every bar
+    indiscriminately.
 
-    A thin per-ticker sample is a known, already-documented limitation this
-    inherits from `walk_forward_backtest.py` (see docs/quant_methodology.md
-    §3 on why the cross-sectional ablation study exists at 217-ticker scale
-    instead) - `n_signals_evaluated` is reported plainly rather than hidden
-    behind a silent `None` below some arbitrary sample-size floor, so a
-    thin-sample result reads as thin, not as a confident answer.
+    A thin per-ticker sample is a known, already-documented limitation (see
+    docs/quant_methodology.md §3 on why the cross-sectional ablation study
+    exists at 217-ticker scale instead) - `n_signals_evaluated` is reported
+    plainly rather than hidden behind a silent `None` below some arbitrary
+    sample-size floor, so a thin-sample result reads as thin, not as a
+    confident answer.
 
     `open_` is required, not optional: every real OHLCV source already has
     it, and skipping gap-aware fills silently here would understate exactly

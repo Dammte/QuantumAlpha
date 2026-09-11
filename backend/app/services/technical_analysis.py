@@ -499,10 +499,12 @@ class TrendState(str, Enum):
 def vix_regime(level: float | None) -> str:
     """VIX level -> a named fear regime. Lives here (not in
     MarketContextService, which originally owned it) so both the live "Contexto"
-    dashboard and anything computing a per-ticker/backtest market-regime read
-    (recommendation_engine.py, walk_forward_backtest.py) can share one
-    definition without a circular import - this module is the app's
-    pure-function, no-I/O layer everything else is allowed to depend on."""
+    dashboard (`market_context_service.py`) and anything computing a
+    per-ticker market-regime read (`ticker_analysis_service.py`, `scripts/
+    factor_ablation_study.py`, both via `market_regime_inputs()` below) can
+    share one definition without a circular import - this module is the
+    app's pure-function, no-I/O layer everything else is allowed to depend
+    on."""
     if level is None:
         return "desconocido"
     if level < 12:

@@ -360,10 +360,10 @@ def test_random_entry_labels_deterministic_given_a_seed():
 
 
 def _synthetic_regime_series(n: int, block: int, seed: int = 123) -> pd.Series:
-    """Same construction as test_walk_forward_backtest.py's helper -
-    alternating long uptrend/downtrend regimes, long enough (relative to the
-    200-day SMA's memory) for classify_trend to cleanly read the regime it's
-    actually in."""
+    """Alternating long uptrend/downtrend regimes, long enough (relative to
+    the 200-day SMA's memory) for classify_trend to cleanly read the regime
+    it's actually in - same construction test_levels_engine_replay.py uses
+    for its own replay_gate_at tests."""
     rng = np.random.default_rng(seed)
     returns = []
     n_blocks = n // block + 1
@@ -464,11 +464,11 @@ def test_find_triple_barrier_entries_matches_run_triple_barrier_backtest_signal_
 
 
 def test_run_triple_barrier_backtest_samples_on_a_non_overlapping_grid():
-    # Regression guard: the number of "comprar" signals actually evaluated
+    # Regression guard: the number of passing-gate signals actually evaluated
     # can never exceed the non-overlapping grid's own size (stride ==
-    # horizon_days, same discipline walk_forward_backtest.py uses to avoid
-    # overlapping-window pseudo-replication) - a bug that samples every bar
-    # instead would let n_signals_evaluated blow past this ceiling.
+    # horizon_days, avoiding the classic overlapping-window pseudo-
+    # replication trap) - a bug that samples every bar instead would let
+    # n_signals_evaluated blow past this ceiling.
     close = _synthetic_regime_series(n=2000, block=2000)
     bundle = _full_bundle(close)
     horizon = 10

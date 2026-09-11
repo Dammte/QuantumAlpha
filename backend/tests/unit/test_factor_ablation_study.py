@@ -351,3 +351,25 @@ def test_filter_samples_by_point_in_time_membership_drops_a_non_member_ticker(mo
         samples, {"AAPL": "us", "MSFT": "us"}, use_dynamic_universe=True
     )
     assert [s.ticker for s in result] == ["AAPL"]
+
+
+# --- _permutation_test: moved here unchanged (2026-09, reconstruction Fase 4)
+# from the retired walk_forward_backtest.py - this script was always its only
+# real consumer (a generic statistics routine, no dependency on that
+# module's own retired scoring replay). See docs/quant_methodology.md.
+
+
+def test_permutation_test_high_p_value_for_identical_distributions():
+    rng = np.random.default_rng(1)
+    sample_a = rng.normal(0, 0.02, 40)
+    sample_b = rng.normal(0, 0.02, 40)
+    p = fas._permutation_test(sample_a, sample_b, n_permutations=2000, seed=1)
+    assert p > 0.05
+
+
+def test_permutation_test_low_p_value_for_clearly_different_means():
+    rng = np.random.default_rng(2)
+    sample_a = rng.normal(0.05, 0.01, 40)
+    sample_b = rng.normal(-0.05, 0.01, 40)
+    p = fas._permutation_test(sample_a, sample_b, n_permutations=2000, seed=2)
+    assert p < 0.01
