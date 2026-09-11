@@ -1,7 +1,6 @@
 from datetime import UTC, date, datetime
 from unittest.mock import MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -153,49 +152,6 @@ def test_sector_performance_rs_rank_is_a_percentile_across_all_sectors(client: T
     assert len(ranks) == len(SECTOR_ETFS)
     assert all(1 <= r <= 99 for r in ranks)
     assert len(set(ranks)) == len(ranks)  # each sector gets a distinct rank, no ties collapsed
-
-
-def test_sector_forecast_covers_every_sector_with_a_markov_projection(client: TestClient) -> None:
-    response = client.get("/api/v1/market/sectors/forecast")
-    assert response.status_code == 200
-    body = response.json()
-    assert len(body) == len(SECTOR_ETFS)
-    assert {row["sector"] for row in body} == set(SECTOR_ETFS.keys())
-    for row in body:
-        assert isinstance(row["has_statistical_structure"], bool)
-        assert 0.0 <= row["prob_bullish_21d"] <= 1.0
-        assert isinstance(row["top_stocks"], list)
-    # Sectors with genuine statistical structure are surfaced before those without.
-    structured_flags = [row["has_statistical_structure"] for row in body]
-    assert structured_flags == sorted(structured_flags, reverse=True)
-
-
-def test_sector_rrg_covers_sectors_with_enough_history(client: TestClient) -> None:
-    # Cuarta auditoría, Bloque E: Relative Rotation Graph.
-    response = client.get("/api/v1/market/sectors/rrg")
-    assert response.status_code == 200
-    body = response.json()
-    assert 0 < len(body) <= len(SECTOR_ETFS)
-    assert {row["sector"] for row in body} <= set(SECTOR_ETFS.keys())
-    for row in body:
-        assert row["quadrant"] in {"leading", "weakening", "lagging", "improving"}
-        assert len(row["tail"]) > 0
-        # The reading's own rs_ratio/rs_momentum is the tail's last (most recent) point.
-        assert row["tail"][-1]["rs_ratio"] == pytest.approx(row["rs_ratio"])
-        assert row["tail"][-1]["rs_momentum"] == pytest.approx(row["rs_momentum"])
-    # Sorted by rs_ratio descending.
-    ratios = [row["rs_ratio"] for row in body]
-    assert ratios == sorted(ratios, reverse=True)
-
-
-def test_sector_rotation_returns_a_cycle_read(client: TestClient) -> None:
-    response = client.get("/api/v1/market/sectors/rotation")
-    assert response.status_code == 200
-    body = response.json()
-    assert len(body["leaders"]) == 3
-    assert len(body["laggards"]) == 3
-    assert isinstance(body["defensive_leadership"], bool)
-    assert 0.0 <= body["cycle_confidence"] <= 1.0
 
 
 def test_industry_performance_covers_every_industry(client: TestClient) -> None:
@@ -507,9 +463,9 @@ def test_market_endpoints_survive_a_missing_computation_cache_table(client: Test
         assert premium.status_code == 200
         assert "items" in premium.json()
 
-        forecast = client.get("/api/v1/market/sectors/forecast")
-        assert forecast.status_code == 200
-        assert len(forecast.json()) == len(SECTOR_ETFS)
+        sectors = client.get("/api/v1/market/sectors")
+        assert sectors.status_code == 200
+        assert len(sectors.json()) == len(SECTOR_ETFS)
     finally:
         ComputationCacheORM.__table__.create(bind=engine)
 

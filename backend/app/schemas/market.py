@@ -62,51 +62,6 @@ class SectorPerformanceResponse(BaseModel):
     rs_rank: int | None
 
 
-class SectorForecastResponse(BaseModel):
-    """Forward-looking counterpart to `SectorPerformanceResponse` - see
-    `MarketScreenerService.get_sector_forecast`."""
-
-    sector: str
-    etf: str
-    current_state_label: str
-    forecast_5d_return: float
-    forecast_21d_return: float
-    prob_bullish_21d: float
-    has_statistical_structure: bool
-    top_stocks: list[str]
-
-
-class SectorRotationResponse(BaseModel):
-    leaders: list[str]
-    laggards: list[str]
-    cycle_phase: str | None
-    cycle_confidence: float
-    cycle_description: str | None
-    defensive_leadership: bool
-    warning: str | None
-
-
-class RrgPointResponse(BaseModel):
-    as_of: date
-    rs_ratio: float
-    rs_momentum: float
-
-
-class SectorRrgResponse(BaseModel):
-    """Cuarta auditoría, Bloque E: one Relative Rotation Graph reading per
-    sector - see `sector_rrg_service.py`'s module docstring for the full
-    methodology and the four quadrants' meaning. Distinct from
-    `SectorRotationResponse` (business-cycle leadership pattern-matching,
-    unchanged) - this adds the momentum axis that service never had."""
-
-    sector: str
-    etf: str
-    quadrant: str  # "leading" | "weakening" | "lagging" | "improving"
-    rs_ratio: float
-    rs_momentum: float
-    tail: list[RrgPointResponse]
-
-
 class IndustryPerformanceResponse(BaseModel):
     industry: str
     sector: str

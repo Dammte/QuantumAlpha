@@ -1,5 +1,3 @@
-from datetime import date
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -484,72 +482,3 @@ def test_get_industry_performance_in_process_cache_hit_does_not_recompute(monkey
     assert calls["n"] == 1  # the second call never touched the universe snapshot at all
     assert second == first
 
-
-# --- get_sector_rrg: cuarta auditoría, Bloque E - thin caching wrapper around
-# sector_rrg_service.compute_sector_rrg, mirroring get_sector_forecast's own
-# "fetch my own longer-lookback OHLCV" precedent.
-
-
-def _trending_close(n, drift, seed):
-    rng = np.random.RandomState(seed)
-    return pd.Series(100 + np.cumsum(rng.normal(drift, 0.3, n)), index=pd.bdate_range("2018-01-01", periods=n))
-
-
-def _rrg_region_config():
-    # benchmark_ticker here is unused by get_sector_rrg - it calls
-    # benchmark_for_region(region) directly (same convention
-    # get_universe_snapshot already uses), which for "us" is the real
-    # "^GSPC" constant, not whatever this RegionConfig says - the fake OHLCV
-    # below is keyed on that real value, not on this field.
-    return RegionConfig(
-        key="us", label="Estados Unidos", industries=(), sector_etfs={"Tecnología": "XLK"},
-        benchmark_ticker="^GSPC",
-    )
-
-
-def test_get_sector_rrg_cold_path_returns_a_reading(monkeypatch):
-    n = 600
-    benchmark = _trending_close(n, 0.0, 100)
-    sector = _trending_close(n, 0.3, 101)
-    market_data = _IndustryFakeMarketData({"^GSPC": _df(benchmark.values), "XLK": _df(sector.values)})
-    service = mss.MarketScreenerService(market_data)
-    monkeypatch.setattr(mss, "region_config", lambda region: _rrg_region_config())
-
-    readings = service.get_sector_rrg(region="us")
-
-    assert len(readings) == 1
-    assert readings[0].sector == "Tecnología"
-
-
-def test_get_sector_rrg_in_process_cache_hit_does_not_refetch(monkeypatch):
-    n = 600
-    benchmark = _trending_close(n, 0.0, 200)
-    sector = _trending_close(n, 0.3, 201)
-    calls = {"n": 0}
-
-    class _CountingMarketData(_IndustryFakeMarketData):
-        def get_bulk_ohlcv(self, tickers, start, end):
-            calls["n"] += 1
-            return super().get_bulk_ohlcv(tickers, start, end)
-
-    market_data = _CountingMarketData({"^GSPC": _df(benchmark.values), "XLK": _df(sector.values)})
-    service = mss.MarketScreenerService(market_data)
-    monkeypatch.setattr(mss, "region_config", lambda region: _rrg_region_config())
-
-    first = service.get_sector_rrg(region="us")
-    second = service.get_sector_rrg(region="us")
-
-    assert calls["n"] == 1
-    assert second == first
-
-
-def test_rrg_reading_round_trips_through_dict_serialization():
-    reading = mss.srrg.SectorRrgReading(
-        sector="Tecnología", etf="XLK", quadrant="leading", rs_ratio=105.0, rs_momentum=102.0,
-        tail=[mss.srrg.RrgPoint(as_of=date(2026, 1, 2), rs_ratio=104.0, rs_momentum=101.0)],
-    )
-    data = mss._rrg_reading_to_dict(reading)
-    assert data["tail"][0]["as_of"] == "2026-01-02"  # stored as an ISO string, not a raw date
-
-    rebuilt = mss._rrg_readings_from_payload([data])
-    assert rebuilt == [reading]

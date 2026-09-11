@@ -30,11 +30,8 @@ from app.schemas.market import (
     PriceLevelResponse,
     ProximityItemResponse,
     RelationshipMapResponse,
-    SectorForecastResponse,
     SectorPeerResponse,
     SectorPerformanceResponse,
-    SectorRotationResponse,
-    SectorRrgResponse,
     SetupOutcomeStatsResponse,
     StatisticalRelationResponse,
     SupportResistanceResponse,
@@ -70,7 +67,6 @@ from app.services.premium_watchlist_service import (
     PremiumWatchlistService,
 )
 from app.services.relationship_map_service import build_relationship_map
-from app.services.sector_rotation_service import assess_sector_rotation
 from app.services.ticker_analysis_service import SIGN_CHECK_HORIZON_DAYS, CoreTickerSignals
 from app.services.watchlist_service import build_watchlist
 
@@ -244,53 +240,6 @@ def get_sector_performance(
 ) -> list[SectorPerformanceResponse]:
     performance = service.get_sector_performance(region=region, force_refresh=refresh, db=db)
     return [SectorPerformanceResponse(**asdict(p)) for p in performance]
-
-
-@router.get("/sectors/forecast", response_model=list[SectorForecastResponse])
-def get_sector_forecast(
-    service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-    db: DbSession,
-    region: str = RegionQuery,
-    refresh: bool = False,
-) -> list[SectorForecastResponse]:
-    """Which sectors are statistically likely to lead over the next 5-21
-    trading days, not just which already have (see `/sectors` for that) - a
-    Markov chain fit per sector ETF, see `MarketScreenerService.get_sector_forecast`."""
-    forecast = service.get_sector_forecast(region=region, force_refresh=refresh, db=db)
-    return [SectorForecastResponse(**asdict(f)) for f in forecast]
-
-
-@router.get("/sectors/rotation", response_model=SectorRotationResponse | None)
-def get_sector_rotation(
-    service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-    db: DbSession,
-    region: str = RegionQuery,
-    refresh: bool = False,
-) -> SectorRotationResponse | None:
-    """Which sectors are actually leading right now, cross-referenced against
-    the classic business-cycle rotation pattern - see `sector_rotation_service.py`.
-    The cycle-phase model itself was built around the US business cycle; applied
-    to Europe it's a reasonable, disclosed approximation (the two cycles are
-    closely correlated), not a separately-researched European model."""
-    performance = service.get_sector_performance(region=region, force_refresh=refresh, db=db)
-    rotation = assess_sector_rotation(performance)
-    return SectorRotationResponse(**asdict(rotation)) if rotation is not None else None
-
-
-@router.get("/sectors/rrg", response_model=list[SectorRrgResponse])
-def get_sector_rrg(
-    service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-    db: DbSession,
-    region: str = RegionQuery,
-    refresh: bool = False,
-) -> list[SectorRrgResponse]:
-    """Cuarta auditoría, Bloque E: Relative Rotation Graph reading per sector
-    - fuerza relativa (RS-Ratio) cruzada con su propio ritmo de cambio
-    (RS-Momentum), en cuatro cuadrantes. Ver `sector_rrg_service.py` para la
-    metodología completa y `/sectors/rotation` para el patrón de ciclo
-    económico (complementario, no sustituido por esto)."""
-    readings = service.get_sector_rrg(region=region, force_refresh=refresh, db=db)
-    return [SectorRrgResponse(**asdict(r)) for r in readings]
 
 
 @router.get("/industries", response_model=list[IndustryPerformanceResponse])

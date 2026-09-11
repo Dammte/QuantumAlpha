@@ -29,7 +29,6 @@ from sqlalchemy.orm import Session
 
 from app.domain.models.ticker_snapshot import (
     IndustryPerformance,
-    SectorForecast,
     SectorPerformance,
     TickerSnapshot,
 )
@@ -38,7 +37,6 @@ from app.infrastructure.db.repositories.universe_membership_repository import (
 )
 from app.services import durable_cache
 from app.services import dynamic_universe_service as dus
-from app.services import sector_rrg_service as srrg
 from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_universe import (
@@ -50,7 +48,6 @@ from app.services.market_universe import (
     currency_of,
     region_config,
 )
-from app.services.markov_chain_model import analyze_markov_chain
 from app.services.multi_timeframe import FAST_MA_PERIOD
 
 logger = logging.getLogger(__name__)
@@ -70,9 +67,6 @@ RS_LEADERS_PER_INDUSTRY = 3
 # Cuarta auditoría, DEUDA-3 - see IndustryPerformance.performance_method's docstring.
 INDUSTRY_METHOD_ETF = "etf"
 INDUSTRY_METHOD_BASKET_AVERAGE = "basket_average"
-FORECAST_HISTORY_YEARS = 5  # Markov chain needs 300+ clean daily returns (see markov_chain_model.py) - a
-# much longer lookback than the technicals above need, so sector forecasting fetches its own history.
-TOP_STOCKS_PER_SECTOR = 3
 
 
 def _snapshot_to_dict(snapshot: TickerSnapshot) -> dict[str, Any]:
@@ -102,30 +96,6 @@ def _snapshot_from_dict(data: dict[str, Any]) -> TickerSnapshot:
             "imminent_cross_short_term": imminent_cross_short_term,
         }
     )
-
-
-def _rrg_reading_to_dict(reading: srrg.SectorRrgReading) -> dict[str, Any]:
-    # `RrgPoint.as_of` is a `date`, not JSON-native - stored as an ISO string,
-    # same idiom `relationship_map_service.get_disclosed_relations` already
-    # uses for `DisclosedRelation.filing_date`.
-    data = asdict(reading)
-    data["tail"] = [{**point, "as_of": point["as_of"].isoformat()} for point in data["tail"]]
-    return data
-
-
-def _rrg_readings_from_payload(payload: list[dict[str, Any]]) -> list[srrg.SectorRrgReading]:
-    return [
-        srrg.SectorRrgReading(
-            **{
-                **reading,
-                "tail": [
-                    srrg.RrgPoint(**{**point, "as_of": pd.Timestamp(point["as_of"]).date()})
-                    for point in reading["tail"]
-                ],
-            }
-        )
-        for reading in payload
-    ]
 
 
 @dataclass
@@ -394,8 +364,6 @@ class MarketScreenerService:
         self._sector_cache: dict[str, tuple[datetime, list[SectorPerformance]]] = {}
         self._industry_cache: dict[str, tuple[datetime, list[IndustryPerformance]]] = {}
         self._ohlcv_cache: dict[str, tuple[datetime, dict[str, pd.DataFrame]]] = {}
-        self._forecast_cache: dict[str, tuple[datetime, list[SectorForecast]]] = {}
-        self._rrg_cache: dict[str, tuple[datetime, list[srrg.SectorRrgReading]]] = {}
 
     def _date_range(self) -> tuple[date, date]:
         end = date.today()
@@ -684,125 +652,6 @@ class MarketScreenerService:
         if db is not None:
             durable_cache.save(db, f"sector_performance:{region}", [asdict(p) for p in performance])
         return performance
-
-    def get_sector_forecast(
-        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
-    ) -> list[SectorForecast]:
-        """Forward-looking counterpart to `get_sector_performance`: instead of
-        "how has each sector already done", a Markov chain fit on each sector
-        ETF's own daily returns (the exact same machinery `analyze_markov_chain`
-        already applies per-ticker, just aimed at a sector index instead of a
-        single stock - see its module docstring for the randomness-gating and
-        order justification tests that keep this honest) projects where it's
-        statistically likely to head over the next 5/21 trading days. Ranked
-        with sectors whose own history genuinely doesn't look like noise
-        (`has_statistical_structure`) first - this never fabricates a directional
-        call for a sector where the chain has no real edge, same objectivity
-        principle as everywhere else the Markov model is used.
-
-        A much longer lookback than `get_sector_performance`'s own technicals
-        need (`FORECAST_HISTORY_YEARS`, not `HISTORY_DAYS`) - `analyze_markov_chain`
-        needs 300+ clean daily returns to fit at all - so this fetches its own
-        OHLCV rather than reusing `_ohlcv_cache`."""
-        cached = self._forecast_cache.get(region)
-        if not force_refresh and cached is not None:
-            cached_at, forecast = cached
-            if datetime.now(UTC) - cached_at < CACHE_TTL:
-                return forecast
-
-        cache_key = f"sector_forecast:{region}"
-        if db is not None and not force_refresh:
-            forecast = durable_cache.load_fresh_as(
-                db, cache_key, CACHE_TTL, lambda payload: [SectorForecast(**d) for d in payload]
-            )
-            if forecast is not None:
-                self._forecast_cache[region] = (datetime.now(UTC), forecast)
-                return forecast
-
-        sector_etfs = region_config(region).sector_etfs
-        end = date.today()
-        start = end - timedelta(days=365 * FORECAST_HISTORY_YEARS)
-        ohlcv_by_ticker = self.market_data.get_bulk_ohlcv(list(sector_etfs.values()), start, end)
-
-        snapshots = self.get_universe_snapshot(region=region, db=db)  # for each sector's current RS leaders
-        snapshots_by_sector: dict[str, list[TickerSnapshot]] = {}
-        for s in snapshots:
-            snapshots_by_sector.setdefault(s.sector, []).append(s)
-
-        forecast: list[SectorForecast] = []
-        for sector, etf in sector_etfs.items():
-            df = ohlcv_by_ticker.get(etf)
-            if df is None or df.empty:
-                continue
-            markov = analyze_markov_chain(df["close"].pct_change())
-            if markov is None:
-                continue
-            leaders = sorted(
-                (s for s in snapshots_by_sector.get(sector, []) if s.rs_rating is not None),
-                key=lambda s: s.rs_rating,
-                reverse=True,
-            )[:TOP_STOCKS_PER_SECTOR]
-            forecast.append(
-                SectorForecast(
-                    sector=sector,
-                    etf=etf,
-                    current_state_label=markov.current_state_label,
-                    forecast_5d_return=markov.forecast_5d_return,
-                    forecast_21d_return=markov.forecast_21d_return,
-                    prob_bullish_21d=markov.prob_bullish_21d,
-                    has_statistical_structure=not markov.sequence_looks_random,
-                    top_stocks=[s.ticker for s in leaders],
-                )
-            )
-
-        # Sectors with genuine statistical structure first (the only ones this can
-        # honestly claim edge on), ranked by expected 21-day return within that
-        # group; the rest follow, clearly flagged rather than hidden - "no hay
-        # señal estadística clara aquí" is itself useful information.
-        forecast.sort(key=lambda f: (f.has_statistical_structure, f.forecast_21d_return), reverse=True)
-
-        self._forecast_cache[region] = (datetime.now(UTC), forecast)
-        if db is not None:
-            durable_cache.save(db, cache_key, [asdict(f) for f in forecast])
-        return forecast
-
-    def get_sector_rrg(
-        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
-    ) -> list[srrg.SectorRrgReading]:
-        """Cuarta auditoría, Bloque E: Relative Rotation Graph reading per
-        sector - see `sector_rrg_service.py`'s module docstring for the full
-        methodology. Fetches its own OHLCV (`srrg.RRG_HISTORY_YEARS`, ~2y -
-        longer than `get_sector_performance`'s own `SECTOR_HISTORY_DAYS`
-        needs, and for a different reason: the double rolling-window
-        normalization needs real warmup, not just enough bars for a 252-day
-        return) rather than reusing `_ohlcv_cache` - same precedent
-        `get_sector_forecast` already set for exactly this reason."""
-        cached = self._rrg_cache.get(region)
-        if not force_refresh and cached is not None:
-            cached_at, readings = cached
-            if datetime.now(UTC) - cached_at < CACHE_TTL:
-                return readings
-
-        cache_key = f"sector_rrg:{region}"
-        if db is not None and not force_refresh:
-            readings = durable_cache.load_fresh_as(db, cache_key, CACHE_TTL, _rrg_readings_from_payload)
-            if readings is not None:
-                self._rrg_cache[region] = (datetime.now(UTC), readings)
-                return readings
-
-        sector_etfs = region_config(region).sector_etfs
-        benchmark_ticker = benchmark_for_region(region)
-        end = date.today()
-        start = end - timedelta(days=365 * srrg.RRG_HISTORY_YEARS)
-        fetch_list = [*sector_etfs.values(), benchmark_ticker]
-        ohlcv_by_ticker = self.market_data.get_bulk_ohlcv(fetch_list, start, end)
-
-        readings = srrg.compute_sector_rrg(sector_etfs, ohlcv_by_ticker, benchmark_ticker)
-
-        self._rrg_cache[region] = (datetime.now(UTC), readings)
-        if db is not None:
-            durable_cache.save(db, cache_key, [_rrg_reading_to_dict(r) for r in readings])
-        return readings
 
     def get_industry_performance(
         self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None

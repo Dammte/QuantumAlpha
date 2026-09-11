@@ -1,21 +1,16 @@
 import { useState } from 'react'
 import SectorStrength from './SectorStrength'
 import IndustryCards from './IndustryCards'
-import SectorRotationCard from './SectorRotationCard'
-import SectorRrgCard from './SectorRrgCard'
-import SectorForecastCard from './SectorForecastCard'
 
-function SectorsView({ region, onNavigateToTicker }) {
+// 2026-09: sector rotation, RRG y forecast (Markov) se retiraron - ver
+// docs/quant_methodology.md. Lo que queda de "Sectores" (fuerza relativa e
+// industrias) también se retira más adelante, sustituido por un único campo
+// sector_rs_percentile en ticker_daily_state (Fase 2/3).
+function SectorsView({ region }) {
   const [view, setView] = useState('industries')
 
   return (
     <div>
-      <SectorForecastCard region={region} onNavigateToTicker={onNavigateToTicker} />
-      <SectorRotationCard region={region} />
-      <section className="panel panel--nested">
-        <h3>Mapa de rotación sectorial (RRG)</h3>
-        <SectorRrgCard region={region} />
-      </section>
       <div className="sub-toggle">
         <button
           type="button"

@@ -80,15 +80,6 @@ export const api = {
   getSectorPerformance: ({ region, refresh } = {}) =>
     request(`/api/v1/market/sectors${toQueryString({ region, refresh })}`),
 
-  getSectorForecast: ({ region, refresh } = {}) =>
-    request(`/api/v1/market/sectors/forecast${toQueryString({ region, refresh })}`),
-
-  getSectorRotation: ({ region, refresh } = {}) =>
-    request(`/api/v1/market/sectors/rotation${toQueryString({ region, refresh })}`),
-
-  getSectorRrg: ({ region, refresh } = {}) =>
-    request(`/api/v1/market/sectors/rrg${toQueryString({ region, refresh })}`),
-
   getMarketTrend: ({ region, refresh } = {}) =>
     request(`/api/v1/market/trend${toQueryString({ region, refresh })}`),
 
