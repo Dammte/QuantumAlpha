@@ -45,3 +45,25 @@ services:
         sync: false
       - key: MARKET_DATA_PROVIDER
         value: yfinance
+
+  # Reconstruction (2026-09), Fase 2, Job B: cheap intraday companion to Job
+  # A - see scripts/intraday_refresh.py's own docstring. Every 30 minutes,
+  # 08:00-21:00 UTC (covers the European session through the US close in
+  # both DST states), Mon-Fri - only re-checks tickers that already have an
+  # active entry trigger from last night's close, so this stays a small,
+  # fast quote-only fetch even run this often. Same "billed resource, not
+  # activated by wiring it here" note as quantumalpha-daily-close above.
+  - name: quantumalpha-intraday-refresh
+    type: cron
+    runtime: python
+    region: frankfurt
+    plan: starter
+    rootDir: backend
+    schedule: "*/30 8-21 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m scripts.intraday_refresh
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: MARKET_DATA_PROVIDER
+        value: yfinance
