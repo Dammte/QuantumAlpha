@@ -95,9 +95,6 @@ export const api = {
   getWatchlist: ({ region, horizon, refresh } = {}) =>
     request(`/api/v1/market/watchlist${toQueryString({ region, horizon, refresh })}`),
 
-  getPremiumWatchlist: ({ region, tier, refresh } = {}) =>
-    request(`/api/v1/market/watchlist/premium${toQueryString({ region, tier, refresh })}`),
-
   getLevelsProximity: ({ region, threshold, refresh } = {}) =>
     request(`/api/v1/market/levels/proximity${toQueryString({ region, threshold, refresh })}`),
 

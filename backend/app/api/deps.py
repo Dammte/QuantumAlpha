@@ -22,7 +22,6 @@ from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.portfolio_risk_service import PortfolioRiskService
 from app.services.portfolio_service import PortfolioService
-from app.services.premium_watchlist_service import PremiumWatchlistService
 from app.services.ticker_analysis_service import TickerAnalysisService
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -78,17 +77,6 @@ def get_ticker_analysis_service(
     screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
 ) -> TickerAnalysisService:
     return TickerAnalysisService(market_data, screener)
-
-
-@lru_cache
-def get_premium_watchlist_service(
-    market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
-    screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-) -> PremiumWatchlistService:
-    """Cached as a singleton: PremiumWatchlistService keeps its own per-tier
-    in-process cache (see CACHE_TTL in premium_watchlist_service.py), which only
-    helps if the same instance is reused across requests."""
-    return PremiumWatchlistService(market_data, screener)
 
 
 @lru_cache

@@ -226,27 +226,6 @@ class WatchlistItemResponse(BaseModel):
     percentile_score: float | None = None
 
 
-class PremiumWatchlistItemResponse(BaseModel):
-    """A ticker that didn't just match a cheap technical rule, but was run through
-    the full "Analizar activo" pipeline (recommendation, walk-forward backtest)
-    and came out endorsed - see `premium_watchlist_service.py` for the
-    approval bar."""
-
-    ticker: str
-    sector: str
-    industry: str | None
-    cap_tier: str
-    currency: str
-    region: str  # "us" | "europe"
-    tier: str  # "daily" | "weekly" | "monthly"
-    reasons: list[str]
-    premium_score: float
-    signals: CoreSignalsResponse
-    setup: str | None = None
-    setup_label: str | None = None
-    also_matched_setups: list[str] = []
-    also_matched_setup_labels: list[str] = []
-    days_to_earnings: int | None = None
 
 
 class TradePlanResponse(BaseModel):
@@ -303,38 +282,9 @@ class PositionRiskResponse(BaseModel):
     bars_held: int | None  # closed daily bars since trade_plan.entry_date - "sesiones mantenidas" in the UI
 
 
-class SwapSuggestionResponse(BaseModel):
-    """See opportunity_cost.py - a held position that isn't broken, but where a
-    materially stronger, already-vetted premium candidate exists instead."""
-
-    held_ticker: str
-    held_score: int
-    held_signal: str
-    candidate_ticker: str
-    candidate_score: float
-    candidate_sector: str
-    candidate_currency: str
-
-
 class PortfolioRiskResponse(BaseModel):
     positions: list[PositionRiskResponse]
-    swap_suggestions: list[SwapSuggestionResponse]
     computed_at: datetime  # when this was last actually computed - may be hours old, see durable_cache.py
-
-
-class TierDiscardStatsResponse(BaseModel):
-    """"15 de 47 candidatos analizados" - see premium_watchlist_service.TierDiscardStats."""
-
-    tier: str
-    prefilter_matches: int
-    analyzed: int
-    approved: int
-
-
-class PremiumWatchlistResponse(BaseModel):
-    items: list[PremiumWatchlistItemResponse]
-    computed_at: datetime  # oldest of the tier(s) shown - see durable_cache.py
-    discard_stats: list[TierDiscardStatsResponse] = []
 
 
 class WatchlistResponse(BaseModel):

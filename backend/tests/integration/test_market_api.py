@@ -234,67 +234,6 @@ def test_watchlist_rejects_invalid_horizon(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_premium_watchlist_returns_only_approved_tiered_candidates(client: TestClient) -> None:
-    response = client.get("/api/v1/market/watchlist/premium")
-    assert response.status_code == 200
-    body = response.json()
-    assert "computed_at" in body
-    items = body["items"]
-    assert isinstance(items, list)
-    assert len(items) <= 30  # 3 tiers x 10 max approved per tier
-    for item in items:
-        assert item["tier"] in {"daily", "weekly", "monthly"}
-        assert len(item["reasons"]) > 0
-        # Only genuinely endorsed candidates make the list - see premium_watchlist_service.py
-        assert item["signals"]["recommendation"]["verdict"] == "comprar"
-        assert "recommendation" in item["signals"]
-
-
-def test_premium_watchlist_reports_discard_stats_and_setup_type(client: TestClient) -> None:
-    # Segunda auditoría, Bloque 3: MAX_CANDIDATES_PER_TIER used to truncate
-    # the cheap pre-filter's matches silently - this is "15 de 47 candidatos
-    # analizados" as a real, surfaced number.
-    response = client.get("/api/v1/market/watchlist/premium")
-    assert response.status_code == 200
-    body = response.json()
-    assert "discard_stats" in body
-    tiers_seen = {s["tier"] for s in body["discard_stats"]}
-    assert tiers_seen <= {"daily", "weekly", "monthly"}
-    for stats in body["discard_stats"]:
-        assert stats["analyzed"] <= stats["prefilter_matches"]
-        assert stats["approved"] <= stats["analyzed"]
-
-    for item in body["items"]:
-        if item["tier"] == "daily":
-            assert item["setup"] in {
-                "oversold_bounce", "breakout_volume", "trend_continuation", "pullback_to_support",
-            }
-        elif item["tier"] == "weekly":
-            # Tercera auditoría, Bloque F-2: the weekly tier is now
-            # setup-based too (fast-pair cross/imminent cross/Stage 2
-            # leadership), not the old single blended reasons list.
-            assert item["setup"] in {"fast_golden_cross", "fast_cross_imminent", "stage2_leader"}
-        else:
-            assert item["setup"] is None
-
-
-def test_premium_watchlist_filters_by_tier(client: TestClient) -> None:
-    response = client.get("/api/v1/market/watchlist/premium", params={"tier": "daily"})
-    assert response.status_code == 200
-    assert all(item["tier"] == "daily" for item in response.json()["items"])
-
-
-def test_premium_watchlist_rejects_invalid_tier(client: TestClient) -> None:
-    response = client.get("/api/v1/market/watchlist/premium", params={"tier": "yearly"})
-    assert response.status_code == 422
-
-
-def test_premium_watchlist_europe_region_tags_items_with_that_region(client: TestClient) -> None:
-    response = client.get("/api/v1/market/watchlist/premium", params={"region": "europe"})
-    assert response.status_code == 200
-    assert all(item["region"] == "europe" for item in response.json()["items"])
-
-
 def test_levels_proximity_matches_are_within_threshold(client: TestClient) -> None:
     response = client.get("/api/v1/market/levels/proximity", params={"threshold": 0.05})
     assert response.status_code == 200
@@ -431,38 +370,11 @@ def test_market_endpoints_survive_a_missing_computation_cache_table(client: Test
         assert watchlist.status_code == 200
         assert "items" in watchlist.json()
 
-        premium = client.get("/api/v1/market/watchlist/premium", params={"tier": "daily"})
-        assert premium.status_code == 200
-        assert "items" in premium.json()
-
         sectors = client.get("/api/v1/market/sectors")
         assert sectors.status_code == 200
         assert len(sectors.json()) == len(SECTOR_ETFS)
     finally:
         ComputationCacheORM.__table__.create(bind=engine)
-
-
-def test_premium_watchlist_recomputes_when_cached_payload_shape_is_stale(
-    client: TestClient, db_session: Session
-) -> None:
-    """The real incident this locks in: `imminent_cross` was added to
-    CoreSignalsResponse after some premium-watchlist rows were already
-    cached, and every read of those rows 500ed on Pydantic validation until
-    they naturally expired (up to 30 days later, for the monthly tier). A
-    cached payload that's fresh by age but the wrong shape must be treated
-    as a miss and recomputed, not crash the endpoint."""
-    db_session.add(
-        ComputationCacheORM(
-            cache_key="premium_watchlist:us:daily",
-            computed_at=datetime.now(UTC),  # fresh by age - this must fail on *shape*, not staleness
-            payload={"items": []},  # missing `computed_at` - an older response shape
-        )
-    )
-    db_session.commit()
-
-    response = client.get("/api/v1/market/watchlist/premium", params={"tier": "daily"})
-    assert response.status_code == 200
-    assert "items" in response.json()
 
 
 def test_universe_snapshot_recomputes_when_cached_payload_shape_is_stale(

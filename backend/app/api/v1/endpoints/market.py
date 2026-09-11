@@ -10,7 +10,6 @@ from app.api.deps import (
     get_market_context_service,
     get_market_data_service,
     get_market_screener_service,
-    get_premium_watchlist_service,
 )
 from app.domain.models.ticker_snapshot import IndustryPerformance, TickerSnapshot
 from app.schemas.market import (
@@ -25,8 +24,6 @@ from app.schemas.market import (
     MarketRegimeResponse,
     MoversResponse,
     NewsArticleResponse,
-    PremiumWatchlistItemResponse,
-    PremiumWatchlistResponse,
     PriceLevelResponse,
     ProximityItemResponse,
     RelationshipMapResponse,
@@ -35,7 +32,6 @@ from app.schemas.market import (
     StatisticalRelationResponse,
     SupportResistanceResponse,
     TickerSnapshotResponse,
-    TierDiscardStatsResponse,
     TrendBreadthResponse,
     TrendDetailResponse,
     UniverseResponse,
@@ -43,8 +39,6 @@ from app.schemas.market import (
     WatchlistItemResponse,
     WatchlistResponse,
 )
-from app.schemas.quant_analysis import CoreSignalsResponse
-from app.services import durable_cache
 from app.services.macro_data_service import MacroDataService
 from app.services.market_context_service import MarketContextService, assess_market_regime
 from app.services.market_data_service import MarketDataService
@@ -57,15 +51,7 @@ from app.services.market_screener_service import (
     get_trend_detail,
 )
 from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of
-from app.services.premium_watchlist_service import (
-    DAILY,
-    MONTHLY,
-    WEEKLY,
-    PremiumWatchlistItem,
-    PremiumWatchlistService,
-)
 from app.services.relationship_map_service import build_relationship_map
-from app.services.ticker_analysis_service import CoreTickerSignals
 from app.services.watchlist_service import build_watchlist
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -106,34 +92,6 @@ def _industry_to_response(perf: IndustryPerformance) -> IndustryPerformanceRespo
     data = asdict(perf)
     data["leaders"] = [_to_response(leader) for leader in perf.leaders]
     return IndustryPerformanceResponse(**data)
-
-
-def _core_signals_to_response(signals: CoreTickerSignals) -> CoreSignalsResponse:
-    data = asdict(signals)
-    data["trend"] = signals.trend.value
-    data["stage"] = signals.stage.value if signals.stage else None
-    data["market_trend"] = signals.market_trend.value if signals.market_trend else None
-    return CoreSignalsResponse(**data)
-
-
-def _premium_item_to_response(item: PremiumWatchlistItem) -> PremiumWatchlistItemResponse:
-    return PremiumWatchlistItemResponse(
-        ticker=item.ticker,
-        sector=item.sector,
-        industry=item.industry,
-        cap_tier=item.cap_tier,
-        currency=item.currency,
-        region=item.region,
-        tier=item.tier,
-        reasons=item.reasons,
-        premium_score=item.premium_score,
-        signals=_core_signals_to_response(item.signals),
-        setup=item.setup,
-        setup_label=item.setup_label,
-        also_matched_setups=item.also_matched_setups,
-        also_matched_setup_labels=item.also_matched_setup_labels,
-        days_to_earnings=item.days_to_earnings,
-    )
 
 
 @router.get("/universe", response_model=UniverseResponse)
@@ -298,51 +256,6 @@ def get_watchlist(
         ],
         computed_at=computed_at,
     )
-
-
-# Matches PremiumWatchlistService.CACHE_TTL - the durable cache should never
-# consider a tier "fresh" for longer than the in-process one already would.
-_PREMIUM_DURABLE_TTL = {DAILY: timedelta(days=1), WEEKLY: timedelta(days=7), MONTHLY: timedelta(days=30)}
-
-
-@router.get("/watchlist/premium", response_model=PremiumWatchlistResponse)
-def get_premium_watchlist(
-    service: Annotated[PremiumWatchlistService, Depends(get_premium_watchlist_service)],
-    db: DbSession,
-    region: str = RegionQuery,
-    tier: str | None = Query(default=None, pattern="^(daily|weekly|monthly)$"),
-    refresh: bool = False,
-) -> PremiumWatchlistResponse:
-    """A small, curated list (~10 per tier) of tickers that passed the *exact
-    same* full analysis "Analizar activo" runs - not just a cheap rule match.
-    See `premium_watchlist_service.py` for the approval bar and the per-tier
-    refresh cadence (daily/weekly/monthly, matching each tier's own name).
-
-    Backed by the durable cache in addition to the service's own per-tier
-    in-process one, for the same restart-durability reason as portfolio risk
-    (see `durable_cache.py`) - this is the single most expensive read in the
-    app (the full quant suite over up to 15 candidates x however many tiers
-    are requested), so it's the one that benefits the most from never being
-    forced to recompute just because the process restarted."""
-    tiers = [tier] if tier else [DAILY, WEEKLY, MONTHLY]
-    cache_key = f"premium_watchlist:{region}:{tier or 'all'}"
-    durable_ttl = min(_PREMIUM_DURABLE_TTL[t] for t in tiers)
-    if not refresh:
-        cached = durable_cache.load_fresh_as(db, cache_key, durable_ttl, PremiumWatchlistResponse.model_validate)
-        if cached is not None:
-            return cached
-
-    items, discard_stats = service.get_premium_watchlist_with_stats(
-        region=region, tier=tier, force_refresh=refresh
-    )
-    computed_at = datetime.now(UTC)
-    response = PremiumWatchlistResponse(
-        items=[_premium_item_to_response(i) for i in items],
-        computed_at=computed_at,
-        discard_stats=[TierDiscardStatsResponse(**asdict(s)) for s in discard_stats],
-    )
-    durable_cache.save(db, cache_key, response.model_dump(mode="json"), computed_at=computed_at)
-    return response
 
 
 @router.get("/levels/proximity", response_model=list[ProximityItemResponse])

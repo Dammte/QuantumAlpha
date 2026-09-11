@@ -285,50 +285,6 @@
   margin: 8px 0;
 }
 
-.swap-suggestions {
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin-bottom: 16px;
-  background: var(--accent-bg);
-  border: 1px solid var(--accent-border);
-}
-
-.swap-suggestions__title {
-  margin: 0 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-h);
-}
-
-.swap-suggestions__list {
-  margin: 0;
-  padding: 0 0 0 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.swap-suggestions__item {
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text);
-}
-
-.swap-suggestions__link {
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  font-weight: 700;
-  color: var(--accent);
-  cursor: pointer;
-}
-
-.swap-suggestions__link:hover,
-.swap-suggestions__link:focus-visible {
-  text-decoration: underline;
-}
-
 /* Portfolio construction (D12) */
 
 .panel__hint {
@@ -1561,60 +1517,6 @@
   margin: 0 0 10px;
 }
 
-.premium-watchlist-card {
-  display: flex;
-  flex-direction: column;
-}
-
-/* Score >= 10 (see EXCEPTIONAL_SCORE_THRESHOLD in format.js / BUY_THRESHOLD in
-   recommendation_engine.py) - roughly double the buy bar, reached by very few
-   candidates since it needs most independent factors confirming at once. */
-.premium-watchlist-card--exceptional {
-  border: 2px solid var(--cat-4);
-}
-
-.premium-watchlist-card__exceptional-tag {
-  align-self: flex-start;
-  margin-bottom: 8px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-  color: var(--cat-4);
-}
-
-/* Tercera auditoría, Bloque F-9: earnings inside the daily tier's own
-   holding horizon (weekly/monthly tiers keep the candidate, this is the
-   "at minimum, mark it visually" case for those). */
-.premium-watchlist-card__earnings-warning {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: var(--series-critical, #d03b3b);
-  font-weight: 600;
-}
-
-.premium-watchlist-card__cta {
-  align-self: flex-start;
-  margin-top: 12px;
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  font-weight: 600;
-  font-size: 12px;
-  color: var(--accent);
-  cursor: pointer;
-}
-
-.premium-watchlist-card__cta:hover,
-.premium-watchlist-card__cta:focus-visible {
-  text-decoration: underline;
-}
-
-.premium-watchlist__tier-hint {
-  font-weight: 400;
-  color: var(--text);
-}
-
 .watchlist-section {
   margin-bottom: 24px;
 }
@@ -1658,11 +1560,6 @@
   border: 1px solid var(--border);
 }
 
-.premium-watchlist__discard-note {
-  margin: 0 0 10px;
-  font-size: 12px;
-  color: var(--text);
-}
 .sector-tier-badge--up {
   background: rgba(12, 163, 12, 0.14);
   color: var(--series-good);

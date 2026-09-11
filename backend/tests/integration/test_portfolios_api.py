@@ -246,7 +246,6 @@ def test_portfolio_risk_empty_portfolio_returns_no_positions(client: TestClient)
     assert response.status_code == 200
     body = response.json()
     assert body["positions"] == []
-    assert body["swap_suggestions"] == []
 
 
 def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
@@ -272,12 +271,6 @@ def test_portfolio_risk_assesses_every_held_ticker(client: TestClient) -> None:
         # The same recommendation pipeline "Analizar activo" runs backs every holding now
         assert "recommendation" in p["signals"]
         assert p["signals"]["recommendation"]["verdict"] in {"comprar", "esperar", "evitar"}
-
-    held_tickers = {p["ticker"] for p in positions}
-    for suggestion in body["swap_suggestions"]:
-        assert suggestion["held_ticker"] in held_tickers
-        assert suggestion["candidate_ticker"] not in held_tickers
-        assert suggestion["candidate_score"] - suggestion["held_score"] >= 4.0
 
 
 def test_portfolio_risk_includes_exit_engine_and_trade_plan_fields(client: TestClient) -> None:
@@ -637,7 +630,7 @@ def test_portfolio_risk_recomputes_when_cached_payload_shape_is_stale(
     )
 
     # Seeded directly, as if written by an older version of the app whose
-    # PortfolioRiskResponse didn't have `swap_suggestions`/`computed_at` yet.
+    # PortfolioRiskResponse didn't have `computed_at` yet.
     db_session.add(
         ComputationCacheORM(
             cache_key=f"portfolio_risk:{portfolio_id}",

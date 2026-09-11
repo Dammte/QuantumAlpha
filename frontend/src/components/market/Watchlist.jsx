@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { api } from '../../api'
 import { SETUP_LABELS, formatCurrency, formatPercent } from '../../format'
 import TrendBadge from './TrendBadge'
-import PremiumWatchlist from './PremiumWatchlist'
 import RefreshBar from '../RefreshBar'
 
 const HORIZONS = [
@@ -173,38 +172,11 @@ function GeneralWatchlist({ region }) {
   )
 }
 
-const MODES = [
-  { key: 'general', label: 'General' },
-  { key: 'premium', label: 'Premium' },
-]
-
-function Watchlist({ onNavigateToTicker, region }) {
-  const [mode, setMode] = useState('general')
-
-  return (
-    <div>
-      <div className="sub-toggle" role="tablist" aria-label="Tipo de lista">
-        {MODES.map((m) => (
-          <button
-            key={m.key}
-            type="button"
-            role="tab"
-            aria-selected={mode === m.key}
-            className={`sub-toggle__item ${mode === m.key ? 'sub-toggle__item--active' : ''}`}
-            onClick={() => setMode(m.key)}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-
-      {mode === 'general' ? (
-        <GeneralWatchlist region={region} />
-      ) : (
-        <PremiumWatchlist onNavigateToTicker={onNavigateToTicker} region={region} />
-      )}
-    </div>
-  )
+// 2026-09: el modo "Premium" (premium_watchlist_service.py) se retiró - ver
+// docs/quant_methodology.md. Se sustituye por el radar en una fase futura
+// (Fase 5), no por esta lista general mientras tanto.
+function Watchlist({ region }) {
+  return <GeneralWatchlist region={region} />
 }
 
 export default Watchlist

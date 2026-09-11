@@ -16,7 +16,6 @@ import TransactionsList from './components/TransactionsList'
 import MarketView from './components/market/MarketView'
 import Sidebar from './components/Sidebar'
 import RefreshBar from './components/RefreshBar'
-import SwapSuggestions from './components/SwapSuggestions'
 import PortfolioConstructionPanel from './components/PortfolioConstructionPanel'
 import TodayActionsPanel from './components/TodayActionsPanel'
 import SystemPerformanceView from './components/SystemPerformanceView'
@@ -367,10 +366,7 @@ function App() {
           <section className="panel">
             <h2>Posiciones {summary && `(${summary.positions.length})`}</h2>
             {risk && (
-              <>
-                <RefreshBar computedAt={risk.computed_at} onRefresh={handleRefreshRisk} refreshing={riskRefreshing} />
-                <SwapSuggestions suggestions={risk.swap_suggestions} onNavigateToTicker={navigateToAnalysis} />
-              </>
+              <RefreshBar computedAt={risk.computed_at} onRefresh={handleRefreshRisk} refreshing={riskRefreshing} />
             )}
             {summary && (
               <PositionsTable
