@@ -11,9 +11,11 @@ statistical-structure read were removed from this suite - see
 `RecommendationFactorResponse` (the old weighted checklist's verdict/score/
 factors) are replaced by `GateResultResponse`/`GateConditionResponse` below -
 see `levels_engine.py`'s own docstring for why a pass/fail gate replaced a
-score. `recommendation_engine.Recommendation` still exists (measured by
-`scripts/factor_ablation_study.py` until Fase 8), it just no longer has an
-API response shape - nothing in the live API serializes it anymore.
+score. `recommendation_engine.Recommendation` still exists (some of its
+individual factors are still measured by `scripts/factor_ablation_study.py`
+alongside the new gate's own conditions, since Fase 8's reorientation - see
+that script's own docstring), it just no longer has an API response shape -
+nothing in the live API serializes it anymore.
 """
 
 from pydantic import BaseModel

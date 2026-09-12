@@ -54,6 +54,39 @@ holding horizon), not 21 alone - 63/126 are still available via `--horizons`
 for anyone checking horizon sensitivity against the momentum literature
 (Jegadeesh & Titman 1993), same as before.
 
+**Fase 8 reorientation (reconstrucción, septiembre 2026) - measuring the new
+gate instead of the retired checklist:** `recommendation_engine.py`'s
+checklist no longer decides anything live (`levels_engine.evaluate_gate`
+does - docs/quant_methodology.md §25), so the factors worth measuring here
+changed too. `compute_triggers_at` now also calls
+`levels_engine.replay_gate_at` - the exact same point-in-time replay
+function the live "Analizar activo" backtest uses, not a second hand-rolled
+approximation of the gate - and exposes five of its six conditions as their
+own factors (`gate_trend_or_stage2`, `gate_not_parabolic`,
+`gate_not_overbought_outside_strong_trend`, `gate_no_obv_bearish_divergence`,
+`gate_no_fast_pair_veto`), plus the compound `gate_passes`. Three of the old
+checklist's factors were *removed*, not kept alongside their gate
+equivalent: `atr_parabolic`, `rsi_overbought_outside_strong_trend`, and
+`obv_bearish` are each the exact logical negation of a gate factor above
+(same predicate, opposite boolean) - keeping both would hand
+`run_multivariate_regression` two perfectly collinear columns, which is a
+real defect (a singular design matrix), not just redundant reporting. The
+sixth gate condition (reward:risk >= 1.5) is deliberately **not** exposed as
+a factor here: `replay_gate_at` has no point-in-time support/resistance
+(its own documented simplification), so `compute_stop_and_target` always
+falls back to the fixed ATR-stop/2:1-target formula, making that condition
+a constant `True` for every sample - a zero-variance column is collinear
+with the regression's own intercept, which would corrupt every other
+factor's coefficient in the same fit, not just that one's. That condition
+is instead measured properly, against real daily precomputed
+support/resistance, by `trigger_performance_service.py`
+(`GET /system/signal-performance`) - see that module's own docstring.
+`golden_cross`/`death_cross`/`rsi_oversold_bounce`/`minervini_range_position`/
+`trend_down`/`stage4` are informational signals the live system still
+surfaces (imminent-cross badges, context) even though none of them gate
+anything - kept as-is, still worth knowing whether they correlate with
+anything real.
+
 **What this script deliberately does NOT do**: it does not change any
 weight in `recommendation_engine.py`, and it does not implement D9's
 cross-sectional percentile threshold (that's a live-system, request-time
@@ -107,6 +140,7 @@ from app.infrastructure.db.session import SessionLocal  # noqa: E402
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider  # noqa: E402
 from app.services import backtest_engine as be  # noqa: E402
 from app.services import dynamic_universe_service as dus  # noqa: E402
+from app.services import levels_engine as le  # noqa: E402
 from app.services import technical_analysis as ta  # noqa: E402
 from app.services import watchlist_service as wl  # noqa: E402
 from app.services.market_data_service import MarketDataService  # noqa: E402
@@ -176,6 +210,15 @@ class FactorResult:
 # run, purely for the "directionally consistent" sanity check below - not
 # imported directly since several of these factors (trend_down, stage4, etc.)
 # don't have a single clean boolean predicate exposed by the engine itself.
+# 2026-09 (Fase 8): the gate_* entries have no real point value at all (the
+# gate is a boolean AND, not a weighted score) - +1 here is a nominal stand-in
+# for "this condition was designed to be a bullish/protective signal", the
+# same sign every condition in evaluate_gate() is framed with, just so
+# `directionally_consistent` has something to compare the measured sign
+# against. `atr_parabolic`/`rsi_overbought_outside_strong_trend`/
+# `obv_bearish` are gone - see the module docstring's Fase 8 section for why
+# (each is the exact negation of a gate_* factor below; keeping both would be
+# a real collinearity defect, not just redundant reporting).
 CURRENT_POINTS = {
     "trend_up": 2,
     "trend_down": -3,
@@ -184,14 +227,17 @@ CURRENT_POINTS = {
     "golden_cross": 1,
     "death_cross": -2,
     "adx_strong_trend": 1,
-    "rsi_overbought_outside_strong_trend": -1,
     "rsi_oversold_bounce": 1,
-    "atr_parabolic": -2,
-    "obv_bearish": -2,
     "obv_bullish": 1,
     "minervini_range_position": 1,  # the non-RS-dependent half of the +1 confirmation bonus
     "market_below_sma200": -2,  # not scored live (§6.1) - kept as a regime segmentation key, not a live factor
     "vix_stress": -2,  # same - regime segmentation key, not a live factor
+    "gate_passes": 1,
+    "gate_trend_or_stage2": 1,
+    "gate_not_parabolic": 1,
+    "gate_not_overbought_outside_strong_trend": 1,
+    "gate_no_obv_bearish_divergence": 1,
+    "gate_no_fast_pair_veto": 1,
 }
 
 
@@ -230,16 +276,7 @@ def compute_triggers_at(
     )
 
     rsi_t = rsi14.iloc[i]
-    # Matches recommendation_engine.py's regime-aware definition (2026-08 audit):
-    # not penalized inside a strong, ADX-confirmed uptrend.
-    rsi_overbought_outside_strong_trend = (
-        not pd.isna(rsi_t) and rsi_t >= 80 and not (trend == ta.TrendState.UPTREND and strong_trend)
-    )
     rsi_oversold_bounce = not pd.isna(rsi_t) and rsi_t <= 30 and trend != ta.TrendState.DOWNTREND
-
-    atr_t = atr14.iloc[i]
-    atr_multiple = float((price - s50) / atr_t) if not pd.isna(atr_t) and atr_t != 0 else None
-    atr_parabolic = atr_multiple is not None and atr_multiple > 4
 
     price_52w_low = ta.rolling_extreme_price(close.iloc[: i + 1], 252, "low")
     price_52w_high = ta.rolling_extreme_price(close.iloc[: i + 1], 252, "high")
@@ -290,6 +327,29 @@ def compute_triggers_at(
         and rsi_t > wl.PULLBACK_MIN_RSI
     )
 
+    # Fase 8 reorientation: the actual live gate, replayed point-in-time -
+    # see the module docstring's "Fase 8 reorientation" section for why this
+    # calls the real `levels_engine.replay_gate_at` instead of re-deriving
+    # each condition by hand. Guaranteed non-None here - this function's own
+    # guard above (`pd.isna(s20) or pd.isna(s50) or pd.isna(s200)`) is the
+    # exact same one `replay_gate_at` makes internally.
+    gate = le.replay_gate_at(
+        i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, volume
+    )
+    assert gate is not None
+    # Positional, not by label - evaluate_gate()'s six `add(...)` calls are in
+    # a fixed, documented order (see that function). The sixth (reward:risk)
+    # is intentionally not unpacked into its own factor - see the module
+    # docstring.
+    (
+        gate_trend_or_stage2,
+        gate_not_parabolic,
+        gate_not_overbought_outside_strong_trend,
+        gate_no_obv_bearish_divergence,
+        gate_no_fast_pair_veto,
+        _gate_reward_risk_ok,
+    ) = (c.passed for c in gate.conditions)
+
     return {
         "trend_up": trend == ta.TrendState.UPTREND,
         "trend_down": trend == ta.TrendState.DOWNTREND,
@@ -298,14 +358,17 @@ def compute_triggers_at(
         "golden_cross": ma_cross == "golden",
         "death_cross": ma_cross == "death",
         "adx_strong_trend": strong_trend,
-        "rsi_overbought_outside_strong_trend": rsi_overbought_outside_strong_trend,
         "rsi_oversold_bounce": rsi_oversold_bounce,
-        "atr_parabolic": atr_parabolic,
-        "obv_bearish": obv_div == "bearish",
         "obv_bullish": obv_div == "bullish",
         "minervini_range_position": minervini_range_position,
         "market_below_sma200": market_trend == ta.TrendState.DOWNTREND,
         "vix_stress": vix_regime_label in ("pánico", "crisis"),
+        "gate_passes": gate.passes,
+        "gate_trend_or_stage2": gate_trend_or_stage2,
+        "gate_not_parabolic": gate_not_parabolic,
+        "gate_not_overbought_outside_strong_trend": gate_not_overbought_outside_strong_trend,
+        "gate_no_obv_bearish_divergence": gate_no_obv_bearish_divergence,
+        "gate_no_fast_pair_veto": gate_no_fast_pair_veto,
         "setup_oversold_bounce": setup_oversold_bounce,
         "setup_breakout_volume": setup_breakout_volume,
         "setup_trend_continuation": setup_trend_continuation,

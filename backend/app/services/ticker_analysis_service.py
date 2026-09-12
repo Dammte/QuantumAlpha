@@ -18,10 +18,12 @@ see by searching it directly.
 `levels_engine.evaluate_gate` (`GateResult` - `gate`/`confirmed_gate` below),
 not `recommendation_engine.build_recommendation`'s weighted checklist.
 `recommendation_engine.py` itself is not deleted - `scripts/
-factor_ablation_study.py` still measures its old checklist until Fase 8
-reorients that script at trigger outcomes instead - but nothing in this file,
-and therefore nothing in the live "Analizar activo"/portfolio-risk paths that
-build on it, calls it anymore. See docs/quant_methodology.md.
+factor_ablation_study.py` still measures some of its individual factors
+(the ones that don't exactly duplicate a new gate condition) alongside the
+gate's own conditions, since Fase 8's reorientation of that script - but
+nothing in this file, and therefore nothing in the live "Analizar activo"/
+portfolio-risk paths that build on it, calls `build_recommendation` anymore.
+See docs/quant_methodology.md.
 
 2026-09: Markov chain, GARCH, Monte Carlo, Kelly sizing, the Hurst/ADF
 statistical-structure read and the entry-timing badge were removed from this

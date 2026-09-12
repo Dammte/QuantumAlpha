@@ -1464,16 +1464,37 @@ tenía - los datos de antes de la Fase 4 siguen siendo correctos bajo la lectura
 "Rendimiento del sistema" muestra esta tabla primero, como la lectura principal actual, con las tablas
 de veredicto/señal debajo, marcadas explícitamente como históricas.
 
+`factor_ablation_study.py` (el estudio offline, distinto de la lectura en vivo de arriba) también se
+reorienta: `compute_triggers_at` ahora llama a `levels_engine.replay_gate_at` - la misma función de
+replay que usa el backtest en vivo, no una segunda aproximación hecha a mano - y expone cinco de sus
+seis condiciones como factores propios (`gate_trend_or_stage2`, `gate_not_parabolic`,
+`gate_not_overbought_outside_strong_trend`, `gate_no_obv_bearish_divergence`, `gate_no_fast_pair_veto`),
+más el compuesto `gate_passes`. Tres factores del checklist antiguo se retiraron, no se dejaron al lado
+de su equivalente nuevo: `atr_parabolic`, `rsi_overbought_outside_strong_trend` y `obv_bearish` son cada
+uno la negación lógica exacta de un `gate_*` - mantener ambos le daría a la regresión multivariante dos
+columnas perfectamente colineales (una matriz de diseño singular), un defecto real, no solo redundancia.
+La sexta condición del gate (beneficio:riesgo >= 1.5) se deja fuera a propósito: sin soporte/resistencia
+point-in-time, `compute_stop_and_target` siempre cae al stop/objetivo fijo (ATR/2:1), así que esa
+condición sería una constante `True` en cada muestra - una columna sin varianza es colineal con la
+propia constante de la regresión, lo que corrompería el coeficiente de *todos* los demás factores, no
+solo el suyo. Esa condición se mide correctamente, contra soporte/resistencia real, en
+`trigger_performance_service.py` en su lugar. `golden_cross`/`death_cross`/`rsi_oversold_bounce`/
+`minervini_range_position`/`trend_down`/`stage4` se quedan sin tocar - son señales informativas que el
+sistema en vivo todavía muestra aunque ninguna condicione el gate.
+
 **Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
 resto), Fase 6 (frontend de 4 vistas - Hoy/Radar/Activo/Sistema, reemplazando la navegación actual por
-secciones), Fase 7 (capa Gemini que nunca puntúa ni decide), resto de la Fase 8 (reorientar
-`factor_ablation_study.py` a triggers y ejecutarlo de verdad contra el universo real), Fase 9
-(escenarios dorados + tests de latencia), Fase 10 (activar el universo dinámico completo, ~400 tickers).
+secciones), Fase 7 (capa Gemini que nunca puntúa ni decide), resto de la Fase 8 (ejecutar
+`factor_ablation_study.py` de verdad contra el universo real - el script ya está reorientado, falta
+correrlo y revisar el resultado), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el
+universo dinámico completo, ~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
 `test_intraday_refresh.py` + 4 de integración, 5 en `test_levels_engine_replay.py`, 6 en
 `test_radar_api.py`, 5 en `test_portfolio_today_api.py`, 8 en `test_trigger_performance_service.py` + 2
-de integración en `test_system_api.py`, más las actualizaciones de `test_ticker_analysis_service.py`,
-`test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y `test_portfolios_api.py` para el nuevo
+de integración en `test_system_api.py`, 2 nuevos en `test_factor_ablation_study.py` (los factores del
+gate y el retiro de sus tres equivalentes del checklist), más las actualizaciones de
+`test_ticker_analysis_service.py`, `test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y
+`test_portfolios_api.py` para el nuevo
 contrato del gate.
