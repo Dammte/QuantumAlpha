@@ -8,9 +8,14 @@ from app.api.deps import (
     DbSession,
     get_market_context_service,
     get_market_screener_service,
+    get_ticker_daily_state_repository,
 )
+from app.domain.models.ticker_daily_state import TickerDailyState
 from app.domain.models.ticker_snapshot import IndustryPerformance, TickerSnapshot
+from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.schemas.market import (
+    EntryTriggerResponse,
+    GateConditionResponse,
     IndexSnapshotResponse,
     IndustryPerformanceResponse,
     IndustryUniverseResponse,
@@ -20,10 +25,13 @@ from app.schemas.market import (
     NewsArticleResponse,
     PriceLevelResponse,
     ProximityItemResponse,
+    RadarItemResponse,
+    RadarResponse,
     RelationshipMapResponse,
     SectorPeerResponse,
     SectorPerformanceResponse,
     StatisticalRelationResponse,
+    StopAndTargetResponse,
     SupportResistanceResponse,
     TickerSnapshotResponse,
     TrendBreadthResponse,
@@ -246,6 +254,71 @@ def get_watchlist(
             )
             for item in items
         ],
+        computed_at=computed_at,
+    )
+
+
+def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
+    return RadarItemResponse(
+        ticker=state.ticker,
+        region=state.region,
+        trade_date=state.trade_date,
+        computed_at=state.computed_at,
+        price=state.price,
+        currency=state.currency,
+        trend=state.trend,
+        stage=state.stage,
+        rs_rating=state.rs_rating,
+        adx14=state.adx14,
+        atr_multiple=state.atr_multiple,
+        rsi14=state.rsi14,
+        gate_passes=state.gate_passes,
+        gate_conditions=[GateConditionResponse(**c) for c in state.gate_conditions],
+        gate_version=state.gate_version,
+        entry_trigger=(
+            EntryTriggerResponse(
+                trigger_type=state.entry_trigger_type,
+                trigger_price=state.entry_trigger_price,
+                already_triggered=state.entry_already_triggered,
+            )
+            if state.entry_trigger_type is not None
+            else None
+        ),
+        stop_and_target=(
+            StopAndTargetResponse(
+                stop_loss=state.stop_loss,
+                take_profit=state.take_profit,
+                take_profit_method=state.take_profit_method,
+                risk_reward=state.risk_reward,
+            )
+            if state.stop_loss is not None
+            else None
+        ),
+    )
+
+
+@router.get("/radar", response_model=RadarResponse)
+def get_radar(
+    ticker_daily_state_repo: Annotated[TickerDailyStateRepository, Depends(get_ticker_daily_state_repository)],
+    region: str = RegionQuery,
+) -> RadarResponse:
+    """Reconstruction (2026-09), Fase 5: "qué está a punto de disparar una
+    entrada" (Parte 0, pregunta 2) - a pure read over `daily_close.py`'s own
+    precomputed `ticker_daily_states`, never a live universe scan. Every
+    ticker whose gate passes and/or already has an active entry trigger, as
+    of the last nightly run - not the whole universe (see `/watchlist` for
+    the older, still-live cheap-rule filter this doesn't replace yet).
+
+    `computed_at` is the *latest* of the returned rows' own timestamps
+    (`None` when there's nothing to show yet, e.g. before `daily_close.py`
+    has ever run for this region) - a caller-visible way to tell "empty
+    because nothing qualifies right now" from "empty because there's no data
+    at all"."""
+    states = ticker_daily_state_repo.latest_by_region(region)
+    candidates = [s for s in states if s.gate_passes or s.entry_trigger_price is not None]
+    computed_at = max((s.computed_at for s in states), default=None)
+    return RadarResponse(
+        items=[_daily_state_to_radar_item(s) for s in candidates],
         computed_at=computed_at,
     )
 

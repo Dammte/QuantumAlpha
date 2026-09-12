@@ -7,11 +7,14 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.domain.interfaces.market_data_provider import MarketDataProvider
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
+from app.infrastructure.db.repositories.daily_brief_repository import DailyBriefRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
+from app.infrastructure.db.repositories.position_daily_state_repository import PositionDailyStateRepository
 from app.infrastructure.db.repositories.position_signal_snapshot_repository import (
     PositionSignalSnapshotRepository,
 )
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
+from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.infrastructure.db.session import get_db
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider
@@ -86,6 +89,18 @@ def get_trade_plan_repository(db: DbSession) -> TradePlanRepository:
 
 def get_position_signal_snapshot_repository(db: DbSession) -> PositionSignalSnapshotRepository:
     return PositionSignalSnapshotRepository(db)
+
+
+def get_ticker_daily_state_repository(db: DbSession) -> TickerDailyStateRepository:
+    return TickerDailyStateRepository(db)
+
+
+def get_position_daily_state_repository(db: DbSession) -> PositionDailyStateRepository:
+    return PositionDailyStateRepository(db)
+
+
+def get_daily_brief_repository(db: DbSession) -> DailyBriefRepository:
+    return DailyBriefRepository(db)
 
 
 def get_asset_repository(db: DbSession) -> AssetRepository:

@@ -8,11 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import (
     DbSession,
     get_asset_repository,
+    get_daily_brief_repository,
     get_market_data_service,
     get_market_screener_service,
     get_portfolio_repository,
     get_portfolio_risk_service,
     get_portfolio_service,
+    get_position_daily_state_repository,
     get_position_signal_snapshot_repository,
     get_trade_plan_repository,
 )
@@ -20,7 +22,9 @@ from app.domain.models.asset import AssetClass
 from app.domain.models.trade_plan import TradePlan
 from app.domain.models.transaction import TransactionType
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
+from app.infrastructure.db.repositories.daily_brief_repository import DailyBriefRepository
 from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
+from app.infrastructure.db.repositories.position_daily_state_repository import PositionDailyStateRepository
 from app.infrastructure.db.repositories.position_signal_snapshot_repository import (
     PositionSignalSnapshotRepository,
 )
@@ -28,8 +32,11 @@ from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRe
 from app.schemas.market import (
     AggregateRiskReportResponse,
     CorrelationWarningResponse,
+    DailyBriefResponse,
     PortfolioConstructionResponse,
     PortfolioRiskResponse,
+    PortfolioTodayResponse,
+    PositionDailyStateResponse,
     PositionRiskContributionResponse,
     PositionRiskResponse,
     PriceLevelResponse,
@@ -360,6 +367,59 @@ def get_portfolio_risk(
     )
     durable_cache.save(db, cache_key, response.model_dump(mode="json"), computed_at=computed_at)
     return response
+
+
+@router.get("/{portfolio_id}/today", response_model=PortfolioTodayResponse)
+def get_portfolio_today(
+    portfolio_id: int,
+    repository: Annotated[PortfolioRepository, Depends(get_portfolio_repository)],
+    daily_brief_repo: Annotated[DailyBriefRepository, Depends(get_daily_brief_repository)],
+    position_daily_state_repo: Annotated[
+        PositionDailyStateRepository, Depends(get_position_daily_state_repository)
+    ],
+) -> PortfolioTodayResponse:
+    """Reconstruction (2026-09), Fase 5: "qué hago hoy con lo que ya tengo"
+    (Parte 0, pregunta 1) - a pure read over `daily_close.py`'s own
+    precomputed `position_daily_states`/`daily_briefs`, never a live
+    recompute. Deliberately additive, not a replacement for
+    `GET /{portfolio_id}/risk` above: this is the fast, once-a-day summary
+    the "Hoy" dashboard opens with; the position detail card still opens
+    into the richer live `/risk` read (`signals`/`multi_timeframe`/
+    `scaled_exit`, none of which `PositionDailyState` carries). Returns
+    empty/`None` fields rather than 404 when `daily_close.py` hasn't run yet
+    for this portfolio - same reasoning as `RadarResponse.computed_at`."""
+    if repository.get(portfolio_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portfolio not found")
+
+    brief = daily_brief_repo.latest_for_portfolio(portfolio_id)
+    positions = position_daily_state_repo.latest_for_portfolio(portfolio_id)
+    return PortfolioTodayResponse(
+        brief=(
+            DailyBriefResponse(
+                brief_date=brief.brief_date,
+                computed_at=brief.computed_at,
+                positions_needing_action=brief.positions_needing_action,
+                new_entry_triggers=brief.new_entry_triggers,
+                new_gate_passes=brief.new_gate_passes,
+                headline=brief.headline,
+            )
+            if brief is not None
+            else None
+        ),
+        positions=[
+            PositionDailyStateResponse(
+                ticker=p.ticker,
+                trade_date=p.trade_date,
+                computed_at=p.computed_at,
+                urgency=p.urgency,
+                reasons=p.reasons,
+                price=p.price,
+                r_multiple=p.r_multiple,
+                current_stop=p.current_stop,
+            )
+            for p in positions
+        ],
+    )
 
 
 def _correlation_matrix_to_response(matrix: pd.DataFrame) -> dict[str, dict[str, float | None]]:

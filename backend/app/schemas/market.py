@@ -3,7 +3,14 @@ from datetime import date, datetime
 from pydantic import BaseModel
 
 from app.schemas.common import PriceLevelResponse
-from app.schemas.quant_analysis import CoreSignalsResponse, ImminentCrossResponse, MultiTimeframeResponse
+from app.schemas.quant_analysis import (
+    CoreSignalsResponse,
+    EntryTriggerResponse,
+    GateConditionResponse,
+    ImminentCrossResponse,
+    MultiTimeframeResponse,
+    StopAndTargetResponse,
+)
 
 
 class NewsArticleResponse(BaseModel):
@@ -262,9 +269,81 @@ class PortfolioRiskResponse(BaseModel):
     computed_at: datetime  # when this was last actually computed - may be hours old, see durable_cache.py
 
 
+class PositionDailyStateResponse(BaseModel):
+    """Reconstruction (2026-09), Fase 5: one row of `PositionDailyStateORM`,
+    read as-is - the precomputed counterpart of `PositionRiskResponse` above,
+    written once a day by `daily_close.py` instead of recomputed (and
+    durably cached) per request. Deliberately narrower than
+    `PositionRiskResponse` - no `signals`/`multi_timeframe`/`scaled_exit` -
+    this is the fast "what needs attention today" read (Parte 0, pregunta 1);
+    the richer live read at `/portfolios/{id}/risk` is unchanged and still
+    the one the position detail card opens into."""
+
+    ticker: str
+    trade_date: date
+    computed_at: datetime
+    urgency: str  # "exit_now" | "reduce" | "tighten_stop" | "watch" | "hold"
+    reasons: list[str]
+    price: float
+    r_multiple: float | None
+    current_stop: float | None
+
+
+class DailyBriefResponse(BaseModel):
+    brief_date: date
+    computed_at: datetime
+    positions_needing_action: int
+    new_entry_triggers: int
+    new_gate_passes: int
+    headline: str
+
+
+class PortfolioTodayResponse(BaseModel):
+    # `None` when daily_close.py hasn't run for this portfolio yet - same
+    # "empty vs. doesn't exist yet" distinction RadarResponse.computed_at
+    # documents.
+    brief: DailyBriefResponse | None
+    positions: list[PositionDailyStateResponse]
+
+
 class WatchlistResponse(BaseModel):
     items: list[WatchlistItemResponse]
     computed_at: datetime
+
+
+class RadarItemResponse(BaseModel):
+    """Reconstruction (2026-09), Fase 5: one row of `TickerDailyStateORM`,
+    read as-is - no live computation behind this response at all, unlike
+    every field above it in this file. See `docs/quant_methodology.md` §25
+    and `ticker_daily_state.py`'s own docstring."""
+
+    ticker: str
+    region: str
+    trade_date: date
+    computed_at: datetime
+    price: float
+    currency: str
+    trend: str
+    stage: str | None
+    rs_rating: int | None
+    adx14: float | None
+    atr_multiple: float | None
+    rsi14: float | None
+    gate_passes: bool
+    gate_conditions: list[GateConditionResponse]
+    gate_version: str
+    entry_trigger: EntryTriggerResponse | None
+    stop_and_target: StopAndTargetResponse | None
+
+
+class RadarResponse(BaseModel):
+    items: list[RadarItemResponse]
+    # `None` when `daily_close.py` hasn't run for this region yet (a fresh
+    # deploy, or the cron job not yet enabled - see render.yaml) - an empty
+    # Radar and a Radar that simply doesn't exist yet are different states,
+    # same "prefiero una lista vacía a datos a medias" rule CLAUDE.md already
+    # applies elsewhere.
+    computed_at: datetime | None
 
 
 class CorrelationWarningResponse(BaseModel):
