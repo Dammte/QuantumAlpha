@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     market_data_provider: str = "yfinance"
     risk_free_rate: float = 0.04
 
+    # Reconstruction (2026-09), Fase 7: the read-only Gemini narrative layer
+    # over the gate (see GeminiNarrator's own docstring) - `None` (the
+    # default, and what .env.example ships) keeps it fully inert, no network
+    # call ever attempted and no data ever sent to Google. Setting this is a
+    # deliberate, owner-made decision (cost, privacy), same as activating the
+    # Fase 2 cron jobs on Render - never something to set from code.
+    gemini_api_key: str | None = None
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

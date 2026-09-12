@@ -1,7 +1,10 @@
 import numpy as np
 import pandas as pd
 
+from app.domain.interfaces.llm_narrator import LLMNarrator
 from app.services import ticker_analysis_service as tas
+from app.services import trade_geometry as tg
+from app.services.levels_engine import GateCondition, GateResult
 
 _SeriesQuintet = tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]
 
@@ -134,3 +137,85 @@ def test_52_week_range_fields_never_fabricated_with_only_60_bars():
     assert signals is not None
     assert signals.dist_52w_high is None
     assert signals.dist_52w_low is None
+
+
+# --- Fase 7: _explain_gate wiring (LLMNarrator) ---------------------------
+
+
+class _FakeNarrator(LLMNarrator):
+    """Records exactly what TickerAnalysisService hands it - never talks to
+    a real LLM. See LLMNarrator's own docstring for why this port is
+    primitive-typed rather than taking a GateResult directly."""
+
+    def __init__(self, response: str | None = "una explicación") -> None:
+        self.response = response
+        self.calls: list[dict] = []
+
+    def explain_gate(self, **kwargs) -> str | None:
+        self.calls.append(kwargs)
+        return self.response
+
+
+def _gate(
+    passes: bool = True,
+    entry_trigger: tg.EntryTrigger | None = None,
+    stop_and_target: tg.StopAndTarget | None = None,
+) -> GateResult:
+    return GateResult(
+        passes=passes,
+        conditions=[GateCondition(label="Tendencia alcista o Fase 2 de Weinstein", passed=passes)],
+        entry_trigger=entry_trigger,
+        stop_and_target=stop_and_target,
+    )
+
+
+def test_explain_gate_is_none_without_a_narrator_configured():
+    service = tas.TickerAnalysisService(market_data=None, screener=None, narrator=None)
+    result = service._explain_gate("AAPL", _gate(), tas.ta.TrendState.UPTREND, tas.ta.Stage.STAGE_2)
+    assert result is None
+
+
+def test_explain_gate_passes_primitive_facts_through_to_the_narrator():
+    narrator = _FakeNarrator()
+    service = tas.TickerAnalysisService(market_data=None, screener=None, narrator=narrator)
+    gate = _gate(
+        passes=True,
+        entry_trigger=tg.EntryTrigger(trigger_type="breakout", trigger_price=125.4, already_triggered=True),
+        stop_and_target=tg.StopAndTarget(
+            stop_loss=110.0, take_profit=140.0, take_profit_method="objetivo 2:1 sobre el riesgo", risk_reward=2.0
+        ),
+    )
+
+    result = service._explain_gate("AAPL", gate, tas.ta.TrendState.UPTREND, tas.ta.Stage.STAGE_2)
+
+    assert result == "una explicación"
+    assert len(narrator.calls) == 1
+    call = narrator.calls[0]
+    assert call["ticker"] == "AAPL"
+    assert call["gate_passes"] is True
+    assert call["conditions"] == [("Tendencia alcista o Fase 2 de Weinstein", True)]
+    assert call["trend_label"] == "uptrend"
+    assert call["stage_label"] == "stage2"
+    assert call["entry_trigger_summary"] == "ruptura en 125.40 (ya disparado)"
+    assert call["stop_and_target_summary"] == (
+        "stop en 110.00, objetivo en 140.00 (objetivo 2:1 sobre el riesgo), relación beneficio:riesgo 2.0:1"
+    )
+
+
+def test_explain_gate_handles_no_trigger_and_no_stop_target():
+    narrator = _FakeNarrator()
+    service = tas.TickerAnalysisService(market_data=None, screener=None, narrator=narrator)
+
+    service._explain_gate("AAPL", _gate(passes=False), tas.ta.TrendState.SIDEWAYS, None)
+
+    call = narrator.calls[0]
+    assert call["stage_label"] is None
+    assert call["entry_trigger_summary"] is None
+    assert call["stop_and_target_summary"] is None
+
+
+def test_explain_gate_returns_none_when_the_narrator_itself_returns_none():
+    narrator = _FakeNarrator(response=None)
+    service = tas.TickerAnalysisService(market_data=None, screener=None, narrator=narrator)
+    result = service._explain_gate("AAPL", _gate(), tas.ta.TrendState.UPTREND, tas.ta.Stage.STAGE_2)
+    assert result is None

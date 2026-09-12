@@ -5,6 +5,7 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.domain.interfaces.llm_narrator import LLMNarrator
 from app.domain.interfaces.market_data_provider import MarketDataProvider
 from app.infrastructure.db.repositories.asset_repository import AssetRepository
 from app.infrastructure.db.repositories.daily_brief_repository import DailyBriefRepository
@@ -18,6 +19,7 @@ from app.infrastructure.db.repositories.ticker_daily_state_repository import Tic
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.infrastructure.db.repositories.trigger_event_repository import TriggerEventRepository
 from app.infrastructure.db.session import get_db
+from app.infrastructure.llm.gemini_narrator import GeminiNarrator
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider
 from app.services.market_context_service import MarketContextService
 from app.services.market_data_service import MarketDataService
@@ -35,6 +37,16 @@ def get_market_data_provider() -> MarketDataProvider:
     if settings.market_data_provider == "yfinance":
         return YFinanceProvider()
     raise ValueError(f"Unsupported market data provider: {settings.market_data_provider}")
+
+
+@lru_cache
+def get_llm_narrator() -> LLMNarrator:
+    """Cached as a singleton: `GeminiNarrator` holds its own `genai.Client`
+    (or none at all, absent an API key), reused across requests rather than
+    rebuilt on every call - same reasoning `get_market_data_provider` above
+    already documents."""
+    settings: Settings = get_settings()
+    return GeminiNarrator(settings.gemini_api_key)
 
 
 @lru_cache
@@ -64,8 +76,9 @@ def get_market_context_service(
 def get_ticker_analysis_service(
     market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
     screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
+    narrator: Annotated[LLMNarrator, Depends(get_llm_narrator)],
 ) -> TickerAnalysisService:
-    return TickerAnalysisService(market_data, screener)
+    return TickerAnalysisService(market_data, screener, narrator)
 
 
 @lru_cache

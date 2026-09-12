@@ -53,6 +53,7 @@ from datetime import date, time, timedelta
 
 import pandas as pd
 
+from app.domain.interfaces.llm_narrator import LLMNarrator
 from app.domain.models.ticker_analysis import PricePoint, TickerAnalysis
 from app.services import analysis_tools as at
 from app.services import multi_timeframe as mtf
@@ -66,6 +67,7 @@ from app.services.levels_engine import GateResult, evaluate_gate
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, closed_bar_cutoff_for_ticker
+from app.services.trade_geometry import EntryTrigger, StopAndTarget
 
 HISTORY_YEARS = 10
 CHART_BARS = 504  # ~2 trading years
@@ -439,10 +441,55 @@ def compute_core_signals(
     )
 
 
+def _entry_trigger_summary(trigger: EntryTrigger | None) -> str | None:
+    if trigger is None:
+        return None
+    kind = "ruptura" if trigger.trigger_type == "breakout" else "rebote en soporte"
+    status = "ya disparado" if trigger.already_triggered else "todavía vigilando"
+    return f"{kind} en {trigger.trigger_price:.2f} ({status})"
+
+
+def _stop_and_target_summary(stop_and_target: StopAndTarget | None) -> str | None:
+    if stop_and_target is None or stop_and_target.stop_loss is None:
+        return None
+    parts = [f"stop en {stop_and_target.stop_loss:.2f}"]
+    if stop_and_target.take_profit is not None:
+        parts.append(f"objetivo en {stop_and_target.take_profit:.2f} ({stop_and_target.take_profit_method})")
+    if stop_and_target.risk_reward is not None:
+        parts.append(f"relación beneficio:riesgo {stop_and_target.risk_reward:.1f}:1")
+    return ", ".join(parts)
+
+
 class TickerAnalysisService:
-    def __init__(self, market_data: MarketDataService, screener: MarketScreenerService | None = None) -> None:
+    def __init__(
+        self,
+        market_data: MarketDataService,
+        screener: MarketScreenerService | None = None,
+        narrator: LLMNarrator | None = None,
+    ) -> None:
         self.market_data = market_data
         self.screener = screener
+        # Reconstruction (2026-09), Fase 7: `None` by default (no live path
+        # instantiates a narrator unless GEMINI_API_KEY is set - see
+        # api/deps.py) - `_explain_gate` below already handles that case
+        # gracefully, so this class never needs its own extra "is this
+        # configured" branch beyond what the port itself guarantees.
+        self.narrator = narrator
+
+    def _explain_gate(
+        self, ticker: str, gate: GateResult, trend: ta.TrendState, stage: ta.Stage | None
+    ) -> str | None:
+        if self.narrator is None:
+            return None
+        return self.narrator.explain_gate(
+            ticker=ticker,
+            gate_passes=gate.passes,
+            conditions=[(c.label, c.passed) for c in gate.conditions],
+            trend_label=trend.value,
+            stage_label=stage.value if stage else None,
+            entry_trigger_summary=_entry_trigger_summary(gate.entry_trigger),
+            stop_and_target_summary=_stop_and_target_summary(gate.stop_and_target),
+        )
 
     def _rs_rating_for(self, ticker: str) -> int | None:
         if self.screener is None:
@@ -552,6 +599,7 @@ class TickerAnalysisService:
         news = self.market_data.get_ticker_news(ticker)
         seasonality = at.seasonality_by_month(close)
         historical_analogs = at.historical_analogs(close, vix_close=vix_close)
+        llm_narrative = self._explain_gate(ticker, core.gate, core.trend, core.stage)
 
         return TickerAnalysis(
             ticker=ticker,
@@ -609,4 +657,5 @@ class TickerAnalysisService:
             historical_analogs=historical_analogs,
             gate=core.gate,
             triple_barrier_backtest=core.triple_barrier_backtest,
+            llm_narrative=llm_narrative,
         )

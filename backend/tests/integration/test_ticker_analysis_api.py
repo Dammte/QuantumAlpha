@@ -22,6 +22,11 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
     assert body["fundamentals"]["name"] == "AAPL Inc."
     assert len(body["news"]) > 0
 
+    # Fase 7: no GEMINI_API_KEY configured in tests (GeminiNarrator's
+    # "cableado, no activado" default) - never null-crashes the endpoint,
+    # just comes back empty.
+    assert body["llm_narrative"] is None
+
 
 def test_ticker_analysis_includes_multi_timeframe_and_triple_barrier_backtest(client: TestClient) -> None:
     """Segunda auditoría, Bloque 2: before this, "Analizar activo" never

@@ -149,3 +149,7 @@ class TickerAnalysisResponse(BaseModel):
     historical_analogs: HistoricalAnalogsResponse | None
     gate: GateResultResponse
     triple_barrier_backtest: TripleBarrierBacktestResponse | None
+    # Reconstruction (2026-09), Fase 7: `None` unless GEMINI_API_KEY is set -
+    # see LLMNarrator's own docstring. Purely explanatory text over `gate`
+    # above, never a second verdict.
+    llm_narrative: str | None

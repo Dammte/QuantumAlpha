@@ -1328,7 +1328,7 @@ entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
 `test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
 `test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
 
-## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5, 8 completas (Fase 7 en curso)
+## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5, 8 completas; Fase 7 cableada
 
 Encargo explícito del propietario: sustituir el checklist ponderado de 26 factores (secciones 1-24
 arriba) por un sistema de niveles/triggers que responda exactamente 4 preguntas - qué hacer hoy con lo
@@ -1545,17 +1545,41 @@ ejecutado de verdad contra el universo real, resultado documentado arriba. Lo qu
 del propietario (qué hacer, si algo, con el hallazgo de reversión de corto plazo), no trabajo de
 ingeniería pendiente.
 
+### 25.2 Capa Gemini de narrativa (Fase 7) - cableada, no activada
+
+`LLMNarrator` (`app/domain/interfaces/llm_narrator.py`): puerto que traduce un `GateResult` ya calculado
+a una explicación corta en lenguaje llano - nunca una segunda opinión, nunca una puntuación, nunca una
+decisión propia. Deliberadamente tipado solo con primitivos (`str`/`bool`/`list[tuple[str, bool]]`), no
+con `GateResult` directamente - el servicio que ya importa `levels_engine` (`ticker_analysis_service.
+_explain_gate`) traduce antes de llamar al puerto, así el puerto no depende de la forma interna de otro
+módulo de `services/`. `GeminiNarrator` (`app/infrastructure/llm/gemini_narrator.py`) es el adaptador
+real (`google-genai`), estructuralmente incapaz de influir el gate: solo recibe hechos ya decididos, y
+cualquier fallo (sin clave, límite de tasa, timeout, respuesta vacía) se traga en `None` - una narrativa
+es contexto opcional, nunca una dependencia que pueda bloquear "Analizar activo".
+
+**Cableada, no activada** - mismo criterio que los Cron Jobs de la Fase 2: `GEMINI_API_KEY` no tiene
+valor por defecto (`.env.example` la deja vacía, `render.yaml` la declara `sync: false` sin valor) -
+mientras no se configure, `explain_gate` devuelve `None` de inmediato, sin ningún intento de red, y
+ningún dato del propietario (tickers, gate, cartera) sale nunca de esta app hacia Google. Activarla es
+una decisión de coste y privacidad del propietario, confirmada explícitamente antes de construir esto
+(no algo que este reconstructor decidiera por su cuenta, a diferencia del resto de la Fase 7).
+`TickerAnalysisResponse.llm_narrative` (`GET /market/tickers/{ticker}/analysis`) es el único consumidor
+por ahora - el único sitio donde "explicar una entrada concreta en lenguaje natural" tiene sentido
+acotado; el Radar (muchos tickers a la vez) queda fuera a propósito, no es una vista deep-dive.
+
 **Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
 resto), Fase 6 (frontend de 4 vistas - Hoy/Radar/Activo/Sistema, reemplazando la navegación actual por
-secciones), Fase 7 (capa Gemini que nunca puntúa ni decide - en curso, ver más abajo), Fase 9 (escenarios
-dorados + tests de latencia), Fase 10 (activar el universo dinámico completo, ~400 tickers).
+secciones), resto de la Fase 7 (mostrar `llm_narrative` en el frontend cuando exista - hoy solo vive en
+la respuesta de la API), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el universo
+dinámico completo, ~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
 `test_intraday_refresh.py` + 4 de integración, 5 en `test_levels_engine_replay.py`, 6 en
 `test_radar_api.py`, 5 en `test_portfolio_today_api.py`, 8 en `test_trigger_performance_service.py` + 2
 de integración en `test_system_api.py`, 2 nuevos en `test_factor_ablation_study.py` (los factores del
-gate y el retiro de sus tres equivalentes del checklist), más las actualizaciones de
-`test_ticker_analysis_service.py`, `test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y
-`test_portfolios_api.py` para el nuevo
+gate y el retiro de sus tres equivalentes del checklist), 4 en `test_gemini_narrator.py`, 4 más en
+`test_ticker_analysis_service.py` (el cableado de `_explain_gate`) + 1 de integración en
+`test_ticker_analysis_api.py` (`llm_narrative: null` sin clave configurada), más las actualizaciones de
+`test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y `test_portfolios_api.py` para el nuevo
 contrato del gate.

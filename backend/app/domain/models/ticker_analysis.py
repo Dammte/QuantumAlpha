@@ -91,3 +91,9 @@ class TickerAnalysis:
     historical_analogs: HistoricalAnalogs | None
     gate: GateResult
     triple_barrier_backtest: TripleBarrierBacktestResult | None
+    # Reconstruction (2026-09), Fase 7: `None` whenever the Gemini narrator
+    # isn't configured (the default) or its call failed for any reason - see
+    # `app.domain.interfaces.llm_narrator.LLMNarrator`. Never affects `gate`
+    # above, which is always computed first and handed to the narrator as an
+    # already-settled fact.
+    llm_narrative: str | None

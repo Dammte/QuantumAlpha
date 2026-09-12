@@ -17,6 +17,13 @@ services:
         value: production
       - key: MARKET_DATA_PROVIDER
         value: yfinance
+      # Reconstruction (2026-09), Fase 7: unset by default (no value given,
+      # sync: false means Render never gets one from this file) - the
+      # Gemini narrative layer stays fully inert until the propietario sets
+      # this manually in the Render dashboard, same "wired, not activated"
+      # note as the two cron jobs below. See GeminiNarrator's own docstring.
+      - key: GEMINI_API_KEY
+        sync: false
 
   # Reconstruction (2026-09), Fase 2, Job A: nightly precompute for the whole
   # universe's levels/triggers gate and every open position's exit-engine
