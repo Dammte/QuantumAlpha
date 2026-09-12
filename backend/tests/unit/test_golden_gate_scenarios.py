@@ -1,12 +1,11 @@
 """Reconstruction (2026-09), Fase 9: golden-scenario coverage for the gate
 that actually decides live now (`levels_engine.evaluate_gate`) - the same
-methodology `test_golden_scenarios.py` already established for the retired
-checklist (`recommendation_engine.build_recommendation`, still measured by
-`scripts/factor_ablation_study.py` but no longer called from any live path -
-see that module's own docstring), reapplied to what IS live. A separate
-file, not a rewrite of that one: `test_golden_scenarios.py` still correctly
-documents the retired checklist's own end-to-end behavior and stays as
-regression coverage for it.
+methodology `test_golden_scenarios.py` established for the now-fully-retired
+checklist (`recommendation_engine.build_recommendation`, deleted outright in
+the Fase 1 cleanup once nothing live called it - see
+`recommendation_engine.py`'s own module docstring), reapplied to what IS
+live. `test_golden_scenarios.py` was deleted alongside the checklist it
+tested; this file is its full replacement, not a parallel suite.
 
 Same "hand-built, textbook-shaped, human-verifiable" philosophy: real
 indicator series run end to end through `evaluate_gate`, asserting

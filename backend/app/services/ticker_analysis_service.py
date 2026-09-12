@@ -16,14 +16,14 @@ see by searching it directly.
 
 2026-09 (reconstruction, Fase 4): the live verdict here is now
 `levels_engine.evaluate_gate` (`GateResult` - `gate`/`confirmed_gate` below),
-not `recommendation_engine.build_recommendation`'s weighted checklist.
-`recommendation_engine.py` itself is not deleted - `scripts/
-factor_ablation_study.py` still measures some of its individual factors
-(the ones that don't exactly duplicate a new gate condition) alongside the
-gate's own conditions, since Fase 8's reorientation of that script - but
-nothing in this file, and therefore nothing in the live "Analizar activo"/
-portfolio-risk paths that build on it, calls `build_recommendation` anymore.
-See docs/quant_methodology.md.
+not the old weighted checklist. That checklist (`build_recommendation`,
+`Recommendation`, `RecommendationFactor`) has now been retired outright from
+`recommendation_engine.py` (Parte 2.3/6 of the reconstruction) - the module
+is trimmed to the `trade_geometry.py` re-exports and `ENGINE_VERSION` only.
+`scripts/factor_ablation_study.py` never actually imported the checklist
+function; it mirrors the old point values as its own literal constants (see
+that script's own docstring) precisely so retiring this one doesn't touch
+it. See docs/quant_methodology.md.
 
 2026-09: Markov chain, GARCH, Monte Carlo, Kelly sizing, the Hurst/ADF
 statistical-structure read and the entry-timing badge were removed from this
