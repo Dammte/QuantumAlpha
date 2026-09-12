@@ -1999,6 +1999,32 @@
   font-style: italic;
 }
 
+/* Resumen diario (reconstrucción 2026-09, Fase 5) - GET /portfolios/{id}/today.
+   Deliberadamente pequeño: solo lo que TodayActionsPanel, más abajo, no
+   puede saber por sí mismo (conteos a nivel de universo). */
+
+.daily-brief-banner {
+  padding: 12px 16px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+}
+
+.daily-brief-banner__headline {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.daily-brief-banner__stats {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.daily-brief-banner__updated {
+  opacity: 0.75;
+}
+
 /* Acciones requeridas hoy (Fase 7 - the exit engine's actual payoff) */
 
 .today-actions__list {

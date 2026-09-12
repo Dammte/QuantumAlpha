@@ -18,6 +18,7 @@ import Sidebar from './components/Sidebar'
 import RefreshBar from './components/RefreshBar'
 import PortfolioConstructionPanel from './components/PortfolioConstructionPanel'
 import TodayActionsPanel from './components/TodayActionsPanel'
+import DailyBriefBanner from './components/DailyBriefBanner'
 import SystemPerformanceView from './components/SystemPerformanceView'
 import { DEFAULT_REGION } from './regions'
 
@@ -34,6 +35,7 @@ function App() {
   const [riskLoading, setRiskLoading] = useState(false)
   const [riskRefreshing, setRiskRefreshing] = useState(false)
   const [construction, setConstruction] = useState(null)
+  const [today, setToday] = useState(null)
   const [metrics, setMetrics] = useState(null)
   const [history, setHistory] = useState({ points: [], benchmarkPoints: null })
   const [timeframe, setTimeframe] = useState('6M')
@@ -88,6 +90,12 @@ function App() {
       .getPortfolioConstruction(id)
       .then(setConstruction)
       .catch(() => setConstruction(null))
+
+    setToday(null)
+    api
+      .getPortfolioToday(id)
+      .then(setToday)
+      .catch(() => setToday(null))
   }, [])
 
   const loadAnalysis = useCallback(async (id, tf, benchmark) => {
@@ -258,6 +266,7 @@ function App() {
           </section>
         ) : (
           <main className="dashboard">
+          <DailyBriefBanner brief={today?.brief} />
           <TodayActionsPanel
             riskByTicker={riskByTicker}
             onNavigateToTicker={navigateToAnalysis}
