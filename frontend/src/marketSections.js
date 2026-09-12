@@ -6,5 +6,6 @@ export const MARKET_SECTIONS = [
   { key: 'sectors', label: 'Sectores' },
   { key: 'trend', label: 'Tendencia' },
   { key: 'levels', label: 'Soportes/Resistencias' },
+  { key: 'radar', label: 'Radar' },
   { key: 'watchlist', label: 'A revisar' },
 ]

@@ -115,4 +115,11 @@ export const api = {
     request(`/api/v1/market/tickers/${ticker}/relationships${toQueryString({ region })}`),
 
   getSignalPerformance: () => request('/api/v1/system/signal-performance'),
+
+  // Reconstruction (2026-09), Fase 5: pure reads over daily_close.py's own
+  // precomputed tables - never a live universe scan/recompute like every
+  // request above this one.
+  getRadar: ({ region } = {}) => request(`/api/v1/market/radar${toQueryString({ region })}`),
+
+  getPortfolioToday: (portfolioId) => request(`/api/v1/portfolios/${portfolioId}/today`),
 }

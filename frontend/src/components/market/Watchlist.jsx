@@ -173,8 +173,12 @@ function GeneralWatchlist({ region }) {
 }
 
 // 2026-09: el modo "Premium" (premium_watchlist_service.py) se retiró - ver
-// docs/quant_methodology.md. Se sustituye por el radar en una fase futura
-// (Fase 5), no por esta lista general mientras tanto.
+// docs/quant_methodology.md. La pestaña "Radar" (RadarView.jsx, GET
+// /market/radar) cubre ahora "qué está a punto de disparar una entrada"
+// contra el gate nuevo; esta lista general (basada en setups propios, sin
+// relación con el gate) se mantiene aparte por ahora - consolidarlas o
+// retirar esta es trabajo pendiente de la Fase 5/6, no una decisión tomada
+// todavía.
 function Watchlist({ region }) {
   return <GeneralWatchlist region={region} />
 }

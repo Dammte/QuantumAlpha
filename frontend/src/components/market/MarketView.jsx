@@ -4,6 +4,7 @@ import SectorsView from './SectorsView'
 import TrendBreadthPanel from './TrendBreadthPanel'
 import SupportResistancePanel from './SupportResistancePanel'
 import Watchlist from './Watchlist'
+import RadarView from './RadarView'
 import MarketContextPanel from './MarketContextPanel'
 import TickerAnalysisPanel from './analysis/TickerAnalysisPanel'
 
@@ -15,6 +16,7 @@ const COMPONENT_BY_SECTION = {
   sectors: SectorsView,
   trend: TrendBreadthPanel,
   levels: SupportResistancePanel,
+  radar: RadarView,
   watchlist: Watchlist,
 }
 
