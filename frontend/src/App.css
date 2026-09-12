@@ -2069,6 +2069,43 @@
   line-height: 1.5;
 }
 
+/* Coste de oportunidad (reconstrucción 2026-09, Fase 5 resto) - opportunity_cost.py */
+
+.opportunity-cost__hint {
+  font-size: 12.5px;
+  color: var(--text);
+  margin: 0 0 12px;
+}
+
+.opportunity-cost__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.opportunity-cost__item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.opportunity-cost__arrow {
+  color: var(--text);
+}
+
+.opportunity-cost__detail {
+  color: var(--text);
+  font-size: 12px;
+}
+
 /* Semáforo multi-temporalidad (weekly bias / daily execution - see multi_timeframe.py) */
 
 .mtf-semaphore {

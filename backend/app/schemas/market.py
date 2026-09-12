@@ -276,12 +276,25 @@ class DailyBriefResponse(BaseModel):
     headline: str
 
 
+class OpportunityCostNoteResponse(BaseModel):
+    """Reconstruction (2026-09), Fase 5 (resto): see `opportunity_cost.py`'s
+    own docstring - a holding whose own gate doesn't pass today, next to a
+    same-sector Radar candidate whose gate does. Never a second opinion on
+    whether to sell `held_ticker` (that's exit_engine.py's job alone)."""
+
+    held_ticker: str
+    sector: str
+    alternative_ticker: str
+    alternative_rs_rating: int | None
+
+
 class PortfolioTodayResponse(BaseModel):
     # `None` when daily_close.py hasn't run for this portfolio yet - same
     # "empty vs. doesn't exist yet" distinction RadarResponse.computed_at
     # documents.
     brief: DailyBriefResponse | None
     positions: list[PositionDailyStateResponse]
+    opportunity_cost: list[OpportunityCostNoteResponse]
 
 
 class RadarItemResponse(BaseModel):

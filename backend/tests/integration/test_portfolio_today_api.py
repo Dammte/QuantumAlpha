@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.domain.models.daily_brief import DailyBrief
 from app.domain.models.position_daily_state import PositionDailyState
+from app.domain.models.ticker_daily_state import TickerDailyState
 from app.infrastructure.db.repositories.daily_brief_repository import DailyBriefRepository
 from app.infrastructure.db.repositories.position_daily_state_repository import (
     PositionDailyStateRepository,
 )
+from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 
 
 def _create_portfolio(client: TestClient, name: str = "Main") -> int:
@@ -52,6 +54,36 @@ def _seed_brief(db: Session, portfolio_id: int, **overrides) -> DailyBrief:
     )
     defaults.update(overrides)
     return DailyBriefRepository(db).upsert(DailyBrief(**defaults))
+
+
+def _seed_ticker_state(db: Session, **overrides) -> TickerDailyState:
+    defaults = dict(
+        id=None,
+        region="us",
+        ticker="MSFT",
+        trade_date=date.today(),
+        computed_at=datetime.now(UTC),
+        price=400.0,
+        currency="USD",
+        trend="uptrend",
+        stage="stage2",
+        rs_rating=80,
+        adx14=28.0,
+        atr_multiple=1.2,
+        rsi14=55.0,
+        gate_passes=False,
+        gate_conditions=[],
+        gate_version="2026-09-levels-v1",
+        entry_trigger_type=None,
+        entry_trigger_price=None,
+        entry_already_triggered=False,
+        stop_loss=None,
+        take_profit=None,
+        take_profit_method=None,
+        risk_reward=None,
+    )
+    defaults.update(overrides)
+    return TickerDailyStateRepository(db).upsert(TickerDailyState(**defaults))
 
 
 def test_today_returns_404_for_unknown_portfolio(client: TestClient) -> None:
@@ -114,3 +146,53 @@ def test_today_only_shows_the_latest_row_per_ticker(client: TestClient, db_sessi
     assert len(matches) == 1
     assert matches[0]["urgency"] == "hold"
     assert matches[0]["price"] == 150.0
+
+
+# --- opportunity_cost (Fase 5, resto) -----------------------------------------
+
+
+def test_today_flags_a_same_sector_radar_alternative_for_a_holding_whose_gate_fails(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio_id = _create_portfolio(client)
+    _seed_position_state(db_session, portfolio_id, ticker="MSFT")
+    _seed_ticker_state(db_session, ticker="MSFT", gate_passes=False)
+    # ORCL: same curated industry/sector as MSFT ("Software empresarial" /
+    # "Tecnología" - market_universe.py), gate passing today.
+    _seed_ticker_state(db_session, ticker="ORCL", gate_passes=True, rs_rating=92)
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/today").json()
+
+    assert len(body["opportunity_cost"]) == 1
+    note = body["opportunity_cost"][0]
+    assert note["held_ticker"] == "MSFT"
+    assert note["alternative_ticker"] == "ORCL"
+    assert note["alternative_rs_rating"] == 92
+    assert note["sector"] == "Tecnología"
+
+
+def test_today_has_no_opportunity_cost_note_when_the_holding_already_passes_its_own_gate(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio_id = _create_portfolio(client)
+    _seed_position_state(db_session, portfolio_id, ticker="MSFT")
+    _seed_ticker_state(db_session, ticker="MSFT", gate_passes=True)
+    _seed_ticker_state(db_session, ticker="ORCL", gate_passes=True, rs_rating=92)
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/today").json()
+
+    assert body["opportunity_cost"] == []
+
+
+def test_today_has_no_opportunity_cost_note_when_no_alternative_shares_the_sector(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio_id = _create_portfolio(client)
+    _seed_position_state(db_session, portfolio_id, ticker="MSFT")
+    _seed_ticker_state(db_session, ticker="MSFT", gate_passes=False)
+    # JPM: "Grandes bancos" / "Financiero" - a different sector from MSFT.
+    _seed_ticker_state(db_session, ticker="JPM", gate_passes=True, rs_rating=99)
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/today").json()
+
+    assert body["opportunity_cost"] == []

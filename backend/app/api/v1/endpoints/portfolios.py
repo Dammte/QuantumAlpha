@@ -16,6 +16,7 @@ from app.api.deps import (
     get_portfolio_service,
     get_position_daily_state_repository,
     get_position_signal_snapshot_repository,
+    get_ticker_daily_state_repository,
     get_trade_plan_repository,
 )
 from app.domain.models.asset import AssetClass
@@ -28,11 +29,13 @@ from app.infrastructure.db.repositories.position_daily_state_repository import P
 from app.infrastructure.db.repositories.position_signal_snapshot_repository import (
     PositionSignalSnapshotRepository,
 )
+from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.schemas.market import (
     AggregateRiskReportResponse,
     CorrelationWarningResponse,
     DailyBriefResponse,
+    OpportunityCostNoteResponse,
     PortfolioConstructionResponse,
     PortfolioRiskResponse,
     PortfolioTodayResponse,
@@ -49,6 +52,7 @@ from app.schemas.quant_analysis import CoreSignalsResponse, MultiTimeframeRespon
 from app.schemas.transaction import TransactionCreate, TransactionRead
 from app.services import durable_cache
 from app.services import multi_timeframe as mtf
+from app.services import opportunity_cost as oc
 from app.services import portfolio_construction_service as pcs
 from app.services import trade_manager as tm
 from app.services import trade_plan_service as tps
@@ -377,6 +381,7 @@ def get_portfolio_today(
     position_daily_state_repo: Annotated[
         PositionDailyStateRepository, Depends(get_position_daily_state_repository)
     ],
+    ticker_daily_state_repo: Annotated[TickerDailyStateRepository, Depends(get_ticker_daily_state_repository)],
 ) -> PortfolioTodayResponse:
     """Reconstruction (2026-09), Fase 5: "qué hago hoy con lo que ya tengo"
     (Parte 0, pregunta 1) - a pure read over `daily_close.py`'s own
@@ -387,12 +392,32 @@ def get_portfolio_today(
     into the richer live `/risk` read (`signals`/`multi_timeframe`/
     `scaled_exit`, none of which `PositionDailyState` carries). Returns
     empty/`None` fields rather than 404 when `daily_close.py` hasn't run yet
-    for this portfolio - same reasoning as `RadarResponse.computed_at`."""
+    for this portfolio - same reasoning as `RadarResponse.computed_at`.
+
+    `opportunity_cost` (Fase 5, resto - see `opportunity_cost.py`) compares
+    each held ticker whose own gate doesn't pass today against the Radar's
+    already-passing candidates in the same curated sector, combining both
+    regions' Radar pools (same "a personal portfolio isn't confined to one
+    market" reasoning `GET /{portfolio_id}/risk` above already uses)."""
     if repository.get(portfolio_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portfolio not found")
 
     brief = daily_brief_repo.latest_for_portfolio(portfolio_id)
     positions = position_daily_state_repo.latest_for_portfolio(portfolio_id)
+
+    held_states = [
+        state
+        for p in positions
+        if (state := ticker_daily_state_repo.latest_for_ticker(p.ticker)) is not None
+    ]
+    radar_candidates = [
+        state
+        for region in ("us", "europe")
+        for state in ticker_daily_state_repo.latest_by_region(region)
+        if state.gate_passes
+    ]
+    opportunity_notes = oc.find_opportunity_cost_notes(held_states, radar_candidates)
+
     return PortfolioTodayResponse(
         brief=(
             DailyBriefResponse(
@@ -418,6 +443,15 @@ def get_portfolio_today(
                 current_stop=p.current_stop,
             )
             for p in positions
+        ],
+        opportunity_cost=[
+            OpportunityCostNoteResponse(
+                held_ticker=note.held_ticker,
+                sector=note.sector,
+                alternative_ticker=note.alternative_ticker,
+                alternative_rs_rating=note.alternative_rs_rating,
+            )
+            for note in opportunity_notes
         ],
     )
 

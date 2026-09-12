@@ -1650,8 +1650,25 @@ Dos dependencias reales encontradas y resueltas, no solo referencias en comentar
    `SetupOutcomeStats` se quedan intactos: miden si estos cuatro patrones tienen edge como pregunta de
    investigación propia, independiente de si alguna vista en vivo los sigue mostrando hoy.
 
-**Pendiente**: reescribir `opportunity_cost.py` en pequeño contra el Radar (acordado junto con esta
-retirada, todavía no construido), Fase 10 (activar el universo dinámico completo, ~400 tickers).
+### 25.6 opportunity_cost.py en pequeño, contra el Radar
+
+Reemplaza en espíritu al `opportunity_cost.py` original (retirado en la Fase 1 junto con la watchlist
+"Premium" de 3 niveles que alimentaba) - deliberadamente pequeño: una comparación booleana, no una
+puntuación. `find_opportunity_cost_notes(held_states, radar_candidates)` recorre cada posición cuyo
+propio gate no aprueba hoy y busca, en el mismo sector curado (`market_universe.sector_of`), candidatos
+del Radar cuyo gate sí aprueba - sin inventar una segunda opinión sobre si la posición debería venderse
+(eso sigue siendo trabajo exclusivo de `exit_engine.py`, ver §8). Ordenado por RS Rating del candidato
+(sin datos al final) - no una puntuación nueva, el mismo campo que el resto del proyecto ya trata como
+criterio de "qué líder es más fuerte".
+
+`GET /portfolios/{id}/today` gana un campo `opportunity_cost` - combina el Radar de ambas regiones
+(mismo razonamiento "una cartera personal no se limita a un mercado" que ya usa `/risk`) contra el
+estado de gate más reciente de cada posición (`TickerDailyStateRepository.latest_for_ticker`).
+`OpportunityCostPanel.jsx` lo muestra en "Hoy", debajo de `TodayActionsPanel` - renderiza nada si no hay
+nada que señalar.
+
+**Pendiente**: Fase 10 (activar el universo dinámico completo, ~400 tickers) - la única fase que queda,
+y es una decisión de coste del propietario, no trabajo de ingeniería pendiente de este reconstructor.
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
@@ -1665,4 +1682,5 @@ gate y el retiro de sus tres equivalentes del checklist), 4 en `test_gemini_narr
 `test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y `test_portfolios_api.py` para el nuevo
 contrato del gate. Retirados con `watchlist_service.py`: `test_watchlist_service.py` completo (34 tests)
 y 4 en `test_relationship_map_service.py` que probaban la anotación de setup/percentil ya eliminada (38
-en total, 713 → 675 unitarios).
+en total, 713 → 675 unitarios). 8 nuevos en `test_opportunity_cost.py`, 3 de integración nuevos en
+`test_portfolio_today_api.py` (675 → 683 unitarios).

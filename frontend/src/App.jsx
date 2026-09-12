@@ -20,6 +20,7 @@ import RefreshBar from './components/RefreshBar'
 import PortfolioConstructionPanel from './components/PortfolioConstructionPanel'
 import TodayActionsPanel from './components/TodayActionsPanel'
 import DailyBriefBanner from './components/DailyBriefBanner'
+import OpportunityCostPanel from './components/OpportunityCostPanel'
 import SystemPerformanceView from './components/SystemPerformanceView'
 import { DEFAULT_REGION } from './regions'
 
@@ -289,6 +290,7 @@ function App() {
             construction={construction}
             currency={summary?.base_currency ?? 'USD'}
           />
+          <OpportunityCostPanel notes={today?.opportunity_cost} onNavigateToTicker={navigateToAnalysis} />
 
           {summary && (
             <section className="hero-row">
