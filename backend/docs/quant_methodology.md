@@ -1328,7 +1328,7 @@ entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
 `test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
 `test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
 
-## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-8 completas
+## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-9 completas
 
 Encargo explícito del propietario: sustituir el checklist ponderado de 26 factores (secciones 1-24
 arriba) por un sistema de niveles/triggers que responda exactamente 4 preguntas - qué hacer hoy con lo
@@ -1596,9 +1596,36 @@ archivo que exporta un componente no puede exportar también constantes). Verifi
 build: servidor + frontend reales lanzados con Playwright, las 4 vistas navegadas una por una, sin
 errores de consola ni de página.
 
+### 25.4 Escenarios dorados del gate + presupuesto de latencia (Fase 9)
+
+`test_golden_gate_scenarios.py`: misma metodología que `test_golden_scenarios.py` (series de precios
+con forma de manual, respuesta verificable a simple vista, corridas de punta a punta) aplicada al gate
+que de verdad decide ahora (`levels_engine.evaluate_gate`), no al checklist retirado - archivo separado,
+no una reescritura del original (ese sigue documentando correctamente el comportamiento del checklist
+retirado). Siete escenarios: ruptura limpia de Fase 2 con volumen (aprueba las 6 condiciones), tendencia
+bajista confirmada y lateralidad (fallan por tendencia), veto del par rápido y divergencia bajista de
+OBV (cada uno aislado - falla solo esa condición, con tendencia todavía aprobada), extensión parabólica
+(aislada igual), y un pico de sobrecompra dentro de un mercado lateral (no aislado - un impulso corto lo
+bastante fuerte para disparar el RSI también dispara el ADX y el múltiplo de ATR en la misma ventana de
+14 barras, así que las tres condiciones fallan juntas en un mismo gráfico real, documentado como tal en
+vez de forzar una fixture artificial). Limitación conocida y documentada: ningún escenario aquí prueba
+la sexta condición (beneficio:riesgo) fallando - los seis usan `nearest_support=nearest_resistance=None`
+(sin escaneo de niveles), así que esa condición siempre cae al objetivo fijo 2:1 y sale `True`; una
+fixture real con una resistencia cercana que ofrezca entre 1.0x y 1.5x el riesgo no se construyó en esta
+pasada.
+
+`test_latency_budgets.py`: no una prueba de corrección, sino una red contra la otra forma en que un
+camino caliente se vuelve lento - un bucle Python pesado por barra u O(n²) introducido por accidente en
+cómputo puro, algo que ninguna prueba de "¿es correcta la respuesta?" detectaría nunca. Mide
+`build_ticker_daily_state` (la función que el cron nocturno paga una vez por ticker) sobre 50 tickers
+sintéticos de ~2520 barras (10 años) cada uno, con un presupuesto deliberadamente generoso (0.5s/ticker,
+~40x el tiempo real medido en hardware ordinario, ~12ms/ticker) - pensado para atrapar una regresión real
+(una función que se volvió 10x-100x más lenta), no para perseguir una cifra exacta que haría esta prueba
+inestable entre distinta hardware de CI. Relevante ahora concretamente porque la Fase 10 planea crecer
+el universo de ~217 a ~400 tickers sobre la misma ventana de cron.
+
 **Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
-resto), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el universo dinámico completo,
-~400 tickers).
+resto), Fase 10 (activar el universo dinámico completo, ~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
@@ -1607,6 +1634,7 @@ resto), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el uni
 de integración en `test_system_api.py`, 2 nuevos en `test_factor_ablation_study.py` (los factores del
 gate y el retiro de sus tres equivalentes del checklist), 4 en `test_gemini_narrator.py`, 4 más en
 `test_ticker_analysis_service.py` (el cableado de `_explain_gate`) + 1 de integración en
-`test_ticker_analysis_api.py` (`llm_narrative: null` sin clave configurada), más las actualizaciones de
+`test_ticker_analysis_api.py` (`llm_narrative: null` sin clave configurada), 7 en
+`test_golden_gate_scenarios.py`, 1 en `test_latency_budgets.py`, más las actualizaciones de
 `test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y `test_portfolios_api.py` para el nuevo
 contrato del gate.
