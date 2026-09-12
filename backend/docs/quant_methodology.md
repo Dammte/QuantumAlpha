@@ -1437,11 +1437,20 @@ evidencia en vez de intuición.
    `scaled_exit`, ninguno de los cuales carga `PositionDailyState`). Mismo criterio que el radar para
    "no ha corrido todavía" - `brief: None`, `positions: []`, nunca un 404.
 
+3. **Consumidores mínimos en el frontend, no todavía las 4 vistas de la Fase 6**: una pestaña "Radar"
+   nueva en Mercado (`RadarView.jsx`) junto a "A revisar" (`Watchlist.jsx`, que se queda tal cual -
+   consolidarlas o retirarla es trabajo pendiente), y un banner pequeño en "Mi Cartera"
+   (`DailyBriefBanner.jsx`) con el titular del brief y los conteos a nivel de universo
+   (`new_entry_triggers`/`new_gate_passes`) - lo único que `/today` aporta que la lectura en vivo no
+   podría calcular por sí sola. La urgencia por posición sigue siendo trabajo de `TodayActionsPanel`
+   (`riskByTicker`, en vivo) - el banner no la duplica. La Fase 6 real (Hoy/Radar/Activo/Sistema como
+   4 vistas de primer nivel, reemplazando la navegación actual) sigue pendiente.
+
 **Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
-resto), Fase 6 (frontend de 4 vistas - Hoy/Radar/Activo/Sistema), Fase 7 (capa Gemini que nunca puntúa ni
-decide), Fase 8 (medición basada en `trigger_history`, reorientar `factor_ablation_study.py` a triggers y
-ejecutarlo de verdad), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el universo
-dinámico completo, ~400 tickers).
+resto), Fase 6 (frontend de 4 vistas - Hoy/Radar/Activo/Sistema, reemplazando la navegación actual por
+secciones), Fase 7 (capa Gemini que nunca puntúa ni decide), Fase 8 (medición basada en
+`trigger_history`, reorientar `factor_ablation_study.py` a triggers y ejecutarlo de verdad), Fase 9
+(escenarios dorados + tests de latencia), Fase 10 (activar el universo dinámico completo, ~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
