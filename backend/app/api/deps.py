@@ -16,6 +16,7 @@ from app.infrastructure.db.repositories.position_signal_snapshot_repository impo
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
+from app.infrastructure.db.repositories.trigger_event_repository import TriggerEventRepository
 from app.infrastructure.db.session import get_db
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider
 from app.services.market_context_service import MarketContextService
@@ -101,6 +102,10 @@ def get_position_daily_state_repository(db: DbSession) -> PositionDailyStateRepo
 
 def get_daily_brief_repository(db: DbSession) -> DailyBriefRepository:
     return DailyBriefRepository(db)
+
+
+def get_trigger_event_repository(db: DbSession) -> TriggerEventRepository:
+    return TriggerEventRepository(db)
 
 
 def get_asset_repository(db: DbSession) -> AssetRepository:

@@ -1328,7 +1328,7 @@ entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
 `test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
 `test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
 
-## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5 (en curso)
+## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5, 8 (en curso)
 
 Encargo explícito del propietario: sustituir el checklist ponderado de 26 factores (secciones 1-24
 arriba) por un sistema de niveles/triggers que responda exactamente 4 preguntas - qué hacer hoy con lo
@@ -1446,15 +1446,34 @@ evidencia en vez de intuición.
    (`riskByTicker`, en vivo) - el banner no la duplica. La Fase 6 real (Hoy/Radar/Activo/Sistema como
    4 vistas de primer nivel, reemplazando la navegación actual) sigue pendiente.
 
+**Fase 8 (en curso) — medición basada en `TriggerEvent`, la nueva lectura principal de "¿está
+funcionando el sistema?" (Parte 0, pregunta 4).**
+
+`trigger_performance_service.py`: mismo patrón arquitectónico que `signal_performance_service.py`
+(funciones de agregación puras + una única función de orquestación que trae histórico de precios en un
+solo batch), pero midiendo `TriggerEvent` (el registro append-only que `daily_close.py`/
+`intraday_refresh.py` ya escriben desde la Fase 2) en vez de un veredicto/señal de checklist. Mide dos
+tipos de evento por separado - `gate_passed` (el gate pasó de fallar a aprobar) y `entry_triggered` (el
+precio del disparador de entrada se cruzó de verdad) - cada uno una hipótesis real sobre si el gate
+nuevo tiene valor predictivo, no una asumida. `exit_urgency_changed` (a nivel de posición) queda fuera a
+propósito - es el motor de salida reaccionando sobre una posición ya abierta, no una señal de entrada
+nueva; mezclar las dos tasas de acierto no respondería ninguna de las dos preguntas con honestidad
+(mismo razonamiento que `BEARISH_SIGNAL_LABELS` ya codifica en `signal_performance_service.py`).
+`GET /system/signal-performance` gana un campo `trigger_outcomes` nuevo, sin tocar los tres que ya
+tenía - los datos de antes de la Fase 4 siguen siendo correctos bajo la lectura antigua. La vista
+"Rendimiento del sistema" muestra esta tabla primero, como la lectura principal actual, con las tablas
+de veredicto/señal debajo, marcadas explícitamente como históricas.
+
 **Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
 resto), Fase 6 (frontend de 4 vistas - Hoy/Radar/Activo/Sistema, reemplazando la navegación actual por
-secciones), Fase 7 (capa Gemini que nunca puntúa ni decide), Fase 8 (medición basada en
-`trigger_history`, reorientar `factor_ablation_study.py` a triggers y ejecutarlo de verdad), Fase 9
+secciones), Fase 7 (capa Gemini que nunca puntúa ni decide), resto de la Fase 8 (reorientar
+`factor_ablation_study.py` a triggers y ejecutarlo de verdad contra el universo real), Fase 9
 (escenarios dorados + tests de latencia), Fase 10 (activar el universo dinámico completo, ~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
 `test_intraday_refresh.py` + 4 de integración, 5 en `test_levels_engine_replay.py`, 6 en
-`test_radar_api.py`, 5 en `test_portfolio_today_api.py`, más las actualizaciones de
-`test_ticker_analysis_service.py`, `test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y
-`test_portfolios_api.py` para el nuevo contrato del gate.
+`test_radar_api.py`, 5 en `test_portfolio_today_api.py`, 8 en `test_trigger_performance_service.py` + 2
+de integración en `test_system_api.py`, más las actualizaciones de `test_ticker_analysis_service.py`,
+`test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y `test_portfolios_api.py` para el nuevo
+contrato del gate.

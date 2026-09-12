@@ -28,8 +28,23 @@ class FalseNegativeResponse(BaseModel):
     horizon_days: int
 
 
+class TriggerOutcomeResponse(BaseModel):
+    """See `trigger_performance_service.TriggerOutcomeStats` - Fase 8: the
+    new primary "¿está funcionando el sistema?" read, measured against
+    `TriggerEvent` (gate/entry-trigger changes) instead of the retired
+    checklist's verdict/signal labels above."""
+
+    event_type: str  # "gate_passed" | "entry_triggered"
+    horizon_days: int
+    n: int
+    hit_rate: float | None
+    mean_return: float | None
+    median_return: float | None
+
+
 class SignalPerformanceResponse(BaseModel):
     verdict_outcomes: list[OutcomeStatsResponse]
     signal_outcomes: list[OutcomeStatsResponse]
     false_negatives: list[FalseNegativeResponse]
+    trigger_outcomes: list[TriggerOutcomeResponse]
     as_of: datetime

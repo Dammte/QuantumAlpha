@@ -1,4 +1,10 @@
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from app.domain.models.trigger_event import TriggerEvent
+from app.infrastructure.db.repositories.trigger_event_repository import TriggerEventRepository
 
 
 def test_signal_performance_empty_when_no_snapshots_exist_yet(client: TestClient) -> None:
@@ -8,6 +14,7 @@ def test_signal_performance_empty_when_no_snapshots_exist_yet(client: TestClient
     assert body["verdict_outcomes"] == []
     assert body["signal_outcomes"] == []
     assert body["false_negatives"] == []
+    assert body["trigger_outcomes"] == []
     assert "as_of" in body
 
 
@@ -31,3 +38,29 @@ def test_signal_performance_reflects_a_position_signal_snapshot(client: TestClie
     assert isinstance(body["verdict_outcomes"], list)
     assert isinstance(body["signal_outcomes"], list)
     assert isinstance(body["false_negatives"], list)
+    assert isinstance(body["trigger_outcomes"], list)
+
+
+def test_signal_performance_reflects_a_trigger_event(client: TestClient, db_session: Session) -> None:
+    """Fase 8: the whole pipeline (a `daily_close.py`-style TriggerEvent
+    written to the real DB, read back through trigger_performance_service's
+    aggregation) round-trips without erroring, using the fake provider's
+    deterministic AAPL price history to actually resolve a forward return."""
+    TriggerEventRepository(db_session).record(
+        TriggerEvent(
+            id=None,
+            entity_type="ticker",
+            entity_key="AAPL",
+            event_type="gate_passed",
+            previous_value="False",
+            new_value="True",
+            occurred_at=datetime(2024, 1, 2, tzinfo=UTC),
+            details={"price": 100.0},
+        )
+    )
+
+    response = client.get("/api/v1/system/signal-performance")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["trigger_outcomes"], list)

@@ -4,13 +4,19 @@ import { SIGNAL_LABELS, formatNumber, formatPercent, formatRelativeTime } from '
 
 const VERDICT_LABELS = { comprar: 'Comprar', esperar: 'Esperar', evitar: 'Evitar' }
 
+// Reconstruction (2026-09), Fase 8: TriggerEvent's own event_type values -
+// see trigger_performance_service.py.
+const TRIGGER_EVENT_LABELS = { gate_passed: 'Gate aprobado', entry_triggered: 'Entrada disparada' }
+
 const MAX_FALSE_NEGATIVES_SHOWN = 25
 
 function outcomeLabel(kind, label) {
-  return kind === 'verdict' ? (VERDICT_LABELS[label] ?? label) : (SIGNAL_LABELS[label] ?? label)
+  if (kind === 'verdict') return VERDICT_LABELS[label] ?? label
+  if (kind === 'trigger') return TRIGGER_EVENT_LABELS[label] ?? label
+  return SIGNAL_LABELS[label] ?? label
 }
 
-function OutcomeTable({ title, hint, kind, outcomes }) {
+function OutcomeTable({ title, hint, kind, outcomes, columnLabel = 'Señal' }) {
   const sorted = [...outcomes].sort((a, b) => a.label.localeCompare(b.label) || a.horizon_days - b.horizon_days)
   return (
     <section className="panel panel--nested">
@@ -23,7 +29,7 @@ function OutcomeTable({ title, hint, kind, outcomes }) {
           <table className="system-performance__table">
             <thead>
               <tr>
-                <th>Señal</th>
+                <th>{columnLabel}</th>
                 <th className="num">Horizonte</th>
                 <th className="num">N</th>
                 <th className="num">Hit rate</th>
@@ -57,7 +63,10 @@ function OutcomeTable({ title, hint, kind, outcomes }) {
 // Fase 0 (docs/quant_methodology.md): did the system's past verdicts and
 // position signals actually work out, measured honestly against what
 // actually happened afterward - not a self-report. See
-// signal_performance_service.py; this view is its only consumer.
+// signal_performance_service.py (verdict/signal outcomes, false negatives)
+// and, since the reconstruction's Fase 8, trigger_performance_service.py
+// (gate/entry-trigger outcomes - the new primary read) - this view is the
+// only consumer of both.
 function SystemPerformanceView() {
   const [report, setReport] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -85,13 +94,23 @@ function SystemPerformanceView() {
     .sort((a, b) => new Date(b.snapshot_at) - new Date(a.snapshot_at))
     .slice(0, MAX_FALSE_NEGATIVES_SHOWN)
 
+  const triggerOutcomes = report.trigger_outcomes.map((o) => ({ ...o, label: o.event_type }))
+
   return (
     <div>
       <p className="system-performance__updated">Calculado {formatRelativeTime(report.as_of) ?? 'ahora'}</p>
 
       <OutcomeTable
-        title="Por veredicto (comprar / esperar / evitar)"
-        hint="Retorno realizado a N sesiones desde cada recomendación guardada - historial disponible desde que se añadió la trazabilidad de señales."
+        title="Por evento del gate/disparador (Fase 8 - la lectura principal actual)"
+        hint="Retorno realizado a N sesiones desde cada cambio de estado que daily_close.py detectó (el gate pasó a aprobado, o el disparador de entrada se activó) - mide directamente si el gate nuevo tiene valor predictivo real, no lo asume. Historial disponible solo desde que empezó a correr el cron de cierre diario."
+        kind="trigger"
+        columnLabel="Evento"
+        outcomes={triggerOutcomes}
+      />
+
+      <OutcomeTable
+        title="Por veredicto (comprar / esperar / evitar) - histórico, checklist retirado"
+        hint="Retorno realizado a N sesiones desde cada recomendación guardada - historial disponible desde que se añadió la trazabilidad de señales. Los snapshots desde la Fase 4 usan el veredicto del gate nuevo (nunca 'evitar' de aquí en adelante); los anteriores a esa fecha reflejan el checklist retirado."
         kind="verdict"
         outcomes={report.verdict_outcomes}
       />
