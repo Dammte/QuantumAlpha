@@ -11,9 +11,10 @@ the reconstruction brief) at the price level; `levels_engine.py` (same Fase)
 adds the pass/fail gate on top of it (pregunta 3 - "is this specific entry
 good"). `watchlist_service.py`'s own setup detectors - which *pattern*
 (breakout, pullback, oversold bounce, trend continuation) a ticker matches -
-are untouched here and stay exactly as they are (Fase 5 scope, per the
-propietario's explicit sequencing decision): this module only answers "at
-what price", never "which pattern" or "is it good".
+were a separate concern this module never touched; that module retired
+2026-09 (docs/quant_methodology.md §25), `GET /market/radar` now owns "which
+pattern"/"is it good" together. This module still only answers "at what
+price", never either of those.
 
 Provenance note (2026-09-11): this file, `levels_engine.py`, and the tables/
 jobs Fase 2 builds around them are the author's best-effort reconstruction of

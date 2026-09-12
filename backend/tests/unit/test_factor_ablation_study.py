@@ -20,9 +20,8 @@ from app.services import technical_analysis as ta
 from app.services.market_universe import universe_tickers
 
 # --- compute_triggers_at: the four setup-type triggers (Bloque 3's setups,
-# duplicated here against raw indicator series - see the function's own
-# docstring for why it can't just call watchlist_service's detectors
-# directly) ---
+# originally watchlist_service.py's own, that module retired 2026-09 - see
+# PULLBACK_MAX_DISTANCE_ABOVE_SMA50's own comment in the script) ---
 
 
 def _indicators(close: pd.Series, high: pd.Series, low: pd.Series) -> dict[str, pd.Series]:

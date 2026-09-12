@@ -8,10 +8,9 @@ import RecommendationCard from './analysis/RecommendationCard'
 // Reconstruction (2026-09), Fase 5: "qué está a punto de disparar una
 // entrada" (Parte 0, pregunta 2) - a pure read over GET /market/radar
 // (daily_close.py's own precomputed ticker_daily_states), never a live
-// universe scan. Replaces the general "A revisar" watchlist tab for this
-// purpose (see Watchlist.jsx's own note); that tab stays alongside this one
-// for now - retiring watchlist_service.py outright is separate, deferred
-// work (docs/quant_methodology.md §25).
+// universe scan. Replaced the general "A revisar" watchlist tab outright
+// (watchlist_service.py retired the same date - docs/quant_methodology.md
+// §25), rather than sitting alongside it.
 
 // RadarItemResponse flattens what RecommendationCard expects as one nested
 // `gate` object (GateResultResponse) - same shape as the "Analizar activo"

@@ -143,22 +143,6 @@ def test_compute_statistical_relations_flags_divergence():
     assert decoupled.is_diverging is True
 
 
-def test_compute_statistical_relations_attaches_setup_and_percentile(monkeypatch):
-    n = 100
-    rng = np.random.RandomState(4)
-    base = list(100 + np.cumsum(rng.normal(0, 1, n)))
-    ohlcv = {"TARGET": _df(base), "RELATED": _df(base)}
-    snapshots = [_snapshot("TARGET"), _snapshot("RELATED")]
-
-    fake_item = type("Item", (), {"ticker": "RELATED", "setup": "oversold_bounce", "percentile_score": 88.0})()
-    monkeypatch.setattr(rms.wl, "build_watchlist", lambda snapshots: [fake_item])
-
-    relations = rms.compute_statistical_relations("TARGET", ohlcv, snapshots)
-    related = next(r for r in relations if r.ticker == "RELATED")
-    assert related.setup == "oversold_bounce"
-    assert related.percentile_score == 88.0
-
-
 # --- compute_sector_peers ----------------------------------------------------
 
 
@@ -187,34 +171,4 @@ def test_compute_sector_peers_sorted_by_rs_rating_descending(monkeypatch):
 def test_compute_sector_peers_empty_when_ticker_has_no_industry(monkeypatch):
     monkeypatch.setattr(rms, "region_config", lambda region: _fake_region_config())
     assert rms.compute_sector_peers("UNKNOWN_TICKER", "us", []) == []
-
-
-# --- setup_label properties: cuarta auditoría, recomendación FE-1 - mismo
-# origen único de verdad (watchlist_service.SETUP_LABELS) que WatchlistItem.
-
-
-def test_statistical_relation_setup_label_matches_watchlist_service_dict():
-    relation = rms.StatisticalRelation(
-        ticker="T", sector="Tecnología", correlation_60d=0.5, correlation_250d=0.4, relative_beta=1.0,
-        lead_lag_days=0, lead_lag_correlation=0.5, comovement_extreme_days_pct=0.5, is_diverging=False,
-        setup=rms.wl.BREAKOUT_VOLUME, percentile_score=80.0,
-    )
-    assert relation.setup_label == rms.wl.SETUP_LABELS[rms.wl.BREAKOUT_VOLUME]
-
-
-def test_statistical_relation_setup_label_none_when_no_setup():
-    relation = rms.StatisticalRelation(
-        ticker="T", sector="Tecnología", correlation_60d=0.5, correlation_250d=0.4, relative_beta=1.0,
-        lead_lag_days=0, lead_lag_correlation=0.5, comovement_extreme_days_pct=0.5, is_diverging=False,
-        setup=None, percentile_score=None,
-    )
-    assert relation.setup_label is None
-
-
-def test_sector_peer_setup_label_matches_watchlist_service_dict():
-    peer = rms.SectorPeer(
-        ticker="T", sector="Tecnología", industry="Software", rs_rating=80, trend="uptrend",
-        setup=rms.wl.STAGE2_LEADER, percentile_score=90.0,
-    )
-    assert peer.setup_label == rms.wl.SETUP_LABELS[rms.wl.STAGE2_LEADER]
 

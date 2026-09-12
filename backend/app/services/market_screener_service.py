@@ -373,8 +373,8 @@ class MarketScreenerService:
     def get_snapshot_computed_at(self, region: str = DEFAULT_REGION) -> datetime | None:
         """When the in-process universe snapshot for `region` was last actually
         computed - None if `get_universe_snapshot` hasn't been called yet this
-        process. Lets a caller (e.g. the watchlist endpoint, which is just a
-        cheap filter over this snapshot) report "actualizado hace X" without
+        process. Lets a caller (e.g. the screener endpoint, which is just a
+        filter over this snapshot) report "actualizado hace X" without
         needing its own separate durable-cache entry."""
         cached = self._snapshot_cache.get(region)
         return cached[0] if cached is not None else None
@@ -592,9 +592,9 @@ class MarketScreenerService:
 
         # Tercera auditoría, Bloque A-7: this was the one heavy method in
         # this class with no durable-cache fallback - every redeploy paid a
-        # synchronous 11-ETF download on the first /sectors, /sectors/rotation
-        # or watchlist sector_rs_rank call, unlike get_universe_snapshot right
-        # above, which already had this. `SectorPerformance`'s fields are all
+        # synchronous 11-ETF download on the first /sectors or /sectors/rotation
+        # call, unlike get_universe_snapshot right above, which already had
+        # this. `SectorPerformance`'s fields are all
         # plain str/float/int/None - dataclasses.asdict/**kwargs round-trips
         # it with no custom (de)serialization needed, unlike TickerSnapshot.
         if db is not None and not force_refresh:

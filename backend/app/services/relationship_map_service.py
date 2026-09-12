@@ -34,7 +34,6 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.domain.models.ticker_snapshot import TickerSnapshot
-from app.services import watchlist_service as wl
 from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import region_config, sector_of
 
@@ -61,14 +60,6 @@ class StatisticalRelation:
     lead_lag_correlation: float | None  # the correlation achieved at that best lag
     comovement_extreme_days_pct: float | None  # fraction of the analyzed ticker's >=2sigma days this moved with it
     is_diverging: bool  # historically correlated (>=250d baseline) but recently decoupled
-    setup: str | None  # this ticker's own current watchlist setup, if it has one today
-    percentile_score: float | None
-
-    @property
-    def setup_label(self) -> str | None:
-        """See `watchlist_service.WatchlistItem.setup_label` - same root-cause
-        fix (recomendación FE-1 de la cuarta auditoría independiente)."""
-        return wl.SETUP_LABELS.get(self.setup) if self.setup else None
 
 
 def _lead_lag(aligned: pd.DataFrame) -> tuple[int | None, float | None]:
@@ -130,10 +121,6 @@ def compute_statistical_relations(
         return []
 
     sector_by_ticker = {s.ticker: s.sector for s in universe_snapshot}
-    setup_by_ticker: dict[str, tuple[str | None, float | None]] = {}
-    for item in wl.build_watchlist(universe_snapshot):
-        if item.ticker not in setup_by_ticker:
-            setup_by_ticker[item.ticker] = (item.setup, item.percentile_score)
 
     relations: list[StatisticalRelation] = []
     for other_ticker, other_df in ohlcv_by_ticker.items():
@@ -171,7 +158,6 @@ def compute_statistical_relations(
             and (corr_250d - corr_60d) >= DIVERGENCE_DROP_THRESHOLD
         )
 
-        setup, percentile_score = setup_by_ticker.get(other_ticker, (None, None))
         ranking_value = abs(corr_60d) if corr_60d is not None else abs(lag_corr) if lag_corr is not None else 0.0
         relations.append(
             (
@@ -186,8 +172,6 @@ def compute_statistical_relations(
                     lead_lag_correlation=lag_corr,
                     comovement_extreme_days_pct=comovement,
                     is_diverging=is_diverging,
-                    setup=setup,
-                    percentile_score=percentile_score,
                 ),
             )
         )
@@ -206,37 +190,32 @@ class SectorPeer:
     industry: str
     rs_rating: int | None
     trend: str
-    setup: str | None
-    percentile_score: float | None
-
-    @property
-    def setup_label(self) -> str | None:
-        return wl.SETUP_LABELS.get(self.setup) if self.setup else None
 
 
 def compute_sector_peers(ticker: str, region: str, universe_snapshot: list[TickerSnapshot]) -> list[SectorPeer]:
     """Every other ticker in the same curated `Industry` bucket as `ticker`
     (trivial - `market_universe.py` already maps ticker -> sector -> industry
-    - Segunda auditoría's own note on this), with its current RS Rating/trend
-    and today's watchlist setup if it has one. No RRG quadrant here yet -
-    see the module docstring."""
+    - Segunda auditoría's own note on this), with its current RS Rating/trend.
+    No RRG quadrant here yet - see the module docstring.
+
+    2026-09 (Fase 5 retirement): used to also annotate each peer with its
+    current `watchlist_service.py` setup/percentile score - dropped along
+    with that module's retirement (docs/quant_methodology.md §25) rather
+    than duplicating its setup-detection logic here just to keep two badge
+    fields alive. `GET /market/radar` is the surface for "which tickers have
+    an active setup right now" going forward."""
     industries = region_config(region).industries
     own_industry = next((ind for ind in industries if ticker in ind.tickers), None)
     if own_industry is None:
         return []
 
     snapshot_by_ticker = {s.ticker: s for s in universe_snapshot}
-    setup_by_ticker: dict[str, tuple[str | None, float | None]] = {}
-    for item in wl.build_watchlist(universe_snapshot):
-        if item.ticker not in setup_by_ticker:
-            setup_by_ticker[item.ticker] = (item.setup, item.percentile_score)
 
     peers = []
     for peer_ticker in own_industry.tickers:
         if peer_ticker == ticker:
             continue
         snapshot = snapshot_by_ticker.get(peer_ticker)
-        setup, percentile_score = setup_by_ticker.get(peer_ticker, (None, None))
         peers.append(
             SectorPeer(
                 ticker=peer_ticker,
@@ -244,8 +223,6 @@ def compute_sector_peers(ticker: str, region: str, universe_snapshot: list[Ticke
                 industry=own_industry.name,
                 rs_rating=snapshot.rs_rating if snapshot else None,
                 trend=snapshot.trend.value if snapshot else "desconocido",
-                setup=setup,
-                percentile_score=percentile_score,
             )
         )
     peers.sort(key=lambda p: (p.rs_rating is None, -(p.rs_rating or 0)))
@@ -271,8 +248,7 @@ def build_relationship_map(
     db: Session | None = None,
 ) -> RelationshipMap:
     """The two-layer map for one ticker - "buscar nuevas opciones" is the
-    whole point, so every related name carries its own current setup/
-    percentile_score when it has one, not just a static label."""
+    whole point."""
     universe_snapshot = screener.get_universe_snapshot(region=region, db=db)
     ohlcv_by_ticker = screener.get_cached_ohlcv(region=region)
 

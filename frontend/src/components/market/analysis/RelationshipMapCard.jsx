@@ -1,4 +1,4 @@
-import { SETUP_LABELS, formatPercent, formatRatio } from '../../../format'
+import { formatPercent, formatRatio } from '../../../format'
 import TrendBadge from '../TrendBadge'
 
 // Tercera auditoría, Bloque G: "el mapa debe terminar en candidatos
@@ -6,17 +6,10 @@ import TrendBadge from '../TrendBadge'
 // that jumps straight into its own full analysis (`onSelectTicker`), not just
 // a label. Two layers, ordered and labeled by decreasing reliability - see
 // `relationship_map_service.py`'s module docstring for the full reasoning
-// (a third, SEC-EDGAR-based layer was retired 2026-09).
-
-function SetupTag({ setup, setupLabel, percentileScore }) {
-  if (!setup) return <span className="relationship-map__no-setup">—</span>
-  return (
-    <span className="setup-badge">
-      {setupLabel ?? SETUP_LABELS[setup] ?? setup}
-      {percentileScore !== null && percentileScore !== undefined && <> · p{Math.round(percentileScore)}</>}
-    </span>
-  )
-}
+// (a third, SEC-EDGAR-based layer was retired 2026-09; the "setup hoy" column
+// this card used to show per related ticker was dropped along with
+// watchlist_service.py's own retirement the same date - see that module's
+// docstring in the module that used to define it).
 
 function leadLagLabel(ticker, otherTicker, lagDays) {
   if (lagDays === null || lagDays === undefined) return '—'
@@ -45,7 +38,6 @@ function StatisticalRelationsTable({ ticker, relations, onSelectTicker }) {
             <th className="num">Beta relativa</th>
             <th>Desfase</th>
             <th className="num">Co-mov. días extremos</th>
-            <th>Setup hoy</th>
           </tr>
         </thead>
         <tbody>
@@ -75,9 +67,6 @@ function StatisticalRelationsTable({ ticker, relations, onSelectTicker }) {
               <td className="num">{formatRatio(r.relative_beta)}</td>
               <td>{leadLagLabel(ticker, r.ticker, r.lead_lag_days)}</td>
               <td className="num">{formatPercent(r.comovement_extreme_days_pct)}</td>
-              <td>
-                <SetupTag setup={r.setup} setupLabel={r.setup_label} percentileScore={r.percentile_score} />
-              </td>
             </tr>
           ))}
         </tbody>
@@ -103,7 +92,6 @@ function SectorPeersTable({ peers, onSelectTicker }) {
             <th>Industria</th>
             <th className="num">RS Rating</th>
             <th>Tendencia</th>
-            <th>Setup hoy</th>
           </tr>
         </thead>
         <tbody>
@@ -123,9 +111,6 @@ function SectorPeersTable({ peers, onSelectTicker }) {
               <td className="num">{p.rs_rating ?? '—'}</td>
               <td>
                 <TrendBadge trend={p.trend} />
-              </td>
-              <td>
-                <SetupTag setup={p.setup} setupLabel={p.setup_label} percentileScore={p.percentile_score} />
               </td>
             </tr>
           ))}

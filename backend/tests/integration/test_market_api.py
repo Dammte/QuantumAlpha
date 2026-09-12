@@ -209,29 +209,6 @@ def test_trend_detail_imminent_cross_group_has_a_direction_and_sessions_estimate
         assert row["imminent_cross_short_term"]["bars_until"] > 0
 
 
-def test_watchlist_returns_items_with_reasons(client: TestClient) -> None:
-    response = client.get("/api/v1/market/watchlist")
-    assert response.status_code == 200
-    body = response.json()
-    assert "computed_at" in body
-    for item in body["items"]:
-        assert item["horizon"] in {"short", "medium", "long"}
-        assert len(item["reasons"]) > 0
-        assert item["snapshot"]["ticker"] == item["ticker"]
-        assert item["sector_rs_rank"] is None or 1 <= item["sector_rs_rank"] <= 99
-
-
-def test_watchlist_filters_by_horizon(client: TestClient) -> None:
-    response = client.get("/api/v1/market/watchlist", params={"horizon": "short"})
-    assert response.status_code == 200
-    assert all(item["horizon"] == "short" for item in response.json()["items"])
-
-
-def test_watchlist_rejects_invalid_horizon(client: TestClient) -> None:
-    response = client.get("/api/v1/market/watchlist", params={"horizon": "eternal"})
-    assert response.status_code == 422
-
-
 def test_levels_proximity_matches_are_within_threshold(client: TestClient) -> None:
     response = client.get("/api/v1/market/levels/proximity", params={"threshold": 0.05})
     assert response.status_code == 200
@@ -329,10 +306,6 @@ def test_market_endpoints_survive_a_missing_computation_cache_table(client: Test
         assert client.get("/api/v1/market/industries").status_code == 200
         assert client.get("/api/v1/market/levels/proximity").status_code == 200
         assert client.get("/api/v1/market/context").status_code == 200
-
-        watchlist = client.get("/api/v1/market/watchlist")
-        assert watchlist.status_code == 200
-        assert "items" in watchlist.json()
 
         sectors = client.get("/api/v1/market/sectors")
         assert sectors.status_code == 200

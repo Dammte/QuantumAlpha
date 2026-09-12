@@ -65,19 +65,6 @@ export const SIGNAL_LABELS = {
   hold: 'Mantener',
 }
 
-// Segunda auditoría, Bloque 3: los cuatro tipos de setup de corto plazo que
-// antes vivían mezclados en una sola regla - ver watchlist_service.py.
-export const SETUP_LABELS = {
-  oversold_bounce: 'Rebote desde sobreventa',
-  breakout_volume: 'Ruptura con volumen',
-  trend_continuation: 'Continuación de tendencia',
-  pullback_to_support: 'Retroceso a soporte',
-  // Tercera auditoría, Bloque F-2: the weekly tier's own setups - were
-  // missing here entirely, so they rendered as raw snake_case in the UI.
-  fast_golden_cross: 'Golden cross (par rápido)',
-  fast_cross_imminent: 'Cruce alcista inminente (par rápido)',
-  stage2_leader: 'Líder en Fase 2',
-}
 
 // exit_urgency (see exit_engine.ExitUrgency) - the position-level urgency
 // read that can override `signal` above (see portfolio_risk_service.py) but

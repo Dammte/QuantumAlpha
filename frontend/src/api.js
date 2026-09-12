@@ -92,9 +92,6 @@ export const api = {
   getMarketTrendDetail: ({ region, refresh } = {}) =>
     request(`/api/v1/market/trend/detail${toQueryString({ region, refresh })}`),
 
-  getWatchlist: ({ region, horizon, refresh } = {}) =>
-    request(`/api/v1/market/watchlist${toQueryString({ region, horizon, refresh })}`),
-
   getLevelsProximity: ({ region, threshold, refresh } = {}) =>
     request(`/api/v1/market/levels/proximity${toQueryString({ region, threshold, refresh })}`),
 

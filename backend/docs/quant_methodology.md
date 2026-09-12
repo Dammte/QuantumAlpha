@@ -1624,8 +1624,34 @@ sintéticos de ~2520 barras (10 años) cada uno, con un presupuesto deliberadame
 inestable entre distinta hardware de CI. Relevante ahora concretamente porque la Fase 10 planea crecer
 el universo de ~217 a ~400 tickers sobre la misma ventana de cron.
 
-**Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
-resto), Fase 10 (activar el universo dinámico completo, ~400 tickers).
+### 25.5 Retirada de watchlist_service.py (resto de la Fase 5)
+
+Retirado por completo (código y tests, no solo desconectado): `app/services/watchlist_service.py`
+(445 líneas - los cuatro detectores de setup de corto plazo, los tres de plazo medio, el scoring por
+percentil cruzado, `WatchlistItem`, `build_watchlist`), el endpoint `GET /market/watchlist` y sus
+esquemas (`WatchlistItemResponse`/`WatchlistResponse`), y la pestaña "A revisar" del frontend
+(`Watchlist.jsx`) - `GET /market/radar` cubre la misma pregunta ("qué merece la pena mirar") con
+evidencia real detrás, no con una regla barata sin medir.
+
+Dos dependencias reales encontradas y resueltas, no solo referencias en comentarios:
+
+1. **`relationship_map_service.py`** llamaba a `build_watchlist(universe_snapshot)` de verdad (dos
+   veces) para anotar cada ticker relacionado/par de sector con su setup y percentil del día -
+   `StatisticalRelation`/`SectorPeer` pierden esos campos (`setup`/`percentile_score`/`setup_label`)
+   en vez de duplicar la lógica de detección de setups aquí solo para mantener vivas dos etiquetas.
+   Decisión distinta de la planeada originalmente (migrar `SETUP_LABELS` a un sitio compartido) -
+   la investigación mostró que la dependencia real era la salida de `build_watchlist`, no solo las
+   etiquetas, así que quitar la anotación por completo es la simplificación más proporcionada,
+   coherente con el resto de esta reconstrucción (retirar señales sin invalidar en vez de migrarlas).
+2. **`scripts/factor_ablation_study.py`** importaba `PULLBACK_MAX_DISTANCE_ABOVE_SMA50`/`PULLBACK_MIN_RSI`
+   de `watchlist_service.py` para su propio detector de `setup_pullback_to_support` (ya duplicado a
+   mano contra series crudas, nunca llamaba a `build_watchlist`). Las dos constantes se copian al
+   script en vez de dejarlas como dependencia de un módulo que ya no existe - `segment_by_setup_type`/
+   `SetupOutcomeStats` se quedan intactos: miden si estos cuatro patrones tienen edge como pregunta de
+   investigación propia, independiente de si alguna vista en vivo los sigue mostrando hoy.
+
+**Pendiente**: reescribir `opportunity_cost.py` en pequeño contra el Radar (acordado junto con esta
+retirada, todavía no construido), Fase 10 (activar el universo dinámico completo, ~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
@@ -1637,4 +1663,6 @@ gate y el retiro de sus tres equivalentes del checklist), 4 en `test_gemini_narr
 `test_ticker_analysis_api.py` (`llm_narrative: null` sin clave configurada), 7 en
 `test_golden_gate_scenarios.py`, 1 en `test_latency_budgets.py`, más las actualizaciones de
 `test_portfolio_risk_service.py`, `test_ticker_analysis_api.py` y `test_portfolios_api.py` para el nuevo
-contrato del gate.
+contrato del gate. Retirados con `watchlist_service.py`: `test_watchlist_service.py` completo (34 tests)
+y 4 en `test_relationship_map_service.py` que probaban la anotación de setup/percentil ya eliminada (38
+en total, 713 → 675 unitarios).

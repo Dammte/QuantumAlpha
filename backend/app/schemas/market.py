@@ -188,28 +188,6 @@ class MarketContextResponse(BaseModel):
     news: list[NewsArticleResponse]
 
 
-class WatchlistItemResponse(BaseModel):
-    ticker: str
-    sector: str
-    industry: str | None
-    cap_tier: str
-    horizon: str
-    reasons: list[str]
-    snapshot: TickerSnapshotResponse
-    sector_rs_rank: int | None
-    # "oversold_bounce" | "breakout_volume" | "trend_continuation" |
-    # "pullback_to_support" for a short-term item, `None` for medium/long-term
-    # ones (not split into setup types) - see watchlist_service.py.
-    setup: str | None = None
-    # Server-computed from watchlist_service.SETUP_LABELS - the single source
-    # of truth, so the frontend never needs its own copy that can drift (see
-    # WatchlistItem.setup_label's docstring).
-    setup_label: str | None = None
-    percentile_score: float | None = None
-
-
-
-
 class TradePlanResponse(BaseModel):
     """See `domain.models.trade_plan.TradePlan` - the persisted (or, for a
     position opened before this existed, point-in-time reconstructed) stop/
@@ -304,11 +282,6 @@ class PortfolioTodayResponse(BaseModel):
     # documents.
     brief: DailyBriefResponse | None
     positions: list[PositionDailyStateResponse]
-
-
-class WatchlistResponse(BaseModel):
-    items: list[WatchlistItemResponse]
-    computed_at: datetime
 
 
 class RadarItemResponse(BaseModel):
@@ -411,9 +384,6 @@ class StatisticalRelationResponse(BaseModel):
     lead_lag_correlation: float | None
     comovement_extreme_days_pct: float | None
     is_diverging: bool
-    setup: str | None
-    setup_label: str | None = None
-    percentile_score: float | None
 
 
 class SectorPeerResponse(BaseModel):
@@ -422,9 +392,6 @@ class SectorPeerResponse(BaseModel):
     industry: str
     rs_rating: int | None
     trend: str
-    setup: str | None
-    setup_label: str | None = None
-    percentile_score: float | None
 
 
 class RelationshipMapResponse(BaseModel):

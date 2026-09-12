@@ -1,7 +1,7 @@
 """Dynamic, monthly-refreshed investable universe (D14 - Segunda auditoría,
 Bloque 3): `market_universe.py`'s curated dict has no survivorship-bias
 protection - a ticker delisted or dropped from an index simply isn't in
-today's hardcoded list, so nothing built on it (the watchlist, the
+today's hardcoded list, so nothing built on it (the screener, the Radar, the
 ablation study) can ever see that failure. This fetches real index
 constituents (S&P 500, S&P 400, STOXX Europe 600) from their public
 Wikipedia pages, applies a hard liquidity filter, and persists one dated
@@ -25,9 +25,9 @@ calientes" (CLAUDE.md) applies here too even though the cost is compute as
 much as network - a user should never be the one paying for this by chance.
 The read side (`read_dynamic_universe`) is a plain DB read, cheap enough for
 `market_screener_service.get_universe_snapshot` to call directly - and
-(Tercera auditoría, Bloque F-1) it now actually does, which
-`watchlist_service.py` inherits for free by building on that same shared
-snapshot. Connecting it in one step wasn't actually cheap: full indicator
+(Tercera auditoría, Bloque F-1) it now actually does, which every consumer
+of that shared snapshot (the screener, the Radar) inherits for free.
+Connecting it in one step wasn't actually cheap: full indicator
 computation on the ~1000 constituents this table can hold is the real cost
 that blocked the decision (Segunda
 auditoría, Bloque 3's own note on this), so `get_universe_snapshot` cheaply
@@ -371,7 +371,7 @@ def read_dynamic_universe(
     repo: UniverseMembershipRepositoryPort, region: str, as_of_date: date | None = None
 ) -> dict[str, str | None] | None:
     """Cheap DB read for the actual candidate-generation path
-    (`watchlist_service.py`) - `ticker -> sector`, same shape
+    (`market_screener_service.get_universe_snapshot`) - `ticker -> sector`, same shape
     `market_universe.all_sector_tickers` returns, so either can be dropped in
     as the universe source. `None` (not `{}`) when
     nothing is on file yet for this region, so the caller can tell "not

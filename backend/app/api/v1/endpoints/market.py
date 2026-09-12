@@ -1,5 +1,5 @@
 from dataclasses import asdict
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -38,8 +38,6 @@ from app.schemas.market import (
     TrendDetailResponse,
     UniverseResponse,
     VixSnapshotResponse,
-    WatchlistItemResponse,
-    WatchlistResponse,
 )
 from app.services.market_context_service import MarketContextService, assess_market_regime
 from app.services.market_screener_service import (
@@ -52,12 +50,11 @@ from app.services.market_screener_service import (
 )
 from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of
 from app.services.relationship_map_service import build_relationship_map
-from app.services.watchlist_service import build_watchlist
 
 router = APIRouter(prefix="/market", tags=["market"])
 
 # Reused across every universe-scoped endpoint (screener, movers, sectors,
-# industries, trend, watchlist...) - "us" (default, backward compatible with
+# industries, trend, radar...) - "us" (default, backward compatible with
 # every existing frontend call that doesn't pass it) or "europe". Deliberately
 # NOT a single blended universe: see market_universe.py's module docstring.
 RegionQuery = Query(default="us", pattern="^(us|europe)$")
@@ -219,45 +216,6 @@ def get_market_trend_detail(
     return TrendDetailResponse(**{group: [_to_response(s) for s in items] for group, items in detail.items()})
 
 
-@router.get("/watchlist", response_model=WatchlistResponse)
-def get_watchlist(
-    service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-    db: DbSession,
-    region: str = RegionQuery,
-    horizon: str | None = Query(default=None, pattern="^(short|medium|long)$"),
-    refresh: bool = False,
-) -> WatchlistResponse:
-    """"Acciones a revisar": every ticker in the universe whose technicals match
-    a cheap rule (see `watchlist_service.py`) - just a filter over the same
-    universe snapshot `/screener` and `/movers` already share, so it's as fresh
-    as that snapshot (see `computed_at`) and never independently recomputed."""
-    snapshots = service.get_universe_snapshot(region=region, force_refresh=refresh, db=db)
-    items = build_watchlist(snapshots, horizon=horizon)
-    sector_rank_by_name = {
-        s.sector: s.rs_rank for s in service.get_sector_performance(region=region, force_refresh=refresh, db=db)
-    }
-    computed_at = service.get_snapshot_computed_at(region) or datetime.now(UTC)
-    return WatchlistResponse(
-        items=[
-            WatchlistItemResponse(
-                ticker=item.ticker,
-                sector=item.sector,
-                industry=item.industry,
-                cap_tier=item.cap_tier,
-                horizon=item.horizon,
-                reasons=item.reasons,
-                snapshot=_to_response(item.snapshot),
-                sector_rs_rank=sector_rank_by_name.get(item.sector),
-                setup=item.setup,
-                setup_label=item.setup_label,
-                percentile_score=item.percentile_score,
-            )
-            for item in items
-        ],
-        computed_at=computed_at,
-    )
-
-
 def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
     return RadarItemResponse(
         ticker=state.ticker,
@@ -306,8 +264,10 @@ def get_radar(
     entrada" (Parte 0, pregunta 2) - a pure read over `daily_close.py`'s own
     precomputed `ticker_daily_states`, never a live universe scan. Every
     ticker whose gate passes and/or already has an active entry trigger, as
-    of the last nightly run - not the whole universe (see `/watchlist` for
-    the older, still-live cheap-rule filter this doesn't replace yet).
+    of the last nightly run - not the whole universe. `watchlist_service.py`'s
+    own cheap-rule filter (2026-09, Fase 5 retirement) was retired outright
+    once this endpoint existed to answer the same question with real
+    evidence behind it - see docs/quant_methodology.md §25.
 
     `computed_at` is the *latest* of the returned rows' own timestamps
     (`None` when there's nothing to show yet, e.g. before `daily_close.py`
@@ -391,10 +351,8 @@ def get_relationship_map(
     return RelationshipMapResponse(
         ticker=result.ticker,
         region=result.region,
-        statistical=[
-            StatisticalRelationResponse(**asdict(r), setup_label=r.setup_label) for r in result.statistical
-        ],
-        sector_peers=[SectorPeerResponse(**asdict(p), setup_label=p.setup_label) for p in result.sector_peers],
+        statistical=[StatisticalRelationResponse(**asdict(r)) for r in result.statistical],
+        sector_peers=[SectorPeerResponse(**asdict(p)) for p in result.sector_peers],
         computed_at=result.computed_at,
     )
 

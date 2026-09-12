@@ -142,7 +142,6 @@ from app.services import backtest_engine as be  # noqa: E402
 from app.services import dynamic_universe_service as dus  # noqa: E402
 from app.services import levels_engine as le  # noqa: E402
 from app.services import technical_analysis as ta  # noqa: E402
-from app.services import watchlist_service as wl  # noqa: E402
 from app.services.market_data_service import MarketDataService  # noqa: E402
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, universe_tickers  # noqa: E402
 from app.services.recommendation_engine import ATR_STOP_MULTIPLE, REWARD_RISK_RATIO  # noqa: E402
@@ -160,6 +159,18 @@ MIN_BUCKET_SIZE_FOR_IC = 5  # per calendar-month bucket, before that bucket cont
 # is reported separately from its validate-period one, never pooled into a
 # single number.
 TEMPORAL_SPLIT_CUTOFF = pd.Timestamp("2023-01-01")
+
+# 2026-09 (Fase 5 retirement): `watchlist_service.py`'s own two threshold
+# constants for its `pullback_to_support` setup, copied here (this script
+# already duplicates that setup's boolean predicate below rather than
+# importing it - see `compute_triggers_at`'s own comment on why) rather than
+# left as a dependency on a module that no longer exists. `segment_by_setup_type`/
+# `SetupOutcomeStats` below measure these four setups (win rate, expectancy in
+# R, ...) as their own, self-contained research question - independent of
+# whether any live UI currently surfaces the pattern, so retiring that UI
+# didn't retire the reason to keep measuring it.
+PULLBACK_MAX_DISTANCE_ABOVE_SMA50 = 0.04  # within 4% above the 50-day average counts as "at" it, not far above
+PULLBACK_MIN_RSI = 40.0  # a genuinely different setup from oversold_bounce (RSI <= 35) - a shallow, orderly dip
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,16 +305,13 @@ def compute_triggers_at(
         vix_close.iloc[: i + 1] if vix_close is not None else None,
     )
 
-    # Segunda auditoría, Bloque 5: which of watchlist_service.py's four
-    # short-term setup types would have matched at this historical point -
-    # same exact thresholds as that module's own detectors (reusing its
-    # named constants where it has them), duplicated here rather than
-    # imported directly because watchlist_service operates on a
-    # TickerSnapshot (a live, cross-sectional object this script never
-    # builds), not a raw indicator series at an arbitrary past bar. These are
-    # setup *memberships*, not recommendation_engine.py factors - excluded
-    # from the regular per-factor reports (see `factor_names` below), used
-    # only to segment samples (`segment_by_setup_type`).
+    # Segunda auditoría, Bloque 5: four short-term setup types (originally
+    # watchlist_service.py's own, that module retired 2026-09 - see
+    # PULLBACK_MAX_DISTANCE_ABOVE_SMA50's own comment above for why these
+    # constants live here now). These are setup *memberships*, not
+    # recommendation_engine.py factors - excluded from the regular per-factor
+    # reports (see `factor_names` below), used only to segment samples
+    # (`segment_by_setup_type`).
     change_1d = ta.pct_change_over(close.iloc[: i + 1], 1)
     change_1w = ta.pct_change_over(close.iloc[: i + 1], 5)
     relative_volume = ta.relative_volume(volume.iloc[: i + 1])
@@ -322,9 +330,9 @@ def compute_triggers_at(
         and not pd.isna(s200)
         and s50 > s200
         and price >= s50
-        and (price - s50) / s50 <= wl.PULLBACK_MAX_DISTANCE_ABOVE_SMA50
+        and (price - s50) / s50 <= PULLBACK_MAX_DISTANCE_ABOVE_SMA50
         and not pd.isna(rsi_t)
-        and rsi_t > wl.PULLBACK_MIN_RSI
+        and rsi_t > PULLBACK_MIN_RSI
     )
 
     # Fase 8 reorientation: the actual live gate, replayed point-in-time -
@@ -541,12 +549,13 @@ SETUP_TRIGGER_KEYS = (
 
 
 def segment_by_setup_type(samples: list[FactorSample]) -> dict[str, list[FactorSample]]:
-    """The same pooled sample set, split by which of watchlist_service.py's
-    four short-term setup types applies at each point (Segunda auditoría,
-    Bloque 3/5) - a factor's effect can differ by setup the same way it can
-    differ by market regime (see `segment_by_regime`). Not mutually
-    exclusive the way regime segments are - a sample can match more than one
-    setup, or none, and still appears in every segment it matches."""
+    """The same pooled sample set, split by which of the four short-term
+    setup types applies at each point (Segunda auditoría, Bloque 3/5 -
+    originally `watchlist_service.py`'s own, that module retired 2026-09) -
+    a factor's effect can differ by setup the same way it can differ by
+    market regime (see `segment_by_regime`). Not mutually exclusive the way
+    regime segments are - a sample can match more than one setup, or none,
+    and still appears in every segment it matches."""
     return {
         key.removeprefix("setup_"): [s for s in samples if s.triggers.get(key, False)]
         for key in SETUP_TRIGGER_KEYS
