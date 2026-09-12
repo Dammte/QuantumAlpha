@@ -1328,7 +1328,7 @@ entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
 `test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
 `test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
 
-## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5, 7, 8 completas
+## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-8 completas
 
 Encargo explícito del propietario: sustituir el checklist ponderado de 26 factores (secciones 1-24
 arriba) por un sistema de niveles/triggers que responda exactamente 4 preguntas - qué hacer hoy con lo
@@ -1572,10 +1572,33 @@ nada mientras `GEMINI_API_KEY` no esté configurada. **Fase 7 completa** en el s
 reconstructor puede cerrarla - activarla es la decisión pendiente del propietario, no trabajo de
 ingeniería.
 
+### 25.3 Frontend de 4 vistas (Fase 6) - Hoy/Radar/Activo/Sistema
+
+Reescritura completa de la navegación, no una adición: "Mi Cartera / Rendimiento del sistema / Mercado
+(8 secciones)" se convierte en 4 vistas de primer nivel, una por cada pregunta de la Parte 0 del encargo
+- `Sidebar.jsx` y `App.jsx` reescritos, sin dejar la navegación antigua como alternativa.
+
+- **Hoy** = el antiguo "Mi Cartera" (mismo contenido - `DailyBriefBanner`/`TodayActionsPanel` primero,
+  luego el dashboard completo), solo renombrado.
+- **Radar** = agrupa todas las herramientas de cribado a nivel de universo, no solo `RadarView.jsx`:
+  `A revisar` (Watchlist), `Screener`, `Movers`, `Sectores`, `Tendencia`, `Soportes/Resistencias` se
+  mueven aquí desde el antiguo "Mercado" - son la misma familia de herramientas que el Radar, no una
+  degradación. Cada una mantiene su propio selector de región.
+- **Activo** = solo el deep-dive de un ticker: `Analizar activo` y `Contexto` (contexto macro, relevante
+  al analizar una entrada concreta) - nada de universo aquí, a propósito.
+- **Sistema** = el antiguo "Rendimiento del sistema", sin cambios de contenido.
+
+`sectionNav.js` (antes `marketSections.js`) exporta `RADAR_SECTIONS`/`ACTIVO_SECTIONS` en vez de una
+lista única; `SectionedView.jsx` (antes `MarketView.jsx`) queda genérico - recibe qué mapa de
+componentes usar por prop - y los dos mapas (`RADAR_COMPONENT_BY_SECTION`/`ACTIVO_COMPONENT_BY_SECTION`)
+viven en `sectionComponents.js`, un módulo no-componente aparte (regla de Vite/react-refresh: un
+archivo que exporta un componente no puede exportar también constantes). Verificado en vivo, no solo por
+build: servidor + frontend reales lanzados con Playwright, las 4 vistas navegadas una por una, sin
+errores de consola ni de página.
+
 **Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
-resto), Fase 6 (frontend de 4 vistas - Hoy/Radar/Activo/Sistema, reemplazando la navegación actual por
-secciones), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el universo dinámico
-completo, ~400 tickers).
+resto), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el universo dinámico completo,
+~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en

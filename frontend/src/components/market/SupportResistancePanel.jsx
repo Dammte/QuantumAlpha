@@ -49,7 +49,7 @@ function PortfolioWatch() {
   }, [portfolioId])
 
   if (portfolios.length === 0 && !loading) {
-    return <p className="empty-state">Crea una cartera en "Mi Cartera" para ver aquí sus soportes y resistencias.</p>
+    return <p className="empty-state">Crea una cartera en "Hoy" para ver aquí sus soportes y resistencias.</p>
   }
 
   return (

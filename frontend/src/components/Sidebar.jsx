@@ -1,8 +1,46 @@
-import { MARKET_SECTIONS } from '../marketSections'
+import { RADAR_SECTIONS, ACTIVO_SECTIONS } from '../sectionNav'
 import { REGIONS } from '../regions'
 import MarketClock from './MarketClock'
 
-function Sidebar({ view, marketSection, region, onSelectPortfolio, onSelectMarketSection, onRegionChange, onSelectPerformance }) {
+// Reconstruction (2026-09), Fase 6: 4 top-level views matching the
+// reconstruction brief's own 4 questions (Parte 0) - qué hacer hoy con lo
+// que ya tengo (Hoy), qué está a punto de disparar (Radar), es esta entrada
+// concreta buena (Activo), está funcionando el sistema (Sistema) - replacing
+// the old "Mi Cartera / Rendimiento del sistema / Mercado (8 secciones)"
+// layout. Radar and Activo each keep their own nested sub-sections (same
+// pattern the old "Mercado" group used) and their own region switcher, since
+// only those two views read from a specific market/region.
+function RegionSwitch({ region, onRegionChange }) {
+  return (
+    <div className="sidebar__region-switch" role="tablist" aria-label="Región del mercado">
+      {REGIONS.map((r) => (
+        <button
+          key={r.key}
+          type="button"
+          role="tab"
+          aria-selected={region === r.key}
+          className={`sidebar__region-switch__item ${region === r.key ? 'sidebar__region-switch__item--active' : ''}`}
+          onClick={() => onRegionChange(r.key)}
+          title={r.hint}
+        >
+          {r.flag} {r.shortLabel}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Sidebar({
+  view,
+  radarSection,
+  activoSection,
+  region,
+  onSelectHoy,
+  onSelectSistema,
+  onSelectRadarSection,
+  onSelectActivoSection,
+  onRegionChange,
+}) {
   return (
     <aside className="sidebar">
       <div className="sidebar__brand">
@@ -18,50 +56,48 @@ function Sidebar({ view, marketSection, region, onSelectPortfolio, onSelectMarke
       <nav className="sidebar__nav" aria-label="Navegación principal">
         <button
           type="button"
-          className={`sidebar__item ${view === 'portfolio' ? 'sidebar__item--active' : ''}`}
-          onClick={onSelectPortfolio}
+          className={`sidebar__item ${view === 'hoy' ? 'sidebar__item--active' : ''}`}
+          onClick={onSelectHoy}
         >
-          Mi Cartera
+          Hoy
         </button>
 
-        <button
-          type="button"
-          className={`sidebar__item ${view === 'performance' ? 'sidebar__item--active' : ''}`}
-          onClick={onSelectPerformance}
-        >
-          Rendimiento del sistema
-        </button>
-
-        <p className="sidebar__group-label">Mercado</p>
-
-        <div className="sidebar__region-switch" role="tablist" aria-label="Región del mercado">
-          {REGIONS.map((r) => (
-            <button
-              key={r.key}
-              type="button"
-              role="tab"
-              aria-selected={region === r.key}
-              className={`sidebar__region-switch__item ${region === r.key ? 'sidebar__region-switch__item--active' : ''}`}
-              onClick={() => onRegionChange(r.key)}
-              title={r.hint}
-            >
-              {r.flag} {r.shortLabel}
-            </button>
-          ))}
-        </div>
-
-        {MARKET_SECTIONS.map((s) => (
+        <p className="sidebar__group-label">Radar</p>
+        <RegionSwitch region={region} onRegionChange={onRegionChange} />
+        {RADAR_SECTIONS.map((s) => (
           <button
             key={s.key}
             type="button"
             className={`sidebar__item sidebar__item--nested ${
-              view === 'market' && marketSection === s.key ? 'sidebar__item--active' : ''
+              view === 'radar' && radarSection === s.key ? 'sidebar__item--active' : ''
             }`}
-            onClick={() => onSelectMarketSection(s.key)}
+            onClick={() => onSelectRadarSection(s.key)}
           >
             {s.label}
           </button>
         ))}
+
+        <p className="sidebar__group-label">Activo</p>
+        {ACTIVO_SECTIONS.map((s) => (
+          <button
+            key={s.key}
+            type="button"
+            className={`sidebar__item sidebar__item--nested ${
+              view === 'activo' && activoSection === s.key ? 'sidebar__item--active' : ''
+            }`}
+            onClick={() => onSelectActivoSection(s.key)}
+          >
+            {s.label}
+          </button>
+        ))}
+
+        <button
+          type="button"
+          className={`sidebar__item ${view === 'sistema' ? 'sidebar__item--active' : ''}`}
+          onClick={onSelectSistema}
+        >
+          Sistema
+        </button>
       </nav>
     </aside>
   )

@@ -13,7 +13,8 @@ import PortfolioEvolutionChart from './components/PortfolioEvolutionChart'
 import DrawdownChart from './components/DrawdownChart'
 import TransactionForm from './components/TransactionForm'
 import TransactionsList from './components/TransactionsList'
-import MarketView from './components/market/MarketView'
+import SectionedView from './components/market/SectionedView'
+import { RADAR_COMPONENT_BY_SECTION, ACTIVO_COMPONENT_BY_SECTION } from './components/market/sectionComponents'
 import Sidebar from './components/Sidebar'
 import RefreshBar from './components/RefreshBar'
 import PortfolioConstructionPanel from './components/PortfolioConstructionPanel'
@@ -23,8 +24,9 @@ import SystemPerformanceView from './components/SystemPerformanceView'
 import { DEFAULT_REGION } from './regions'
 
 function App() {
-  const [view, setView] = useState('portfolio')
-  const [marketSection, setMarketSection] = useState('analysis')
+  const [view, setView] = useState('hoy')
+  const [radarSection, setRadarSection] = useState('radar')
+  const [activoSection, setActivoSection] = useState('analysis')
   const [presetTicker, setPresetTicker] = useState(null)
   const [region, setRegion] = useState(DEFAULT_REGION)
   const [portfolios, setPortfolios] = useState([])
@@ -185,8 +187,8 @@ function App() {
   // a row.
   const navigateToAnalysis = (ticker) => {
     setPresetTicker({ ticker, key: Date.now() })
-    setView('market')
-    setMarketSection('analysis')
+    setView('activo')
+    setActivoSection('analysis')
   }
 
   const colorScale = useMemo(
@@ -215,18 +217,23 @@ function App() {
     <div className="app">
       <Sidebar
         view={view}
-        marketSection={marketSection}
+        radarSection={radarSection}
+        activoSection={activoSection}
         region={region}
-        onSelectPortfolio={() => setView('portfolio')}
-        onSelectMarketSection={(key) => {
-          setView('market')
-          setMarketSection(key)
+        onSelectHoy={() => setView('hoy')}
+        onSelectRadarSection={(key) => {
+          setView('radar')
+          setRadarSection(key)
+        }}
+        onSelectActivoSection={(key) => {
+          setView('activo')
+          setActivoSection(key)
         }}
         onRegionChange={setRegion}
-        onSelectPerformance={() => setView('performance')}
+        onSelectSistema={() => setView('sistema')}
       />
       <div className="app-content">
-        {view === 'portfolio' && portfolios.length > 0 && (
+        {view === 'hoy' && portfolios.length > 0 && (
           <div className="app-content__toolbar">
             <PortfolioSelect
               portfolios={portfolios}
@@ -239,16 +246,25 @@ function App() {
 
         {error && <div className="banner banner--error">{error}</div>}
 
-        {view === 'performance' ? (
+        {view === 'sistema' ? (
           <main className="dashboard">
             <section className="panel">
               <h2>Rendimiento del sistema</h2>
               <SystemPerformanceView />
             </section>
           </main>
-        ) : view === 'market' ? (
-          <MarketView
-            section={marketSection}
+        ) : view === 'radar' ? (
+          <SectionedView
+            componentBySection={RADAR_COMPONENT_BY_SECTION}
+            section={radarSection}
+            presetTicker={presetTicker}
+            onNavigateToTicker={navigateToAnalysis}
+            region={region}
+          />
+        ) : view === 'activo' ? (
+          <SectionedView
+            componentBySection={ACTIVO_COMPONENT_BY_SECTION}
+            section={activoSection}
             presetTicker={presetTicker}
             onNavigateToTicker={navigateToAnalysis}
             region={region}
