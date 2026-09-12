@@ -27,11 +27,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.domain.models.ticker_snapshot import (
-    IndustryPerformance,
-    SectorPerformance,
-    TickerSnapshot,
-)
+from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.infrastructure.db.repositories.universe_membership_repository import (
     UniverseMembershipRepository,
 )
@@ -46,7 +42,6 @@ from app.services.market_universe import (
     benchmark_for_region,
     cap_tier_of,
     currency_of,
-    region_config,
 )
 from app.services.multi_timeframe import FAST_MA_PERIOD
 
@@ -54,19 +49,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL = timedelta(hours=3)
 HISTORY_DAYS = 400  # enough calendar days to cover a 252-trading-day lookback + SMA200
-# get_sector_performance's own window, wider than HISTORY_DAYS above (Tercera
-# auditoría, Bloque A-7): 400 calendar days only clears ~261-265 trading
-# sessions for a European sector ETF (more public holidays than the US, plus
-# whatever data gaps a given fund's own history has) - a ~10-session margin
-# over rs_raw_score's own >252 requirement, easily lost to one thin week and
-# silently dropping that sector from the ranking with no indication why. 500
-# days gives ~333-337 sessions even after holidays - comfortable margin.
-SECTOR_HISTORY_DAYS = 500
 MIN_BARS_REQUIRED = 60
-RS_LEADERS_PER_INDUSTRY = 3
-# Cuarta auditoría, DEUDA-3 - see IndustryPerformance.performance_method's docstring.
-INDUSTRY_METHOD_ETF = "etf"
-INDUSTRY_METHOD_BASKET_AVERAGE = "basket_average"
 
 
 def _snapshot_to_dict(snapshot: TickerSnapshot) -> dict[str, Any]:
@@ -361,8 +344,6 @@ class MarketScreenerService:
     def __init__(self, market_data: MarketDataService) -> None:
         self.market_data = market_data
         self._snapshot_cache: dict[str, tuple[datetime, list[TickerSnapshot]]] = {}
-        self._sector_cache: dict[str, tuple[datetime, list[SectorPerformance]]] = {}
-        self._industry_cache: dict[str, tuple[datetime, list[IndustryPerformance]]] = {}
         self._ohlcv_cache: dict[str, tuple[datetime, dict[str, pd.DataFrame]]] = {}
 
     def _date_range(self) -> tuple[date, date]:
@@ -580,150 +561,6 @@ class MarketScreenerService:
                     }
                 )
         return sorted(matches, key=lambda m: abs(m["level"].distance_pct))
-
-    def get_sector_performance(
-        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
-    ) -> list[SectorPerformance]:
-        cached = self._sector_cache.get(region)
-        if not force_refresh and cached is not None:
-            cached_at, performance = cached
-            if datetime.now(UTC) - cached_at < CACHE_TTL:
-                return performance
-
-        # Tercera auditoría, Bloque A-7: this was the one heavy method in
-        # this class with no durable-cache fallback - every redeploy paid a
-        # synchronous 11-ETF download on the first /sectors or /sectors/rotation
-        # call, unlike get_universe_snapshot right above, which already had
-        # this. `SectorPerformance`'s fields are all
-        # plain str/float/int/None - dataclasses.asdict/**kwargs round-trips
-        # it with no custom (de)serialization needed, unlike TickerSnapshot.
-        if db is not None and not force_refresh:
-            sector_key = f"sector_performance:{region}"
-            performance = durable_cache.load_fresh_as(
-                db, sector_key, CACHE_TTL, lambda payload: [SectorPerformance(**p) for p in payload]
-            )
-            if performance is not None:
-                self._sector_cache[region] = (datetime.now(UTC), performance)
-                return performance
-
-        sector_etfs = region_config(region).sector_etfs
-        end = date.today()
-        start = end - timedelta(days=SECTOR_HISTORY_DAYS)
-        ohlcv_by_ticker = self.market_data.get_bulk_ohlcv(list(sector_etfs.values()), start, end)
-
-        closes_by_sector: dict[str, pd.Series] = {}
-        for sector, etf in sector_etfs.items():
-            df = ohlcv_by_ticker.get(etf)
-            if df is not None and not df.empty:
-                closes_by_sector[sector] = df["close"]
-
-        # Same blended-period RS methodology as per-stock RS Rating
-        # (`rs_raw_score` + `_percentile_rank`), just cross-sectioned over the 11
-        # sectors instead of the ~170-ticker universe - an objective "which
-        # sectors are actually leading right now" read from price alone.
-        rs_raw_by_sector = {sector: ta.rs_raw_score(close) for sector, close in closes_by_sector.items()}
-        rs_candidates = [sector for sector, rs in rs_raw_by_sector.items() if rs is not None]
-        excluded = [sector for sector in closes_by_sector if sector not in rs_candidates]
-        if excluded:
-            logger.info(
-                "get_sector_performance: %s excluded from RS ranking (region=%s) - fewer than 252 trading "
-                "sessions of history within the %d-day window", excluded, region, SECTOR_HISTORY_DAYS,
-            )
-        rs_percentiles = _percentile_rank([rs_raw_by_sector[sector] for sector in rs_candidates])
-        rs_rank_by_sector = dict(zip(rs_candidates, rs_percentiles, strict=True))
-
-        performance = []
-        for sector, close in closes_by_sector.items():
-            performance.append(
-                SectorPerformance(
-                    sector=sector,
-                    etf=sector_etfs[sector],
-                    change_1d=ta.pct_change_over(close, 1),
-                    change_1w=ta.pct_change_over(close, 5),
-                    change_1m=ta.pct_change_over(close, 21),
-                    change_3m=ta.pct_change_over(close, 63),
-                    change_6m=ta.pct_change_over(close, 126),
-                    change_1y=ta.pct_change_over(close, 252),
-                    rs_rank=rs_rank_by_sector.get(sector),
-                )
-            )
-
-        self._sector_cache[region] = (datetime.now(UTC), performance)
-        if db is not None:
-            durable_cache.save(db, f"sector_performance:{region}", [asdict(p) for p in performance])
-        return performance
-
-    def get_industry_performance(
-        self, region: str = DEFAULT_REGION, force_refresh: bool = False, db: Session | None = None
-    ) -> list[IndustryPerformance]:
-        cached = self._industry_cache.get(region)
-        if not force_refresh and cached is not None:
-            cached_at, performance = cached
-            if datetime.now(UTC) - cached_at < CACHE_TTL:
-                return performance
-
-        snapshots = self.get_universe_snapshot(region=region, force_refresh=force_refresh, db=db)
-        snapshot_by_ticker = {s.ticker: s for s in snapshots}
-
-        industries = region_config(region).industries
-        start, end = self._date_range()
-        etfs = [i.etf for i in industries if i.etf]
-        ohlcv_by_etf = self.market_data.get_bulk_ohlcv(etfs, start, end) if etfs else {}
-
-        performance = []
-        for industry in industries:
-            members = [snapshot_by_ticker[t] for t in industry.tickers if t in snapshot_by_ticker]
-            leaders = sorted(
-                (m for m in members if m.rs_rating is not None), key=lambda m: m.rs_rating, reverse=True
-            )[:RS_LEADERS_PER_INDUSTRY]
-            avg_rs = (
-                float(np.mean([m.rs_rating for m in members if m.rs_rating is not None]))
-                if any(m.rs_rating is not None for m in members)
-                else None
-            )
-
-            df = ohlcv_by_etf.get(industry.etf) if industry.etf else None
-            if df is not None and not df.empty:
-                close = df["close"]
-                changes = {
-                    "change_1d": ta.pct_change_over(close, 1),
-                    "change_1w": ta.pct_change_over(close, 5),
-                    "change_1m": ta.pct_change_over(close, 21),
-                    "change_3m": ta.pct_change_over(close, 63),
-                    "change_6m": ta.pct_change_over(close, 126),
-                    "change_1y": ta.pct_change_over(close, 252),
-                }
-                performance_method = INDUSTRY_METHOD_ETF
-            else:
-                # No liquid ETF proxy for this industry (either none configured, or
-                # its OHLCV came back empty) - fall back to an equal-weight average
-                # of its constituents' own returns (a synthetic index). Recorded as
-                # its own method, not silently folded into the same "etf" label just
-                # because industry.etf happens to be set (DEUDA-3).
-                changes = {
-                    field: (
-                        float(np.mean(values))
-                        if (values := [getattr(m, field) for m in members if getattr(m, field) is not None])
-                        else None
-                    )
-                    for field in ("change_1d", "change_1w", "change_1m", "change_3m", "change_6m", "change_1y")
-                }
-                performance_method = INDUSTRY_METHOD_BASKET_AVERAGE
-
-            performance.append(
-                IndustryPerformance(
-                    industry=industry.name,
-                    sector=industry.sector,
-                    etf=industry.etf,
-                    avg_rs_rating=avg_rs,
-                    leaders=leaders,
-                    performance_method=performance_method,
-                    **changes,
-                )
-            )
-
-        self._industry_cache[region] = (datetime.now(UTC), performance)
-        return performance
 
     def get_support_resistance(self, ticker: str, start: date, end: date) -> tuple[float, list[ta.PriceLevel]]:
         ohlcv = self.market_data.get_bulk_ohlcv([ticker], start, end)

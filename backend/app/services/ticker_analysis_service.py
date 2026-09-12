@@ -55,7 +55,6 @@ import pandas as pd
 
 from app.domain.interfaces.llm_narrator import LLMNarrator
 from app.domain.models.ticker_analysis import PricePoint, TickerAnalysis
-from app.services import analysis_tools as at
 from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 from app.services.backtest_engine import (
@@ -511,9 +510,7 @@ class TickerAnalysisService:
         # market the ticker actually trades in - comparing a European stock's
         # relative strength to the wrong benchmark would misread it entirely.
         # VIX rides along in the same batched call (free - yfinance downloads
-        # all three in one request) so historical_analogs() can match on the
-        # market's fear/volatility regime at each candidate point, not just
-        # this ticker's own price shape.
+        # all three in one request).
         benchmark_ticker = benchmark_for_ticker(ticker)
         ohlcv = self.market_data.get_bulk_ohlcv([ticker, benchmark_ticker, VIX_TICKER], start, end)
         df = ohlcv.get(ticker)
@@ -563,13 +560,6 @@ class TickerAnalysisService:
         rsi_s = ta.rsi(close)
         _, _, macd_hist_s = ta.macd(close)
         bb_mid_s, bb_up_s, bb_low_s = ta.bollinger_bands(close)
-        atr_s = ta.atr(high, low, close)
-
-        gann_lines = at.gann_fan(high, low, core.trend, atr_s)
-        gann_by_label: dict[str, pd.Series] = {}
-        if gann_lines:
-            for line in gann_lines:
-                gann_by_label[line.label] = pd.Series(line.values, index=close.index)
 
         chart_slice = df.iloc[-CHART_BARS:] if len(df) > CHART_BARS else df
         price_history = [
@@ -587,9 +577,6 @@ class TickerAnalysisService:
                 bb_upper=_safe_at(bb_up_s, ts),
                 bb_middle=_safe_at(bb_mid_s, ts),
                 bb_lower=_safe_at(bb_low_s, ts),
-                gann_1x1=_safe_at(gann_by_label.get("1x1"), ts),
-                gann_1x2=_safe_at(gann_by_label.get("1x2"), ts),
-                gann_2x1=_safe_at(gann_by_label.get("2x1"), ts),
                 rsi14=_safe_at(rsi_s, ts),
                 macd_histogram=_safe_at(macd_hist_s, ts),
             )
@@ -597,8 +584,6 @@ class TickerAnalysisService:
         ]
 
         news = self.market_data.get_ticker_news(ticker)
-        seasonality = at.seasonality_by_month(close)
-        historical_analogs = at.historical_analogs(close, vix_close=vix_close)
         llm_narrative = self._explain_gate(ticker, core.gate, core.trend, core.stage)
 
         return TickerAnalysis(
@@ -653,8 +638,6 @@ class TickerAnalysisService:
             price_history=price_history,
             news=news,
             fundamentals=info,
-            seasonality=seasonality,
-            historical_analogs=historical_analogs,
             gate=core.gate,
             triple_barrier_backtest=core.triple_barrier_backtest,
             llm_narrative=llm_narrative,

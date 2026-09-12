@@ -217,15 +217,17 @@ def compute_aggregate_risk(
     return AggregateRiskReport(total_risk_amount=total, total_risk_pct_of_capital=pct, exceeds_limit=exceeds)
 
 
-def final_position_size(kelly_size: float, portfolio_risk_limit_size: float, sector_limit_size: float) -> float:
+def final_position_size(
+    risk_based_size: float, portfolio_risk_limit_size: float, sector_limit_size: float
+) -> float:
     """The actual number of shares to size a new position at: the tightest
-    of a suggested size (`kelly_size` - historically Kelly's own suggestion,
-    `kelly_criterion.py`, retired 2026-09 for lack of cross-sectional
-    evidence; callers should now pass a fixed-risk size instead, see
-    `docs/quant_methodology.md`), the per-position portfolio-risk cap
-    (`trade_manager.max_shares_for_position_risk`), and whatever a
-    sector-concentration limit would still allow before breaching
+    of a suggested size (`risk_based_size` - the fixed-risk sizing from
+    `trade_geometry.py`'s `RISK_PER_TRADE_PCT`, replacing the old per-ticker
+    optimizer this module retired in 2026-09 for lack of cross-sectional
+    evidence, see `docs/quant_methodology.md`), the per-position
+    portfolio-risk cap (`trade_manager.max_shares_for_position_risk`), and
+    whatever a sector-concentration limit would still allow before breaching
     `MAX_SECTOR_CONCENTRATION_PCT`. Each constraint exists for a different
     reason and all three must hold at once - this is never wider than any
     individual one, only ever the same or narrower."""
-    return min(kelly_size, portfolio_risk_limit_size, sector_limit_size)
+    return min(risk_based_size, portfolio_risk_limit_size, sector_limit_size)

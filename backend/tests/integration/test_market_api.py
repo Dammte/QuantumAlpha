@@ -5,7 +5,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.infrastructure.db.models import ComputationCacheORM, UniverseMembershipORM
-from app.services.market_universe import INDUSTRIES, SECTOR_ETFS, universe_tickers
+from app.services.market_universe import INDUSTRIES, universe_tickers
 
 
 def test_get_universe(client: TestClient) -> None:
@@ -132,34 +132,6 @@ def test_movers_has_all_groups_within_size_limit(client: TestClient) -> None:
     assert expected_groups <= body.keys()
     for group in expected_groups:
         assert len(body[group]) <= 10
-
-
-def test_sector_performance_covers_every_sector_etf(client: TestClient) -> None:
-    response = client.get("/api/v1/market/sectors")
-    assert response.status_code == 200
-    body = response.json()
-    assert len(body) == len(SECTOR_ETFS)
-    assert {row["sector"] for row in body} == set(SECTOR_ETFS.keys())
-
-
-def test_sector_performance_rs_rank_is_a_percentile_across_all_sectors(client: TestClient) -> None:
-    response = client.get("/api/v1/market/sectors")
-    body = response.json()
-    ranks = [row["rs_rank"] for row in body if row["rs_rank"] is not None]
-    assert len(ranks) == len(SECTOR_ETFS)
-    assert all(1 <= r <= 99 for r in ranks)
-    assert len(set(ranks)) == len(ranks)  # each sector gets a distinct rank, no ties collapsed
-
-
-def test_industry_performance_covers_every_industry(client: TestClient) -> None:
-    response = client.get("/api/v1/market/industries")
-    assert response.status_code == 200
-    body = response.json()
-    assert len(body) == len(INDUSTRIES)
-    semis = next(row for row in body if row["industry"] == "Semiconductores")
-    assert semis["sector"] == "Tecnología"
-    assert len(semis["leaders"]) > 0
-    assert semis["leaders"][0]["industry"] == "Semiconductores"
 
 
 def test_trend_breadth_totals_match_universe_size(client: TestClient) -> None:
@@ -303,13 +275,8 @@ def test_market_endpoints_survive_a_missing_computation_cache_table(client: Test
         assert client.get("/api/v1/market/movers").status_code == 200
         assert client.get("/api/v1/market/trend").status_code == 200
         assert client.get("/api/v1/market/trend/detail").status_code == 200
-        assert client.get("/api/v1/market/industries").status_code == 200
         assert client.get("/api/v1/market/levels/proximity").status_code == 200
         assert client.get("/api/v1/market/context").status_code == 200
-
-        sectors = client.get("/api/v1/market/sectors")
-        assert sectors.status_code == 200
-        assert len(sectors.json()) == len(SECTOR_ETFS)
     finally:
         ComputationCacheORM.__table__.create(bind=engine)
 
@@ -329,27 +296,6 @@ def test_universe_snapshot_recomputes_when_cached_payload_shape_is_stale(
     response = client.get("/api/v1/market/screener", params={"region": "us"})
     assert response.status_code == 200
     assert len(response.json()) > 0  # recomputed the real ~170-ticker universe, not an empty/broken list
-
-
-def test_sector_performance_recomputes_when_cached_payload_shape_is_stale(
-    client: TestClient, db_session: Session
-) -> None:
-    # Tercera auditoría, Bloque A-7: get_sector_performance had no durable
-    # cache at all before this - the only heavy method in
-    # MarketScreenerService without one - so this mirrors the same
-    # stale-shape regression test the sibling caches already have.
-    db_session.add(
-        ComputationCacheORM(
-            cache_key="sector_performance:us",
-            computed_at=datetime.now(UTC),
-            payload=[{"sector": "NOT_ENOUGH_FIELDS"}],  # not a valid SectorPerformance dict
-        )
-    )
-    db_session.commit()
-
-    response = client.get("/api/v1/market/sectors", params={"region": "us"})
-    assert response.status_code == 200
-    assert len(response.json()) == len(SECTOR_ETFS)  # recomputed the real 11 sectors, not an empty/broken list
 
 
 def test_screener_uses_the_dynamic_universe_when_a_snapshot_is_on_file(
@@ -376,12 +322,3 @@ def test_screener_uses_the_dynamic_universe_when_a_snapshot_is_on_file(
     tickers = {row["ticker"] for row in response.json()}
     assert "DYNTICK0" in tickers
     assert not (set(universe_tickers("us")) & tickers)  # the curated list was never consulted
-
-
-def test_sector_performance_persists_to_the_durable_cache(client: TestClient, db_session: Session) -> None:
-    response = client.get("/api/v1/market/sectors", params={"region": "us"})
-    assert response.status_code == 200
-
-    cached = db_session.query(ComputationCacheORM).filter_by(cache_key="sector_performance:us").one_or_none()
-    assert cached is not None
-    assert len(cached.payload) == len(SECTOR_ETFS)

@@ -25,9 +25,6 @@ class PricePointResponse(BaseModel):
     bb_upper: float | None
     bb_middle: float | None
     bb_lower: float | None
-    gann_1x1: float | None
-    gann_1x2: float | None
-    gann_2x1: float | None
     rsi14: float | None
     macd_histogram: float | None
 
@@ -53,25 +50,6 @@ class FundamentalsResponse(BaseModel):
     revenue_growth: float | None
     profit_margins: float | None
     debt_to_equity: float | None
-
-
-class MonthSeasonalityResponse(BaseModel):
-    month: int
-    avg_return: float
-    win_rate: float
-    n_observations: int
-
-
-class HistoricalAnalogsResponse(BaseModel):
-    n_analogs: int
-    forward_horizon_days: int
-    avg_forward_return: float
-    median_forward_return: float
-    win_rate: float
-    regime_matched: bool
-    current_vix_level: float | None
-    avg_analog_vix_level: float | None
-    pct_analogs_in_elevated_fear: float | None
 
 
 class RecommendationSnapshotFactorResponse(BaseModel):
@@ -145,8 +123,6 @@ class TickerAnalysisResponse(BaseModel):
     price_history: list[PricePointResponse]
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None
-    seasonality: list[MonthSeasonalityResponse]
-    historical_analogs: HistoricalAnalogsResponse | None
     gate: GateResultResponse
     triple_barrier_backtest: TripleBarrierBacktestResponse | None
     # Reconstruction (2026-09), Fase 7: `None` unless GEMINI_API_KEY is set -

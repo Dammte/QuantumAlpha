@@ -77,17 +77,11 @@ export const api = {
   getMarketMovers: ({ region, refresh } = {}) =>
     request(`/api/v1/market/movers${toQueryString({ region, refresh })}`),
 
-  getSectorPerformance: ({ region, refresh } = {}) =>
-    request(`/api/v1/market/sectors${toQueryString({ region, refresh })}`),
-
   getMarketTrend: ({ region, refresh } = {}) =>
     request(`/api/v1/market/trend${toQueryString({ region, refresh })}`),
 
   getSupportResistance: (ticker, { start, end } = {}) =>
     request(`/api/v1/market/tickers/${ticker}/levels${toQueryString({ start, end })}`),
-
-  getIndustryPerformance: ({ region, refresh } = {}) =>
-    request(`/api/v1/market/industries${toQueryString({ region, refresh })}`),
 
   getMarketTrendDetail: ({ region, refresh } = {}) =>
     request(`/api/v1/market/trend/detail${toQueryString({ region, refresh })}`),

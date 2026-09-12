@@ -57,33 +57,6 @@ class TickerSnapshotResponse(BaseModel):
     imminent_cross_short_term: ImminentCrossResponse | None = None
 
 
-class SectorPerformanceResponse(BaseModel):
-    sector: str
-    etf: str
-    change_1d: float | None
-    change_1w: float | None
-    change_1m: float | None
-    change_3m: float | None
-    change_6m: float | None
-    change_1y: float | None
-    rs_rank: int | None
-
-
-class IndustryPerformanceResponse(BaseModel):
-    industry: str
-    sector: str
-    etf: str | None
-    change_1d: float | None
-    change_1w: float | None
-    change_1m: float | None
-    change_3m: float | None
-    change_6m: float | None
-    change_1y: float | None
-    avg_rs_rating: float | None
-    leaders: list[TickerSnapshotResponse]
-    performance_method: str  # "etf" | "basket_average" - see IndustryPerformance's docstring
-
-
 class MoversResponse(BaseModel):
     gainers: list[TickerSnapshotResponse]
     losers: list[TickerSnapshotResponse]

@@ -9,10 +9,9 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
     assert body["ticker"] == "AAPL"
     assert body["price"] > 0
     assert body["trend"] in {"uptrend", "downtrend", "sideways"}
-    assert len(body["seasonality"]) == 12
     assert len(body["price_history"]) > 0
     first_point = body["price_history"][0]
-    assert {"close", "sma20", "bb_upper", "gann_1x1"} <= first_point.keys()
+    assert {"close", "sma20", "bb_upper"} <= first_point.keys()
 
     gate = body["gate"]
     assert isinstance(gate["passes"], bool)

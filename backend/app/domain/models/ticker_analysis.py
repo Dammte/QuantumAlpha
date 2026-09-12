@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.domain.models.ticker_info import NewsArticle, TickerInfo
-from app.services.analysis_tools import HistoricalAnalogs, MonthSeasonality
 from app.services.backtest_engine import TripleBarrierBacktestResult
 from app.services.levels_engine import GateResult
 from app.services.multi_timeframe import MultiTimeframeRead
@@ -24,9 +23,6 @@ class PricePoint:
     bb_upper: float | None
     bb_middle: float | None
     bb_lower: float | None
-    gann_1x1: float | None
-    gann_1x2: float | None
-    gann_2x1: float | None
     rsi14: float | None
     macd_histogram: float | None
 
@@ -87,8 +83,6 @@ class TickerAnalysis:
     price_history: list[PricePoint]
     news: list[NewsArticle]
     fundamentals: TickerInfo | None
-    seasonality: list[MonthSeasonality]
-    historical_analogs: HistoricalAnalogs | None
     gate: GateResult
     triple_barrier_backtest: TripleBarrierBacktestResult | None
     # Reconstruction (2026-09), Fase 7: `None` whenever the Gemini narrator

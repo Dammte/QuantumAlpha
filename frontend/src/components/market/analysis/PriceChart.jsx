@@ -9,13 +9,8 @@ const SERIES = [
   { key: 'sma200', label: 'MA200', color: 'var(--cat-4)', width: 1.5, dash: undefined },
   { key: 'bb_upper', label: 'Bollinger sup.', color: 'var(--chart-muted)', width: 1, dash: '3 3' },
   { key: 'bb_lower', label: 'Bollinger inf.', color: 'var(--chart-muted)', width: 1, dash: '3 3' },
-  { key: 'gann_1x1', label: 'Gann 1x1', color: 'var(--accent)', width: 1.5, dash: '4 2' },
 ]
 
-// Fields the Y-axis should actually scale to. Gann fan lines are deliberately
-// excluded: they diverge to extreme levels over a long time span by design (that's
-// how a Gann fan works), and letting the axis stretch to fit them would squash all
-// the real price action into a sliver at the bottom of the chart.
 const PRICE_RELEVANT_FIELDS = ['close', 'sma50', 'sma200', 'bb_upper', 'bb_lower']
 
 function toTs(dateStr) {

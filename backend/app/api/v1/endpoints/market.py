@@ -11,13 +11,12 @@ from app.api.deps import (
     get_ticker_daily_state_repository,
 )
 from app.domain.models.ticker_daily_state import TickerDailyState
-from app.domain.models.ticker_snapshot import IndustryPerformance, TickerSnapshot
+from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.schemas.market import (
     EntryTriggerResponse,
     GateConditionResponse,
     IndexSnapshotResponse,
-    IndustryPerformanceResponse,
     IndustryUniverseResponse,
     MarketContextResponse,
     MarketRegimeResponse,
@@ -29,7 +28,6 @@ from app.schemas.market import (
     RadarResponse,
     RelationshipMapResponse,
     SectorPeerResponse,
-    SectorPerformanceResponse,
     StatisticalRelationResponse,
     StopAndTargetResponse,
     SupportResistanceResponse,
@@ -83,12 +81,6 @@ def _to_response(snapshot: TickerSnapshot) -> TickerSnapshotResponse:
     data["trend"] = snapshot.trend.value
     data["stage"] = snapshot.stage.value if snapshot.stage else None
     return TickerSnapshotResponse(**data)
-
-
-def _industry_to_response(perf: IndustryPerformance) -> IndustryPerformanceResponse:
-    data = asdict(perf)
-    data["leaders"] = [_to_response(leader) for leader in perf.leaders]
-    return IndustryPerformanceResponse(**data)
 
 
 @router.get("/universe", response_model=UniverseResponse)
@@ -168,28 +160,6 @@ def get_market_movers(
     snapshots = service.get_universe_snapshot(region=region, force_refresh=refresh, db=db)
     movers = get_movers(snapshots)
     return MoversResponse(**{group: [_to_response(s) for s in items] for group, items in movers.items()})
-
-
-@router.get("/sectors", response_model=list[SectorPerformanceResponse])
-def get_sector_performance(
-    service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-    db: DbSession,
-    region: str = RegionQuery,
-    refresh: bool = False,
-) -> list[SectorPerformanceResponse]:
-    performance = service.get_sector_performance(region=region, force_refresh=refresh, db=db)
-    return [SectorPerformanceResponse(**asdict(p)) for p in performance]
-
-
-@router.get("/industries", response_model=list[IndustryPerformanceResponse])
-def get_industry_performance(
-    service: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
-    db: DbSession,
-    region: str = RegionQuery,
-    refresh: bool = False,
-) -> list[IndustryPerformanceResponse]:
-    performance = service.get_industry_performance(region=region, force_refresh=refresh, db=db)
-    return [_industry_to_response(p) for p in performance]
 
 
 @router.get("/trend", response_model=TrendBreadthResponse)

@@ -11,8 +11,6 @@ import RecommendationCard from './RecommendationCard'
 import GateNarrative from './GateNarrative'
 import FundamentalsCard from './FundamentalsCard'
 import NewsList from './NewsList'
-import SeasonalityChart from './SeasonalityChart'
-import HistoricalAnalogsCard from './HistoricalAnalogsCard'
 import TripleBarrierBacktestCard from './TripleBarrierBacktestCard'
 import RelationshipMapCard from './RelationshipMapCard'
 
@@ -20,7 +18,6 @@ const TABS = [
   { key: 'summary', label: 'Resumen' },
   { key: 'charts', label: 'Gráficos' },
   { key: 'fundamentals', label: 'Fundamentales' },
-  { key: 'seasonality', label: 'Estacionalidad' },
   { key: 'relationships', label: 'Relaciones' },
 ]
 
@@ -247,19 +244,6 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
               <section className="panel panel--nested">
                 <h3>Noticias recientes</h3>
                 <NewsList news={analysis.news} />
-              </section>
-            </div>
-          )}
-
-          {tab === 'seasonality' && (
-            <div className="grid-2">
-              <section className="panel panel--nested">
-                <h3>Estacionalidad mensual (histórico)</h3>
-                <SeasonalityChart seasonality={analysis.seasonality} />
-              </section>
-              <section className="panel panel--nested">
-                <h3>Análogos históricos</h3>
-                <HistoricalAnalogsCard analogs={analysis.historical_analogs} />
               </section>
             </div>
           )}
