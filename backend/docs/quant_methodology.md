@@ -1328,7 +1328,7 @@ entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
 `test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
 `test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
 
-## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5, 8 (en curso)
+## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5, 8 completas (Fase 7 en curso)
 
 Encargo explícito del propietario: sustituir el checklist ponderado de 26 factores (secciones 1-24
 arriba) por un sistema de niveles/triggers que responda exactamente 4 preguntas - qué hacer hoy con lo
@@ -1446,7 +1446,7 @@ evidencia en vez de intuición.
    (`riskByTicker`, en vivo) - el banner no la duplica. La Fase 6 real (Hoy/Radar/Activo/Sistema como
    4 vistas de primer nivel, reemplazando la navegación actual) sigue pendiente.
 
-**Fase 8 (en curso) — medición basada en `TriggerEvent`, la nueva lectura principal de "¿está
+**Fase 8 — medición basada en `TriggerEvent`, la nueva lectura principal de "¿está
 funcionando el sistema?" (Parte 0, pregunta 4).**
 
 `trigger_performance_service.py`: mismo patrón arquitectónico que `signal_performance_service.py`
@@ -1482,12 +1482,73 @@ solo el suyo. Esa condición se mide correctamente, contra soporte/resistencia r
 `minervini_range_position`/`trend_down`/`stage4` se quedan sin tocar - son señales informativas que el
 sistema en vivo todavía muestra aunque ninguna condicione el gate.
 
+### 25.1 Primera ejecución real del estudio reorientado (2026-09-12) - resultado, no una acción
+
+`python scripts/factor_ablation_study.py --temporal-split` corrido de verdad contra las ~216 acciones del
+universo curado (US + Europa), 10 años de histórico, horizontes 5/10/21 sesiones, split calibrar
+(< 2023-01-01) / validar (>= esa fecha). Salida en `docs/factor_ablation_report_v4_gate_*.csv` (54
+archivos, sin comitear - mismo criterio que los `factor_ablation_report_v3_*.csv` previos: son artefactos
+de investigación locales, no código; la evidencia que importa queda registrada aquí, en prosa).
+
+**Hallazgo principal - honesto, no cómodo**: `gate_trend_or_stage2` (y por extensión `gate_passes`, que
+lo incluye) mide un efecto **negativo** y con frecuencia significativo (BH-ajustado) sobre el retorno
+demeaneado a 5 y 10 sesiones - lo contrario del signo que su diseño asume:
+
+| horizonte | conjunto | `gate_passes` diff. | p (BH) | `gate_trend_or_stage2` diff. | p (BH) |
+|---|---|---|---|---|---|
+| 5d | pooled | -0.128pp | 0.00055 (sig.) | -0.148pp | 0.0003 (sig.) |
+| 5d | calibrar | -0.146pp | 0.0006 (sig.) | -0.174pp | 0.0003 (sig.) |
+| 5d | validar | -0.102pp | 0.048 (no sig. al 1%) | -0.112pp | 0.017 (no sig. al 1%) |
+| 10d | pooled | -0.206pp | 0.0006 (sig.) | -0.315pp | 0.0003 (sig.) |
+| 10d | calibrar | -0.152pp | 0.037 (no sig. al 1%) | -0.363pp | 0.0003 (sig.) |
+| 10d | validar | -0.285pp | 0.0026 (sig.) | -0.246pp | 0.005 (sig.) |
+| 21d | pooled | -0.153pp | 0.214 (no sig.) | -0.169pp | 0.181 (no sig.) |
+
+El efecto no es un accidente de una sola muestra: aparece en calibrar **y** en validar (fuera de
+muestra) a 5 y 10 sesiones, con el mismo signo. Se debilita y deja de ser significativo a 21 sesiones -
+el horizonte de holding real de esta cartera. Segmentado por régimen (h10): el efecto es fuerte en
+`vix_calm`/`market_above_sma200` (la mayoría de las muestras) y se invierte de signo, no significativo,
+en `vix_stress` (muestra pequeña, n≈2000). No es un hallazgo aislado de `trend_or_stage2`: **todo** el
+grupo de factores "confirmación alcista" del checklist retirado (`trend_up`, `stage2`,
+`adx_strong_trend`) mide el mismo signo negativo a 5-10 sesiones, con sus opuestos (`trend_down`,
+`stage4`, `death_cross`) midiendo el signo positivo espejo - consistente con el efecto de **reversión de
+muy corto plazo** ampliamente documentado en la literatura (Lehmann 1990, Jegadeesh 1990), distinto del
+momentum de 6-12 meses que este mismo proyecto ya cita (Jegadeesh & Titman 1993) y que opera en un
+horizonte mucho más largo. Comprar una tendencia ya confirmada parece, en esta muestra, comprar
+justo antes de una pausa de corto plazo relativa al resto del universo - no evidencia de que la
+tendencia en sí sea mala, sino de que 5-10 sesiones es demasiado poco tiempo para que se exprese.
+
+**El único gate condition que sí se valida limpiamente**: `gate_not_parabolic` mide el signo correcto
+(positivo - evitar extensión ayuda) y es significativo BH-ajustado a 5d y 10d pooled (+0.236pp/+0.445pp,
+p<0.001), aunque pierde significación en el split validar aislado (muestra más pequeña). Las otras tres
+condiciones (`gate_not_overbought_outside_strong_trend`, `gate_no_obv_bearish_divergence`,
+`gate_no_fast_pair_veto`) no muestran nada concluyente en ningún sentido - probablemente infra-medidas:
+la condición de sobrecompra en particular solo tiene 30-152 muestras "activadas" (RSI≥80 fuera de
+tendencia fuerte) frente a decenas de miles del lado contrario en cada horizonte.
+
+**Qué NO se hace con esto todavía**: ningún cambio al gate en vivo. Es exactamente la situación que la
+sección "Cómo usar los resultados" de este mismo script anticipa - una señal real, consistente en
+calibrar y validar, pero que pide una decisión deliberada del propietario (¿acortar el horizonte de
+"gate_trend_or_stage2" a algo que no choque con la reversión de corto plazo? ¿mantenerlo, dado que 21
+sesiones - el horizonte real - no muestra el mismo efecto? ¿investigar si el muestreo por stride del
+estudio interactúa mal con la reversión?), no una acción automática de este reconstructor a partir de un
+único estudio, por bien corrido que esté. Queda registrado aquí para esa decisión, no aplicado.
+
+**Setup outcome stats (h21, contexto)**: expectancy positiva y consistente en los cuatro setups de
+`watchlist_service.py` (`oversold_bounce` +0.114R, `breakout_volume` +0.126R, `trend_continuation`
++0.085R, `pullback_to_support` +0.133R sobre esa muestra) pese a win rates bajos (12-15%) - la asimetría
+esperada de un stop ajustado con objetivo 2:1, no una señal de que el setup "falle" la mayoría de las
+veces en el sentido coloquial.
+
+**Fase 8 completa** en el sentido en que este reconstructor puede cerrarla: script reorientado,
+ejecutado de verdad contra el universo real, resultado documentado arriba. Lo que queda es una decisión
+del propietario (qué hacer, si algo, con el hallazgo de reversión de corto plazo), no trabajo de
+ingeniería pendiente.
+
 **Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
 resto), Fase 6 (frontend de 4 vistas - Hoy/Radar/Activo/Sistema, reemplazando la navegación actual por
-secciones), Fase 7 (capa Gemini que nunca puntúa ni decide), resto de la Fase 8 (ejecutar
-`factor_ablation_study.py` de verdad contra el universo real - el script ya está reorientado, falta
-correrlo y revisar el resultado), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el
-universo dinámico completo, ~400 tickers).
+secciones), Fase 7 (capa Gemini que nunca puntúa ni decide - en curso, ver más abajo), Fase 9 (escenarios
+dorados + tests de latencia), Fase 10 (activar el universo dinámico completo, ~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
