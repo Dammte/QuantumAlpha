@@ -74,3 +74,33 @@ services:
         sync: false
       - key: MARKET_DATA_PROVIDER
         value: yfinance
+
+  # Reconstruction (2026-09), Fase 10: monthly refresh of the point-in-time
+  # dynamic universe (~400-1000 tickers across the real S&P 500/400 and
+  # STOXX Europe 600 constituents) that `market_screener_service.get_universe_snapshot`
+  # already auto-detects and prefers over the ~217-ticker curated
+  # `market_universe.py` dict the moment a snapshot exists for a region (see
+  # that method's own Bloque F-1 comment) - no code path change needed to
+  # "activate" this, only data: this job is the *only* place that data gets
+  # written. 1st of the month, 05:00 UTC (low-traffic, well outside both
+  # daily-close/intraday-refresh windows above) - the script itself skips a
+  # region that isn't due for refresh yet (30-day interval), so an
+  # occasional missed/late run is harmless. Same "billed resource, not
+  # activated by wiring it here" note as the two cron jobs above -
+  # scripts/refresh_universe_membership.py can also be run by hand against
+  # any DATABASE_URL (including a local dev DB) to populate/verify the table
+  # without creating this Render resource at all.
+  - name: quantumalpha-refresh-universe-membership
+    type: cron
+    runtime: python
+    region: frankfurt
+    plan: starter
+    rootDir: backend
+    schedule: "0 5 1 * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m scripts.refresh_universe_membership
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: MARKET_DATA_PROVIDER
+        value: yfinance

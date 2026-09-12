@@ -1328,7 +1328,7 @@ entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
 `test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
 `test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
 
-## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-9 completas
+## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-10 completas del lado de este reconstructor
 
 Encargo explícito del propietario: sustituir el checklist ponderado de 26 factores (secciones 1-24
 arriba) por un sistema de niveles/triggers que responda exactamente 4 preguntas - qué hacer hoy con lo
@@ -1667,8 +1667,51 @@ estado de gate más reciente de cada posición (`TickerDailyStateRepository.late
 `OpportunityCostPanel.jsx` lo muestra en "Hoy", debajo de `TodayActionsPanel` - renderiza nada si no hay
 nada que señalar.
 
-**Pendiente**: Fase 10 (activar el universo dinámico completo, ~400 tickers) - la única fase que queda,
-y es una decisión de coste del propietario, no trabajo de ingeniería pendiente de este reconstructor.
+### 25.7 Fase 10 - universo dinámico: cableado, no activado en producción
+
+Investigado antes de tocar nada: `market_screener_service.get_universe_snapshot` **ya** detecta y
+prefiere el universo dinámico (`dynamic_universe_service.read_dynamic_universe`) sobre el diccionario
+curado de ~217 tickers de `market_universe.py` en el momento en que exista un snapshot en la tabla
+`universe_memberships` para una región (Tercera auditoría, Bloque F-1 - ver el comentario de ese propio
+método) - "activar" esta fase no es un cambio de código, es puramente un asunto de datos:
+`scripts/refresh_universe_membership.py` es el único sitio que escribe esa tabla.
+
+`render.yaml` gana un tercer Cron Job (`quantumalpha-refresh-universe-membership`, 1º de cada mes a las
+05:00 UTC) - mismo criterio "cableado, no activado" que los otros dos: crear el recurso de verdad en
+Render es una decisión de coste del propietario, esto solo lo deja listo para revisar antes de esa
+decisión. El propio script se salta una región que no lleva 30 días sin refrescar, así que una ejecución
+ocasionalmente tardía o perdida no es grave.
+
+Verificado en local (no contra producción - este reconstructor no tiene credenciales de la base de datos
+de Render, ni las necesita: el script acepta cualquier `DATABASE_URL`, incluida una base de dev local)
+que el pipeline completo funciona de verdad, no solo en teoría - descarga real de los índices S&P 500/
+400 y STOXX Europe 600 desde Wikipedia, filtro de liquidez real vía yfinance, y persistencia en
+`universe_memberships`: **896 tickers guardados para EE.UU.**, **196 para Europa** (de partida, 189 -
+ver el bug real encontrado y corregido justo abajo).
+
+**Bug real encontrado y corregido, no solo una hipótesis**: la primera corrida en vivo falló 113/~300
+búsquedas europeas. 18 de esas eran un problema de formato reproducible y ya arreglado -
+`parse_stoxx600_constituents` pegaba el sufijo de Yahoo Finance directo sobre el ticker crudo de
+Wikipedia, que trae la clase de acción con un espacio ("VOLV B", bolsas nórdicas) o un punto ("BT.A",
+Londres) - Yahoo Finance exige un guion en los dos casos ("VOLV-B.ST", "BT-A.L"), exactamente la misma
+normalización que `parse_us_constituents` ya aplicaba para "BRK.B" -> "BRK-B" y que este `parse_stoxx600_constituents`
+simplemente no tenía. Confirmado con `yfinance` en vivo antes de tocar el código (`VOLV-B.ST` responde,
+`VOLV B.ST` no) y con un test nuevo (`test_parse_stoxx600_constituents_normalizes_space_and_dot_share_classes_to_a_dash`).
+Una segunda corrida tras el arreglo bajó los fallos a 96 y subió el total guardado a 196.
+
+Los ~96 fallos restantes son un problema distinto y más difícil, fuera de alcance de esta pasada: una
+mezcla de tickers realmente deslistados/fusionados en el mundo real desde que se escribió la página de
+Wikipedia, y casos donde el ticker que Wikipedia lista no es el que Yahoo Finance realmente usa para esa
+empresa (ej. Ferrari aparece como "FERR" ahí, pero cotiza en Yahoo como "RACE.MI") - verificarlos uno por
+uno no es una normalización mecánica como la de arriba, es trabajo de investigación por empresa.
+`refresh_universe_membership.py` ya está diseñado para este caso exacto: registra y salta cualquier
+ticker que Yahoo Finance no pueda cotizar, sin romper la corrida ni inventar un precio.
+
+**Pendiente**: decisión del propietario sobre si/cuándo activar el Cron Job de verdad en Render (crear
+el recurso, con su coste asociado) - o ejecutar el script a mano una vez contra la base de datos de
+producción para probar el universo dinámico sin comprometerse todavía a la recurrencia mensual. Ninguna
+de las dos cosas es trabajo de ingeniería que falte por hacer. Opcional, no bloqueante: investigar los
+~96 tickers europeos restantes uno por uno si se quiere un universo europeo más completo que 196/~300.
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en
@@ -1683,4 +1726,5 @@ gate y el retiro de sus tres equivalentes del checklist), 4 en `test_gemini_narr
 contrato del gate. Retirados con `watchlist_service.py`: `test_watchlist_service.py` completo (34 tests)
 y 4 en `test_relationship_map_service.py` que probaban la anotación de setup/percentil ya eliminada (38
 en total, 713 → 675 unitarios). 8 nuevos en `test_opportunity_cost.py`, 3 de integración nuevos en
-`test_portfolio_today_api.py` (675 → 683 unitarios).
+`test_portfolio_today_api.py` (675 → 683 unitarios). 1 nuevo en `test_dynamic_universe_service.py`
+(normalización de espacio/punto a guion en tickers STOXX 600 - 683 → 684 unitarios).

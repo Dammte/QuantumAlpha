@@ -130,7 +130,21 @@ def parse_stoxx600_constituents(html: str) -> list[RawConstituent]:
     """The STOXX Europe 600 page's constituents table carries a bare ticker
     (no exchange suffix) plus a `Country` column - resolved to a Yahoo
     Finance suffix via `YAHOO_SUFFIX_BY_COUNTRY`. A country this system
-    doesn't have a mapping for is skipped (logged), never guessed."""
+    doesn't have a mapping for is skipped (logged), never guessed.
+
+    2026-09 (Fase 10 activation): a share-class suffix on this page comes as
+    either a space ("VOLV B", Nordic exchanges) or a dot ("BT.A", London) -
+    Yahoo Finance wants a dash either way ("VOLV-B.ST", "BT-A.L"), the exact
+    same normalization `parse_us_constituents` above already applies to
+    "BRK.B" -> "BRK-B". Found live: the first real run of this script
+    against both regions failed 18/~300 European lookups this way alone
+    (all space-separated) before this fix - a real, reproducible bug, not a
+    hypothetical one. Some other failures that first run also hit
+    (a differently-known ticker entirely, e.g. Ferrari's "FERR" here vs the
+    real "RACE.MI", or a company that may have since delisted/merged) are a
+    separate, harder problem this normalization doesn't and can't fix -
+    `refresh_universe_membership.py` already logs and skips any ticker
+    Yahoo Finance can't price, exactly as designed for this case."""
     tables = pd.read_html(io.StringIO(html))
     # The constituents table is identified by shape, not a fixed index - the
     # page carries over a dozen small unrelated tables (index history,
@@ -143,7 +157,7 @@ def parse_stoxx600_constituents(html: str) -> list[RawConstituent]:
     out = []
     skipped_countries: set[str] = set()
     for _, row in table.iterrows():
-        raw_ticker = str(row.get("Ticker", "")).strip()
+        raw_ticker = str(row.get("Ticker", "")).strip().replace(" ", "-").replace(".", "-")
         country = str(row.get("Country", "")).strip()
         if not raw_ticker or not country:
             continue

@@ -47,6 +47,24 @@ def test_parse_stoxx600_constituents_picks_the_table_with_ticker_and_country_col
     assert len(result) == 2
 
 
+_STOXX_HTML_SHARE_CLASSES = """
+<table>
+<tr><th>Ticker</th><th>Company</th><th>ICB Sector</th><th>Country</th><th>Headquarters</th></tr>
+<tr><td>VOLV B</td><td>Volvo</td><td>Industrials</td><td>Sweden</td><td>Gothenburg</td></tr>
+<tr><td>BT.A</td><td>BT Group</td><td>Telecommunications</td><td>United Kingdom</td><td>London</td></tr>
+</table>
+"""
+
+
+def test_parse_stoxx600_constituents_normalizes_space_and_dot_share_classes_to_a_dash():
+    # 2026-09 (Fase 10 activation): found live against the real page - Yahoo
+    # Finance wants "VOLV-B.ST"/"BT-A.L", never the space or dot Wikipedia's
+    # own "Ticker" column carries for a share class.
+    result = dus.parse_stoxx600_constituents(_STOXX_HTML_SHARE_CLASSES)
+    tickers = {c.ticker for c in result}
+    assert tickers == {"VOLV-B.ST", "BT-A.L"}
+
+
 _STOXX_HTML_WITH_DUPLICATE = """
 <table>
 <tr><th>Ticker</th><th>Company</th><th>ICB Sector</th><th>Country</th><th>Headquarters</th></tr>
