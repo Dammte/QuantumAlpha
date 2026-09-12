@@ -1328,7 +1328,7 @@ entre "dejarlo pendiente", "cerrarlo formalmente" y "retomarlo ahora").
 `test_relationship_map_service.py`, `test_backtest_engine.py`, más 2 tests de integración nuevos en
 `test_market_api.py`. `ruff check app tests scripts` limpio, `npm run lint`/`npm run build` limpios.
 
-## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5, 8 completas; Fase 7 cableada
+## 25. Reconstrucción de niveles/triggers (septiembre 2026) — Fases 1-5, 7, 8 completas
 
 Encargo explícito del propietario: sustituir el checklist ponderado de 26 factores (secciones 1-24
 arriba) por un sistema de niveles/triggers que responda exactamente 4 preguntas - qué hacer hoy con lo
@@ -1566,12 +1566,16 @@ una decisión de coste y privacidad del propietario, confirmada explícitamente 
 `TickerAnalysisResponse.llm_narrative` (`GET /market/tickers/{ticker}/analysis`) es el único consumidor
 por ahora - el único sitio donde "explicar una entrada concreta en lenguaje natural" tiene sentido
 acotado; el Radar (muchos tickers a la vez) queda fuera a propósito, no es una vista deep-dive.
+`GateNarrative.jsx` la muestra en el frontend, justo debajo de `RecommendationCard` - visualmente
+distinta (fondo/borde propios) y con su propio descargo ("no es una segunda opinión"), sin renderizar
+nada mientras `GEMINI_API_KEY` no esté configurada. **Fase 7 completa** en el sentido en que este
+reconstructor puede cerrarla - activarla es la decisión pendiente del propietario, no trabajo de
+ingeniería.
 
 **Pendiente**: retirar `watchlist_service.py` reescribiendo `opportunity_cost.py` en pequeño (Fase 5,
 resto), Fase 6 (frontend de 4 vistas - Hoy/Radar/Activo/Sistema, reemplazando la navegación actual por
-secciones), resto de la Fase 7 (mostrar `llm_narrative` en el frontend cuando exista - hoy solo vive en
-la respuesta de la API), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el universo
-dinámico completo, ~400 tickers).
+secciones), Fase 9 (escenarios dorados + tests de latencia), Fase 10 (activar el universo dinámico
+completo, ~400 tickers).
 
 **Tests**: 15 nuevos en `test_trade_geometry.py`, 12 en `test_levels_engine.py`, 17 en
 `test_precompute_repositories.py`, 21 en `test_daily_close.py` + 5 de integración, 11 en

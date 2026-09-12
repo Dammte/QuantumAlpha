@@ -8,6 +8,7 @@ import PriceChart from './PriceChart'
 import VolumeChart from './VolumeChart'
 import RsiMacdChart from './RsiMacdChart'
 import RecommendationCard from './RecommendationCard'
+import GateNarrative from './GateNarrative'
 import FundamentalsCard from './FundamentalsCard'
 import NewsList from './NewsList'
 import SeasonalityChart from './SeasonalityChart'
@@ -213,6 +214,7 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
                   candlestickPattern={analysis.candlestick_pattern}
                   currency={analysis.currency ?? 'USD'}
                 />
+                <GateNarrative narrative={analysis.llm_narrative} />
               </section>
 
               <section className="panel panel--nested">
