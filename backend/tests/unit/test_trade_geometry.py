@@ -120,6 +120,82 @@ def test_compute_stop_and_target_none_take_profit_when_stop_is_at_or_above_price
     assert result.risk_reward is None
 
 
+# --- compute_entry_geometry / size_position: the split behind ---------------
+# --- compute_trade_geometry (see the module's own docstring for why) --------
+
+
+def test_entry_geometry_never_computes_sizing_fields():
+    # No capital_total parameter at all - evaluate_gate/daily_close.py score
+    # the whole universe with no portfolio in scope, so these three fields
+    # must always come back None here regardless of how viable the setup is.
+    resistance = PriceLevel(price=98.0, kind="resistance", strength=2, distance_pct=-0.02)
+    result = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=resistance,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    assert result.viable is True
+    assert result.shares_for_risk_budget is None
+    assert result.position_value is None
+    assert result.pct_of_portfolio is None
+
+
+def test_size_position_fills_in_the_sizing_fields_of_a_viable_geometry():
+    resistance = PriceLevel(price=98.0, kind="resistance", strength=2, distance_pct=-0.02)
+    geometry = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=resistance,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    sized = tg.size_position(geometry, capital_total=100_000.0)
+    assert sized.shares_for_risk_budget == pytest.approx(150.0)
+    assert sized.position_value == pytest.approx(15_000.0)
+    assert sized.pct_of_portfolio == pytest.approx(0.15)
+    # Everything from the entry geometry itself is carried through unchanged.
+    assert sized.stop_price == geometry.stop_price
+    assert sized.entry_type == geometry.entry_type
+
+
+def test_size_position_is_a_no_op_on_a_rejected_geometry():
+    # No cascade rung applies - viable=False, nothing to size.
+    geometry = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    assert geometry.viable is False
+    sized = tg.size_position(geometry, capital_total=100_000.0)
+    assert sized == geometry
+
+
+def test_size_position_can_still_reject_on_minimum_position_value():
+    # A viable entry geometry, but too little capital to size a real position.
+    support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
+    geometry = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    assert geometry.viable is True
+    sized = tg.size_position(geometry, capital_total=500.0)
+    assert sized.viable is False
+    assert sized.position_value == pytest.approx(75.0)
+    assert "pequeña" in sized.rejection_reason
+
+
+def test_compute_trade_geometry_matches_the_two_step_split():
+    # The convenience wrapper must be exactly equivalent to calling the two
+    # halves separately - no divergent behavior hiding in the wrapper itself.
+    support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
+    wrapped = tg.compute_trade_geometry(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
+        atr_percentile_252=0.9,
+    )
+    geometry = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    two_step = tg.size_position(geometry, capital_total=100_000.0, atr_percentile_252=0.9)
+    assert wrapped == two_step
+
+
 # --- compute_trade_geometry: the real Parte 7 design (stop cascade + ---------
 # --- adaptive risk ceiling + cost-net target + fixed-risk sizing) -----------
 #

@@ -31,17 +31,30 @@ treat the exact numbers as adjustable, not as measured fact.
 above approximation shipped `compute_stop_and_target` - one fixed ATR
 multiple, one fixed 2:1 target - never the real Parte 7 design (a stop
 *cascade* by entry type, an ATR-percentile-adaptive risk ceiling, fixed-risk
-sizing with three limits, cost-net reward:risk). `compute_trade_geometry`/
-`TradeGeometry`/`EntryType` below are that real design, added *alongside*
-the original function - not a replacement. `compute_stop_and_target` keeps
-every existing caller (`levels_engine.evaluate_gate`, `trade_plan_service.py`,
+sizing with three limits, cost-net reward:risk). `compute_entry_geometry`/
+`size_position`/`TradeGeometry`/`EntryType` below are that real design,
+added *alongside* the original function - not a replacement.
+`compute_stop_and_target` keeps every existing caller
+(`levels_engine.evaluate_gate`, `trade_plan_service.py`,
 `scripts/factor_ablation_study.py`'s re-export) working unchanged; wiring
-the richer function into those call sites is deliberately left for its own
+the richer functions into those call sites is deliberately left for its own
 follow-up pass (`app.core.trading_params` already carries every constant
-this function needs, so that migration is data plumbing, not new design).
+they need, so that migration is data plumbing, not new design).
+
+The real design is deliberately split in two, not one `compute_trade_geometry`
+call: `compute_entry_geometry` (stop/target/risk-ceiling, no capital input at
+all) is what `evaluate_gate`/`daily_close.py` can call while scoring the
+whole curated universe once a day, with no portfolio in scope - a ticker's
+own gate/geometry doesn't belong to any one portfolio. `size_position`
+(shares/position value/% of portfolio) only makes sense once a *specific*
+portfolio's capital is known, e.g. rendering the Radar for one portfolio or
+`trade_plan_service.py` at the moment a position is actually opened.
+`compute_trade_geometry` is a thin convenience wrapper over both, for a
+caller (tests, an on-demand single-ticker deep dive) that already has both
+pieces of context up front.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from app.core.trading_params import (
@@ -293,7 +306,7 @@ def _stop_cascade(
     return None
 
 
-def compute_trade_geometry(
+def compute_entry_geometry(
     price: float,
     atr14: float | None,
     nearest_support: PriceLevel | None,
@@ -301,15 +314,22 @@ def compute_trade_geometry(
     ema21: float | None,
     ema55: float | None,
     trend: TrendState,
-    capital_total: float,
-    atr_percentile_252: float | None = None,
 ) -> TradeGeometry:
-    """The real Parte 7 pipeline, in order - each step can end the chain with
-    `viable=False`, never by silently widening the stop or stretching the
-    target to force a "yes" (Parte 18's own anti-pattern list names this
-    explicitly): (1) pick the *natural* (uncapped) stop off the cascade
-    above; (2) reject if the resulting risk exceeds the ATR-percentile-
-    adaptive ceiling (`RISK_CEILING_ATR_MULTIPLE * atr_pct`, clamped to
+    """The ticker-only half of the real Parte 7 pipeline - stop cascade,
+    adaptive risk ceiling, and cost-net target, deliberately with **no**
+    capital or position-size input at all. `shares_for_risk_budget`/
+    `position_value`/`pct_of_portfolio` are always `None` on the result of
+    this function; call `size_position` separately once a specific
+    portfolio's capital is known (see that function's own docstring for why
+    this split exists, not just `compute_trade_geometry`'s convenience
+    wrapper below).
+
+    In order, each step can end the chain with `viable=False`, never by
+    silently widening the stop or stretching the target to force a "yes"
+    (Parte 18's own anti-pattern list names this explicitly): (1) pick the
+    *natural* (uncapped) stop off the cascade above; (2) reject if the
+    resulting risk exceeds the ATR-percentile-adaptive ceiling
+    (`RISK_CEILING_ATR_MULTIPLE * atr_pct`, clamped to
     `[RISK_CEILING_MIN_PCT, RISK_CEILING_MAX_PCT]`) - checked against the
     *natural* distance, deliberately before the hard ATR cap below, so a
     stop that's merely far (but survives the risk-ceiling check) isn't
@@ -322,15 +342,7 @@ def compute_trade_geometry(
     ever *shrink* the risk further, so it never re-triggers step 2); (4)
     target the nearest resistance if its *net*-of-cost reward:risk clears
     `MIN_RISK_REWARD_NET`, else the fixed `REWARD_RISK_RATIO`:1 objective,
-    else reject as "too close"; (5) size for `RISK_PER_TRADE_PCT` of
-    `capital_total`, halved once `atr_percentile_252 >= 0.85` (an unusually
-    volatile stretch for this specific ticker), capped at `MAX_POSITION_PCT`
-    of capital, rejected outright under `MIN_POSITION_USD` (a position that
-    small lets transaction costs eat the trade). The 6% aggregate-risk-
-    across-all-positions cap from the brief is deliberately NOT enforced
-    here - that needs every other open position's own risk, which is
-    `portfolio_construction_service.final_position_size`'s job, one layer up
-    from a single ticker's own geometry."""
+    else reject as "too close"."""
     if not atr14 or atr14 <= 0:
         return _not_viable(price, "ATR no disponible - no se puede definir un stop con base de volatilidad")
 
@@ -413,29 +425,87 @@ def compute_trade_geometry(
 
     reward_pct = (target_price - price) / price
 
-    shares_for_risk_budget = (capital_total * RISK_PER_TRADE_PCT) / risk_per_share
-    if atr_percentile_252 is not None and atr_percentile_252 >= 0.85:
-        shares_for_risk_budget /= 2
-
-    position_value = shares_for_risk_budget * price
-    max_position_value = capital_total * MAX_POSITION_PCT
-    if position_value > max_position_value:
-        position_value = max_position_value
-        shares_for_risk_budget = max_position_value / price
-
-    pct_of_portfolio = (position_value / capital_total) if capital_total > 0 else None
-
-    common_fields = dict(
+    return TradeGeometry(
+        entry_price=price,
         stop_price=stop_price, stop_basis=stop_basis, entry_type=entry_type,
         risk_pct=risk_pct, risk_atr=risk_atr, risk_ceiling_pct=risk_ceiling_pct,
         target_price=target_price, target_basis=target_basis, reward_pct=reward_pct,
         risk_reward_gross=risk_reward_gross, risk_reward_net=risk_reward_net,
-        shares_for_risk_budget=shares_for_risk_budget, position_value=position_value,
+        shares_for_risk_budget=None, position_value=None, pct_of_portfolio=None,
+        viable=True, rejection_reason=None,
+    )
+
+
+def size_position(
+    geometry: TradeGeometry, capital_total: float, atr_percentile_252: float | None = None
+) -> TradeGeometry:
+    """The capital-dependent half of Parte 7, kept separate from
+    `compute_entry_geometry` on purpose: `evaluate_gate`/`daily_close.py`
+    score the whole curated universe once a day with no portfolio in scope
+    at all (a ticker's own gate/geometry doesn't belong to any one
+    portfolio) - `capital_total` only exists once a *specific* portfolio is
+    being sized against a *specific* trigger, e.g. the Radar rendering for
+    one portfolio, or `trade_plan_service.py` at the moment a position is
+    actually opened. Calling this on a `geometry` that isn't `viable` (no
+    stop/target to size against) returns it unchanged - sizing an already-
+    rejected setup would fabricate numbers for a trade that was never on
+    the table to begin with.
+
+    Sizes for `RISK_PER_TRADE_PCT` of `capital_total`, halved once
+    `atr_percentile_252 >= 0.85` (an unusually volatile stretch for this
+    specific ticker), capped at `MAX_POSITION_PCT` of capital, rejected
+    outright under `MIN_POSITION_USD` (a position that small lets
+    transaction costs eat the trade). The 6% aggregate-risk-across-all-
+    positions cap from the brief is deliberately NOT enforced here - that
+    needs every other open position's own risk, which is
+    `portfolio_construction_service.final_position_size`'s job, one layer up
+    from a single ticker's own geometry."""
+    if not geometry.viable or geometry.stop_price is None:
+        return geometry
+
+    risk_per_share = geometry.entry_price - geometry.stop_price
+    shares_for_risk_budget = (capital_total * RISK_PER_TRADE_PCT) / risk_per_share
+    if atr_percentile_252 is not None and atr_percentile_252 >= 0.85:
+        shares_for_risk_budget /= 2
+
+    position_value = shares_for_risk_budget * geometry.entry_price
+    max_position_value = capital_total * MAX_POSITION_PCT
+    if position_value > max_position_value:
+        position_value = max_position_value
+        shares_for_risk_budget = max_position_value / geometry.entry_price
+
+    pct_of_portfolio = (position_value / capital_total) if capital_total > 0 else None
+    sized = replace(
+        geometry,
+        shares_for_risk_budget=shares_for_risk_budget,
+        position_value=position_value,
         pct_of_portfolio=pct_of_portfolio,
     )
 
     if position_value < MIN_POSITION_USD:
         reason = "posición demasiado pequeña - el coste de transacción se comería el resultado"
-        return _not_viable(price, reason, **common_fields)
+        return replace(sized, viable=False, rejection_reason=reason)
 
-    return TradeGeometry(entry_price=price, **common_fields, viable=True, rejection_reason=None)
+    return sized
+
+
+def compute_trade_geometry(
+    price: float,
+    atr14: float | None,
+    nearest_support: PriceLevel | None,
+    nearest_resistance: PriceLevel | None,
+    ema21: float | None,
+    ema55: float | None,
+    trend: TrendState,
+    capital_total: float,
+    atr_percentile_252: float | None = None,
+) -> TradeGeometry:
+    """Convenience wrapper combining `compute_entry_geometry` and
+    `size_position` in one call - for a caller that already knows a specific
+    portfolio's capital up front (a test, or a one-off on-demand computation
+    like `GET /tickers/{t}`'s deep dive). `evaluate_gate`/`daily_close.py`
+    should call `compute_entry_geometry` alone (see its docstring for why)
+    and size separately, per portfolio, only where a trigger is actually
+    being acted on."""
+    geometry = compute_entry_geometry(price, atr14, nearest_support, nearest_resistance, ema21, ema55, trend)
+    return size_position(geometry, capital_total, atr_percentile_252)
