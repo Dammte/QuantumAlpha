@@ -2086,3 +2086,22 @@ end-to-end (una cartera real con dos posiciones - una en el mismo sector que el 
 uno distinto solo para diluir capital - confirma que el techo de sector, no el de riesgo por
 posición, es lo que efectivamente estrecha el tamaño sugerido). Suite completa verde
 (`pytest -q`, unit + integración), ruff limpio.
+
+**Complemento de interfaz (mismo día)**: `entry_geometry` llevaba conectado en el backend desde la
+sección 26.5/26.12 (`GateResultResponse.entry_geometry` en "Analizar activo", el `/risk` de cartera
+y ahora `GET /market/radar`) sin que ningún componente de React lo dibujara jamás -
+`RecommendationCard.jsx` solo conocía el `stop_and_target` más simple, el mismo hueco de "el
+backend ya calcula el dato real, nadie lo lee" que la sección 26.11 encontró para el semáforo
+multi-temporalidad. `EntryGeometryBlock` (nuevo, mismo archivo) sustituye ese bloque cuando
+`gate.entry_geometry` existe - stop con su base en prosa (qué peldaño de la cascada, si el techo
+duro de ATR lo recortó), objetivo con su base, beneficio:riesgo neto de costes, y el tamaño sugerido
+cuando `GET /market/radar?portfolio_id=` lo trae dimensionado. `viable=False` se muestra
+explícitamente con su motivo (nunca se oculta como si la geometría no existiera) - el gate booleano
+puede aprobar por su chequeo más simple de beneficio:riesgo mientras el diseño real, neto de
+costes, lo rechaza, y esa discrepancia es información real, no ruido. `stop_and_target` se mantiene
+como resguardo para cualquier lectura que nunca calculó `entry_geometry` (p. ej. el replay de
+backtest, que no tiene EMA21/55 punto-en-el-tiempo) - `RecommendationCard` es el único componente
+que renderiza ninguno de los dos, así que este único cambio cubre tanto "Analizar activo" como el
+Radar. `npm run lint`/`npm run build` limpios; sin infraestructura de tests de componentes en este
+frontend (no hay Vitest/Jest configurado), verificado por revisión de código - el flujo de props ya
+existía, tipado y probado en el backend, para ambos casos.

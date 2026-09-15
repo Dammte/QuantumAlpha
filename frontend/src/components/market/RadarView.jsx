@@ -22,6 +22,7 @@ function toGate(item) {
     conditions: item.gate_conditions,
     entry_trigger: item.entry_trigger,
     stop_and_target: item.stop_and_target,
+    entry_geometry: item.entry_geometry,
   }
 }
 
