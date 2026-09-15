@@ -95,8 +95,8 @@ def _evaluate(
     price: float = 100.0,
     position: ee.PositionContext | None = None,
     multi_timeframe: mtf.MultiTimeframeRead | None = None,
-    consecutive_closes_below_daily_sma50: int = 0,
-    consecutive_closes_below_daily_sma_fast: int = 0,
+    consecutive_closes_below_daily_ema55: int = 0,
+    consecutive_closes_below_daily_ema21: int = 0,
     nearest_support: ta.PriceLevel | None = None,
     nearest_resistance: ta.PriceLevel | None = None,
     obv_divergence: str | None = None,
@@ -112,8 +112,8 @@ def _evaluate(
         price=price,
         position=position or _position(),
         multi_timeframe=multi_timeframe or _mtf(),
-        consecutive_closes_below_daily_sma50=consecutive_closes_below_daily_sma50,
-        consecutive_closes_below_daily_sma_fast=consecutive_closes_below_daily_sma_fast,
+        consecutive_closes_below_daily_ema55=consecutive_closes_below_daily_ema55,
+        consecutive_closes_below_daily_ema21=consecutive_closes_below_daily_ema21,
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
         obv_divergence=obv_divergence,
@@ -147,28 +147,71 @@ def test_no_exit_now_when_price_is_still_above_the_stop():
     assert result.urgency != ee.ExitUrgency.EXIT_NOW
 
 
-def test_exit_now_two_consecutive_closes_below_sma50_with_weekly_not_bullish():
-    weekly = _timeframe_read("weekly", trend=ta.TrendState.DOWNTREND)
-    result = _evaluate(
-        multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
-        consecutive_closes_below_daily_sma50=2,
-    )
+def test_exit_now_two_consecutive_closes_below_ema55():
+    # Parte 3.2/9 recalibration: this trigger is now standalone - no weekly
+    # or volume qualifier, unlike the EMA21 one below. transitioning/no
+    # weekly at all is enough to prove that independence.
+    result = _evaluate(consecutive_closes_below_daily_ema55=2)
     assert result.urgency == ee.ExitUrgency.EXIT_NOW
     assert any("2 sesiones consecutivas" in r for r in result.reasons)
 
 
-def test_no_exit_now_from_sma50_break_when_weekly_is_bullish():
-    # Same daily break, but the weekly is still clearly bullish - the rule
-    # requires "cuando la tendencia semanal ya no es alcista".
+def test_exit_now_two_consecutive_closes_below_ema55_fires_even_when_weekly_is_bullish():
+    # Confirms the *absence* of a weekly qualifier is deliberate, not an
+    # oversight - a clearly bullish weekly does not suppress this one, unlike
+    # the EMA21 trigger below.
     weekly = _timeframe_read("weekly", trend=ta.TrendState.UPTREND)
     result = _evaluate(
         multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
-        consecutive_closes_below_daily_sma50=2,
+        consecutive_closes_below_daily_ema55=2,
     )
-    assert not any("SMA50 diaria" in r for r in result.reasons)
+    assert result.urgency == ee.ExitUrgency.EXIT_NOW
+    assert any("EMA55 diaria" in r for r in result.reasons)
 
 
-def test_no_exit_now_from_sma50_break_when_weekly_bias_is_unknown():
+def test_no_exit_now_below_ema55_with_only_one_close():
+    result = _evaluate(consecutive_closes_below_daily_ema55=1)
+    assert not any("EMA55 diaria" in r for r in result.reasons)
+
+
+def test_exit_now_one_close_below_ema21_with_strong_volume_and_weekly_not_bullish():
+    weekly = _timeframe_read("weekly", trend=ta.TrendState.DOWNTREND)
+    result = _evaluate(
+        multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
+        consecutive_closes_below_daily_ema21=1,
+        relative_volume=2.0,
+    )
+    assert result.urgency == ee.ExitUrgency.EXIT_NOW
+    assert any("volumen relativo elevado" in r for r in result.reasons)
+
+
+def test_no_exit_now_one_close_below_ema21_without_volume_confirmation():
+    weekly = _timeframe_read("weekly", trend=ta.TrendState.DOWNTREND)
+    result = _evaluate(
+        multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
+        consecutive_closes_below_daily_ema21=1,
+        relative_volume=1.1,
+    )
+    assert result.urgency != ee.ExitUrgency.EXIT_NOW
+
+
+def test_no_exit_now_from_ema21_break_when_weekly_is_bullish():
+    # Same daily break + volume, but the weekly is still clearly bullish -
+    # this rule (unlike the EMA55 one above) still requires "cuando la
+    # tendencia semanal ya no es alcista". (The REDUCE-tier "first close
+    # under EMA21" trigger fires regardless, correctly - only EXIT_NOW is
+    # gated on weekly here, so the urgency tier is the precise check.)
+    weekly = _timeframe_read("weekly", trend=ta.TrendState.UPTREND)
+    result = _evaluate(
+        multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
+        consecutive_closes_below_daily_ema21=1,
+        relative_volume=2.0,
+    )
+    assert result.urgency != ee.ExitUrgency.EXIT_NOW
+    assert not any("volumen relativo elevado" in r for r in result.reasons)
+
+
+def test_no_exit_now_from_ema21_break_when_weekly_bias_is_unknown():
     # A young ticker: weekly exists but fewer than ~200 weekly bars means no
     # real price_vs_sma200 read yet - mtf.timeframe_bias reads this as
     # "unknown", not "confirmed not bullish". This specific hard trigger
@@ -178,30 +221,11 @@ def test_no_exit_now_from_sma50_break_when_weekly_bias_is_unknown():
     weekly = _timeframe_read("weekly", trend=ta.TrendState.DOWNTREND, price_vs_sma200=None)
     result = _evaluate(
         multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
-        consecutive_closes_below_daily_sma50=2,
-    )
-    assert not any("SMA50 diaria" in r for r in result.reasons)
-
-
-def test_exit_now_one_close_below_sma50_with_strong_volume_and_weekly_not_bullish():
-    weekly = _timeframe_read("weekly", trend=ta.TrendState.DOWNTREND)
-    result = _evaluate(
-        multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
-        consecutive_closes_below_daily_sma50=1,
+        consecutive_closes_below_daily_ema21=1,
         relative_volume=2.0,
     )
-    assert result.urgency == ee.ExitUrgency.EXIT_NOW
-    assert any("volumen relativo elevado" in r for r in result.reasons)
-
-
-def test_no_exit_now_one_close_below_sma50_without_volume_confirmation():
-    weekly = _timeframe_read("weekly", trend=ta.TrendState.DOWNTREND)
-    result = _evaluate(
-        multi_timeframe=_mtf(weekly=weekly, alignment="conflicted"),
-        consecutive_closes_below_daily_sma50=1,
-        relative_volume=1.1,
-    )
     assert result.urgency != ee.ExitUrgency.EXIT_NOW
+    assert not any("volumen relativo elevado" in r for r in result.reasons)
 
 
 def test_exit_now_when_alignment_is_bearish_aligned():
@@ -218,7 +242,7 @@ def test_exit_now_confirmed_death_cross_20_50_with_quality_below_both_mas():
     daily = _timeframe_read(cross_quality_20_50=quality, price_vs_sma20="below", price_vs_sma50="below")
     result = _evaluate(multi_timeframe=_mtf(daily=daily))
     assert result.urgency == ee.ExitUrgency.EXIT_NOW
-    assert any("Death cross SMA21/SMA50 confirmado" in r for r in result.reasons)
+    assert any("Death cross EMA21/EMA55 confirmado" in r for r in result.reasons)
 
 
 def test_no_exit_now_death_cross_20_50_when_quality_is_noise():
@@ -228,7 +252,7 @@ def test_no_exit_now_death_cross_20_50_when_quality_is_noise():
     )
     daily = _timeframe_read(cross_quality_20_50=quality, price_vs_sma20="below", price_vs_sma50="below")
     result = _evaluate(multi_timeframe=_mtf(daily=daily))
-    assert not any("Death cross SMA21/SMA50 confirmado" in r for r in result.reasons)
+    assert not any("Death cross EMA21/EMA55 confirmado" in r for r in result.reasons)
 
 
 def test_exit_now_when_last_relevant_support_is_broken():
@@ -349,44 +373,44 @@ def test_stalled_reduce_still_fires_right_at_the_ceiling():
     assert any("sin progreso" in r for r in result.reasons)
 
 
-def test_reduce_on_a_fresh_confirmed_break_below_the_fast_daily_sma():
+def test_reduce_on_a_fresh_confirmed_break_below_the_fast_daily_ema():
     # Real-world motivating case: a held position scoring well on the buy
     # checklist (would otherwise stay ADD_CANDIDATE) closes below its own
-    # SMA21 for the first time - the propietario's own primary short-term
-    # timing signal. consecutive_closes_below_daily_sma_fast == 1 means
+    # EMA21 for the first time - the propietario's own primary short-term
+    # timing signal. consecutive_closes_below_daily_ema21 == 1 means
     # today is the break itself, not an old, already-known one.
-    result = _evaluate(consecutive_closes_below_daily_sma_fast=1)
+    result = _evaluate(consecutive_closes_below_daily_ema21=1)
     assert result.urgency == ee.ExitUrgency.REDUCE
-    assert any(f"por debajo de la SMA{mtf.FAST_MA_PERIOD} diaria" in r for r in result.reasons)
+    assert any(f"por debajo de la EMA{mtf.FAST_MA_PERIOD} diaria" in r for r in result.reasons)
 
 
-def test_fast_sma_break_reduce_overrides_add_candidate_via_portfolio_risk_service_precedence():
+def test_fast_ema_break_reduce_overrides_add_candidate_via_portfolio_risk_service_precedence():
     # Confirms the actual bug report this fixes: REDUCE (unlike TIGHTEN_STOP)
     # is one of the two urgencies portfolio_risk_service.py lets override an
     # ADD_CANDIDATE badge to EXIT_WARNING - see its precedence comment. This
     # test only checks the urgency tier itself; the override behavior is
     # exercised in test_portfolio_risk_service.py.
-    result = _evaluate(consecutive_closes_below_daily_sma_fast=1)
+    result = _evaluate(consecutive_closes_below_daily_ema21=1)
     assert result.urgency in (ee.ExitUrgency.EXIT_NOW, ee.ExitUrgency.REDUCE)
 
 
-def test_no_reduce_when_fast_sma_break_is_not_fresh():
+def test_no_reduce_when_fast_ema_break_is_not_fresh():
     # Already known/reported on a prior evaluation (3 consecutive sessions,
     # not the day of the break) - stays visible at WATCH, doesn't re-fire REDUCE.
-    result = _evaluate(consecutive_closes_below_daily_sma_fast=3)
+    result = _evaluate(consecutive_closes_below_daily_ema21=3)
     assert result.urgency == ee.ExitUrgency.WATCH
     assert not any("Cierre confirmado por debajo" in r for r in result.reasons)
 
 
-def test_watch_when_price_has_stayed_below_the_fast_sma_for_several_sessions():
-    result = _evaluate(consecutive_closes_below_daily_sma_fast=4)
+def test_watch_when_price_has_stayed_below_the_fast_ema_for_several_sessions():
+    result = _evaluate(consecutive_closes_below_daily_ema21=4)
     assert result.urgency == ee.ExitUrgency.WATCH
-    assert any(f"sigue por debajo de la SMA{mtf.FAST_MA_PERIOD} diaria" in r for r in result.reasons)
+    assert any(f"sigue por debajo de la EMA{mtf.FAST_MA_PERIOD} diaria" in r for r in result.reasons)
     assert any("4 sesiones consecutivas" in r for r in result.reasons)
 
 
-def test_no_fast_sma_watch_or_reduce_when_price_is_above_it():
-    result = _evaluate(consecutive_closes_below_daily_sma_fast=0)
+def test_no_fast_ema_watch_or_reduce_when_price_is_above_it():
+    result = _evaluate(consecutive_closes_below_daily_ema21=0)
     assert result.urgency == ee.ExitUrgency.HOLD
 
 
@@ -398,7 +422,7 @@ def test_tighten_stop_imminent_death_cross_20_50():
     daily = _timeframe_read(imminent_cross_20_50=imminent)
     result = _evaluate(multi_timeframe=_mtf(daily=daily))
     assert result.urgency == ee.ExitUrgency.TIGHTEN_STOP
-    assert any("corto plazo (SMA21/SMA50) proyectado" in r for r in result.reasons)
+    assert any("corto plazo (EMA21/EMA55) proyectado" in r for r in result.reasons)
 
 
 def test_no_tighten_stop_imminent_death_cross_20_50_below_r2_threshold():
@@ -482,10 +506,10 @@ def test_exit_now_outranks_a_simultaneously_triggered_tighten_stop_and_all_reaso
 # --- the acceptance test: this is the scenario the whole exercise is about ---
 
 
-def test_weekly_bearish_plus_projected_20_50_death_cross_plus_below_sma50_never_holds():
+def test_weekly_bearish_plus_projected_20_50_death_cross_plus_below_ema55_never_holds():
     """D3's acceptance test: an asset with a bearish weekly, a high-confidence
-    imminent SMA21/50 death cross, and price already confirmed below the
-    daily SMA50 must return EXIT_NOW or REDUCE - never HOLD - *even with* an
+    imminent EMA21/55 death cross, and price already confirmed below the
+    daily EMA55 must return EXIT_NOW or REDUCE - never HOLD - *even with* an
     RS Rating of 85 and excellent fundamentals. Those two are not simulated
     as "passed but ignored": evaluate_exit's signature has no rs_rating,
     revenue_growth, profit_margins, or debt_to_equity parameter at all, so
@@ -503,7 +527,7 @@ def test_weekly_bearish_plus_projected_20_50_death_cross_plus_below_sma50_never_
     )
     result = _evaluate(
         multi_timeframe=_mtf(daily=daily, weekly=weekly, alignment="conflicted"),
-        consecutive_closes_below_daily_sma50=2,
+        consecutive_closes_below_daily_ema55=2,
     )
     assert result.urgency in (ee.ExitUrgency.EXIT_NOW, ee.ExitUrgency.REDUCE)
     assert result.urgency != ee.ExitUrgency.HOLD

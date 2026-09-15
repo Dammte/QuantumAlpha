@@ -295,9 +295,17 @@ def assess_position_risk(
             trade_plan = plan
             exit_price = float(closed["close"].iloc[-1])
             held_quantity = tps.current_held_quantity(transactions, ticker)
-            consecutive_below_sma50 = ta.consecutive_closes_below(closed["close"], ta.sma(closed["close"], 50))
-            consecutive_below_fast_sma = ta.consecutive_closes_below(
-                closed["close"], ta.sma(closed["close"], mtf.FAST_MA_PERIOD)
+            # Parte 3.2/9 (reconstruction): both legs of the "fast pair" the
+            # exit engine's hard triggers key off are now the real EMA21/55
+            # multi_timeframe.py itself uses - not a third independent SMA
+            # computation (see mtf.FAST_MA_PERIOD/SLOW_MA_PERIOD's own
+            # docstring for why that used to be a "3 competing definitions"
+            # problem).
+            consecutive_below_ema55 = ta.consecutive_closes_below(
+                closed["close"], ta.ema(closed["close"], mtf.SLOW_MA_PERIOD)
+            )
+            consecutive_below_ema21 = ta.consecutive_closes_below(
+                closed["close"], ta.ema(closed["close"], mtf.FAST_MA_PERIOD)
             )
             rsi_recent_max = _recent_max(ta.rsi(closed["close"]))
             adx_recent_max = _recent_max(ta.adx(closed["high"], closed["low"], closed["close"]))
@@ -333,8 +341,8 @@ def assess_position_risk(
                 price=exit_price,
                 position=position_context,
                 multi_timeframe=multi_timeframe,
-                consecutive_closes_below_daily_sma50=consecutive_below_sma50,
-                consecutive_closes_below_daily_sma_fast=consecutive_below_fast_sma,
+                consecutive_closes_below_daily_ema55=consecutive_below_ema55,
+                consecutive_closes_below_daily_ema21=consecutive_below_ema21,
                 nearest_support=nearest_support_closed,
                 nearest_resistance=nearest_resistance_closed,
                 obv_divergence=signals.obv_divergence,

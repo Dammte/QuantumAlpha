@@ -43,7 +43,7 @@ from app.services.market_universe import (
     cap_tier_of,
     currency_of,
 )
-from app.services.multi_timeframe import FAST_MA_PERIOD
+from app.services.multi_timeframe import FAST_MA_PERIOD, SLOW_MA_PERIOD
 
 logger = logging.getLogger(__name__)
 
@@ -181,17 +181,20 @@ def _build_raw(
         ma_cross = ta.detect_recent_cross(sma50_series, sma200_series, lookback=5)
         stage = ta.classify_stage(price, sma150_series)
 
-    # "Tendencia" screener, corto/mediano plazo (ago 2026): FAST_MA_PERIOD/SMA50
-    # is a weeks-scale pair, not the months-scale SMA50/SMA200 above - same
-    # already-established short-term pair multi_timeframe.py/exit_engine.py
-    # use, reused here rather than inventing a different one. Guarded on 50
-    # bars (not 200): both legs are already valid well before SMA200 is.
+    # "Tendencia" screener, corto/mediano plazo: EMA(FAST_MA_PERIOD)/
+    # EMA(SLOW_MA_PERIOD) - the "fast pair" the reconstruction brief (Parte
+    # 3.2/6) calls out as the one canonical definition, a weeks-scale pair,
+    # not the months-scale SMA50/SMA200 above - same pair
+    # multi_timeframe.py uses, reused here rather than inventing a
+    # different one. Guarded on SLOW_MA_PERIOD bars (not 200): both legs are
+    # already valid well before SMA200 is.
     ma_cross_short = None
     imminent_cross_short_term = None
-    if len(close) >= 50:
-        sma_fast_series = ta.sma(close, FAST_MA_PERIOD)
-        ma_cross_short = ta.detect_recent_cross(sma_fast_series, sma50_series, lookback=5)
-        imminent_cross_short_term = ta.detect_imminent_cross(sma_fast_series, sma50_series)
+    if len(close) >= SLOW_MA_PERIOD:
+        ema_fast_series = ta.ema(close, FAST_MA_PERIOD)
+        ema_slow_series = ta.ema(close, SLOW_MA_PERIOD)
+        ma_cross_short = ta.detect_recent_cross(ema_fast_series, ema_slow_series, lookback=5)
+        imminent_cross_short_term = ta.detect_imminent_cross(ema_fast_series, ema_slow_series)
 
     adx_series = ta.adx(high, low, close)
     plus_di_series, minus_di_series = ta.dmi(high, low, close)
@@ -715,10 +718,10 @@ def get_trend_breadth(snapshots: list[TickerSnapshot]) -> TrendBreadth:
         count_uptrend=sum(1 for s in snapshots if s.trend == ta.TrendState.UPTREND),
         count_downtrend=sum(1 for s in snapshots if s.trend == ta.TrendState.DOWNTREND),
         count_sideways=sum(1 for s in snapshots if s.trend == ta.TrendState.SIDEWAYS),
-        # Corto/mediano plazo (ago 2026): este panel usa ma_cross_short
-        # (SMA{FAST_MA_PERIOD}/SMA50, semanas) en vez de ma_cross
-        # (SMA50/SMA200, meses) - ver el campo en ticker_snapshot.py. `get_movers`
-        # (un panel distinto) sigue usando el par largo a propósito, sin cambios.
+        # Corto/mediano plazo: este panel usa ma_cross_short
+        # (EMA{FAST_MA_PERIOD}/EMA{SLOW_MA_PERIOD}, semanas - Parte 3.2/6) en vez de
+        # ma_cross (SMA50/SMA200, meses) - ver el campo en ticker_snapshot.py.
+        # `get_movers` (un panel distinto) sigue usando el par largo a propósito, sin cambios.
         golden_crosses=sum(1 for s in snapshots if s.ma_cross_short == "golden"),
         death_crosses=sum(1 for s in snapshots if s.ma_cross_short == "death"),
         count_overbought=sum(1 for s in snapshots if s.rsi14 is not None and s.rsi14 >= 70),
@@ -788,8 +791,8 @@ def get_trend_detail(snapshots: list[TickerSnapshot], top_n: int = 40) -> dict[s
             [s for s in snapshots if s.adx14 is not None and s.adx14 >= 25], lambda s: s.adx14, True,
             deprioritize=is_overextended,
         ),
-        # Corto/mediano plazo (ago 2026): proyección de detect_imminent_cross
-        # sobre el par corto (SMA{FAST_MA_PERIOD}/SMA50) - antes de que el
+        # Corto/mediano plazo: proyección de detect_imminent_cross sobre el
+        # par corto (EMA{FAST_MA_PERIOD}/EMA{SLOW_MA_PERIOD}) - antes de que el
         # cruce ocurra, no después. Ordenado por sesiones estimadas: el más
         # próximo primero.
         "imminent_cross": top(imminent_cross, lambda s: s.imminent_cross_short_term.bars_until, False),

@@ -53,6 +53,11 @@ IMMINENT_CROSS_50_200_MAX_BARS = 5
 IMMINENT_CROSS_20_50_MIN_R2 = 0.6
 ADX_FALLING_ENTRY = 25.0  # ADX had to have been at least this high recently...
 ADX_FALLING_EXIT = 20.0  # ...to count as "falling" once it drops below this
+# Parte 3.2/9 recalibration: an EMA21 loss confirms EXIT_NOW with a lower
+# volume bar than the old SMA50 version needed (was `> 1.5`) - the fast leg
+# breaking is a smaller move than the slow one breaking, so it takes less
+# unusual volume behind it to be a real signal rather than noise.
+EMA21_LOSS_MIN_REL_VOLUME = 1.3
 EXTENDED_ATR_MULTIPLE = 4.0
 PROFIT_TIGHTEN_R = 1.5
 # A position that's gone this many closed daily bars without reaching +1R
@@ -120,8 +125,8 @@ def evaluate_exit(
     price: float,
     position: PositionContext,
     multi_timeframe: mtf.MultiTimeframeRead,
-    consecutive_closes_below_daily_sma50: int,
-    consecutive_closes_below_daily_sma_fast: int,
+    consecutive_closes_below_daily_ema55: int,
+    consecutive_closes_below_daily_ema21: int,
     nearest_support: ta.PriceLevel | None,
     nearest_resistance: ta.PriceLevel | None,
     obv_divergence: str | None,
@@ -139,12 +144,13 @@ def evaluate_exit(
 
     Args (beyond `price`/`position`/`multi_timeframe`, which are self-
     explanatory):
-    - `consecutive_closes_below_daily_sma50`: how many of the most recent
-      *closed* daily bars have closed below the daily SMA50, counting back
-      from the latest - 0 if the latest close is at or above it.
-    - `consecutive_closes_below_daily_sma_fast`: same idea, against the daily
+    - `consecutive_closes_below_daily_ema55`: how many of the most recent
+      *closed* daily bars have closed below the daily EMA(`mtf.SLOW_MA_PERIOD`,
+      55) - the fast pair's own slow leg (Parte 3.2/9) - counting back from
+      the latest, 0 if the latest close is at or above it.
+    - `consecutive_closes_below_daily_ema21`: same idea, against the daily
       fast MA (`mtf.FAST_MA_PERIOD`, 21) - the propietario's own primary
-      short-term timing MA, faster and more reactive than the SMA50 above.
+      short-term timing MA, faster and more reactive than the EMA55 above.
     - `nearest_support`/`nearest_resistance`: from
       `technical_analysis.support_resistance_levels` on the daily frame.
     - `obv_divergence`, `rsi14`, `adx14`, `atr_multiple`, `candlestick_pattern`:
@@ -175,16 +181,24 @@ def evaluate_exit(
             f"Precio ({price:.2f}) ha perforado el stop de protección vigente ({position.current_stop:.2f})."
         )
 
-    strong_break_volume = relative_volume is not None and relative_volume > 1.5
-    if consecutive_closes_below_daily_sma50 >= 2 and weekly_not_bullish:
+    # Parte 3.2/9: two separate hard triggers on the fast pair now, not one
+    # SMA50-based pair of thresholds - EMA21 loss (the fast leg) needs
+    # confirming volume plus a non-bullish weekly to fire; EMA55 loss (the
+    # pair's own slow leg) fires on its own once confirmed twice, no extra
+    # qualifier - a genuinely broken slow leg doesn't need volume/weekly
+    # corroboration the way a single fast-leg close does.
+    ema21_loss_volume_confirmed = (
+        relative_volume is not None and relative_volume >= EMA21_LOSS_MIN_REL_VOLUME
+    )
+    if consecutive_closes_below_daily_ema21 >= 1 and ema21_loss_volume_confirmed and weekly_not_bullish:
         reasons_by_tier[ExitUrgency.EXIT_NOW].append(
-            "Cierre confirmado bajo la SMA50 diaria durante 2 sesiones consecutivas, "
-            "con la tendencia semanal ya no alcista."
-        )
-    elif consecutive_closes_below_daily_sma50 >= 1 and strong_break_volume and weekly_not_bullish:
-        reasons_by_tier[ExitUrgency.EXIT_NOW].append(
-            "Cierre bajo la SMA50 diaria con volumen relativo elevado "
+            f"Cierre confirmado bajo la EMA{mtf.FAST_MA_PERIOD} diaria con volumen relativo elevado "
             f"({relative_volume:.1f}x), tendencia semanal ya no alcista."
+        )
+
+    if consecutive_closes_below_daily_ema55 >= 2:
+        reasons_by_tier[ExitUrgency.EXIT_NOW].append(
+            f"Cierre confirmado bajo la EMA{mtf.SLOW_MA_PERIOD} diaria durante 2 sesiones consecutivas."
         )
 
     if multi_timeframe.alignment == "bearish_aligned":
@@ -200,7 +214,7 @@ def evaluate_exit(
         and daily.price_vs_sma50 == "below"
     ):
         reasons_by_tier[ExitUrgency.EXIT_NOW].append(
-            f"Death cross SMA{mtf.FAST_MA_PERIOD}/SMA50 confirmado (calidad "
+            f"Death cross EMA{mtf.FAST_MA_PERIOD}/EMA{mtf.SLOW_MA_PERIOD} confirmado (calidad "
             f"'{daily.cross_quality_20_50.quality}'), precio por debajo de ambas medias."
         )
 
@@ -239,6 +253,14 @@ def evaluate_exit(
             f"Objetivo original alcanzado ({position.initial_target:.2f}) - recoger parte y dejar correr el resto."
         )
 
+    # Parte 9 recalibrates this to "3 ATR above EMA21" (was 4 ATR above
+    # SMA50) - NOT done here yet: `atr_multiple` is `ta.atr_multiple_from_sma`,
+    # a widely shared field (also read by levels_engine.evaluate_gate's own
+    # "parabolic" condition and market_screener_service's snapshots).
+    # Changing its basis to EMA21 is a separate, larger change than this
+    # pass's fast-pair unification - left as explicitly open, not silently
+    # half-applied (a 3.0 threshold against the *wrong* basis would be a
+    # worse mismatch than leaving both numbers as they were).
     in_profit = position.r_multiple is not None and position.r_multiple > 0
     if atr_multiple is not None and atr_multiple > EXTENDED_ATR_MULTIPLE and in_profit:
         reasons_by_tier[ExitUrgency.REDUCE].append(
@@ -264,16 +286,16 @@ def evaluate_exit(
             f"Posición sin progreso tras {position.bars_held} sesiones sin alcanzar +1R - capital inmovilizado."
         )
 
-    # Rotura confirmada de la media rápida diaria (SMA{FAST_MA_PERIOD}, ver
+    # Rotura confirmada de la media rápida diaria (EMA{FAST_MA_PERIOD}, ver
     # mtf.FAST_MA_PERIOD): el propio disparador de entrada/salida a corto
-    # plazo del propietario, mucho más rápido que esperar a que la SMA{FAST_MA_PERIOD}
-    # llegue a cruzar la SMA50 (el disparador TIGHTEN_STOP de más abajo, que
-    # sigue existiendo para el cruce medio/lento). Fires una sola vez, el día
-    # de la rotura - no cada sesión que el precio siga por debajo (eso ya
-    # queda cubierto, sin escalar más, en WATCH).
-    if consecutive_closes_below_daily_sma_fast == 1:
+    # plazo del propietario, mucho más rápido que esperar a que la EMA{FAST_MA_PERIOD}
+    # llegue a cruzar la EMA{SLOW_MA_PERIOD} (el disparador TIGHTEN_STOP de más
+    # abajo, que sigue existiendo para el cruce medio/lento). Fires una sola
+    # vez, el día de la rotura - no cada sesión que el precio siga por debajo
+    # (eso ya queda cubierto, sin escalar más, en WATCH).
+    if consecutive_closes_below_daily_ema21 == 1:
         reasons_by_tier[ExitUrgency.REDUCE].append(
-            f"Cierre confirmado por debajo de la SMA{mtf.FAST_MA_PERIOD} diaria - "
+            f"Cierre confirmado por debajo de la EMA{mtf.FAST_MA_PERIOD} diaria - "
             "ruptura de la media rápida que se usa para gestionar esta posición a corto plazo."
         )
 
@@ -286,8 +308,8 @@ def evaluate_exit(
         and imminent_20_50.r_squared >= IMMINENT_CROSS_20_50_MIN_R2
     ):
         reasons_by_tier[ExitUrgency.TIGHTEN_STOP].append(
-            f"Cruce de medias bajista de corto plazo (SMA{mtf.FAST_MA_PERIOD}/SMA50) proyectado en "
-            f"~{imminent_20_50.bars_until} sesiones (R²={imminent_20_50.r_squared:.2f})."
+            f"Cruce de medias bajista de corto plazo (EMA{mtf.FAST_MA_PERIOD}/EMA{mtf.SLOW_MA_PERIOD}) "
+            f"proyectado en ~{imminent_20_50.bars_until} sesiones (R²={imminent_20_50.r_squared:.2f})."
         )
 
     # MACD (línea vs. señal) en diario, ya confirmado sobre velas cerradas -
@@ -332,13 +354,13 @@ def evaluate_exit(
             "Precio cerca de un nivel técnico relevante (soporte/resistencia)."
         )
 
-    # La rotura de la SMA{FAST_MA_PERIOD} ya se avisó (REDUCE) el día en que
+    # La rotura de la EMA{FAST_MA_PERIOD} ya se avisó (REDUCE) el día en que
     # ocurrió - mientras el precio se mantenga por debajo en sesiones
     # posteriores, sigue visible aquí sin volver a escalar cada día.
-    if consecutive_closes_below_daily_sma_fast > 1:
+    if consecutive_closes_below_daily_ema21 > 1:
         reasons_by_tier[ExitUrgency.WATCH].append(
-            f"Precio sigue por debajo de la SMA{mtf.FAST_MA_PERIOD} diaria "
-            f"({consecutive_closes_below_daily_sma_fast} sesiones consecutivas)."
+            f"Precio sigue por debajo de la EMA{mtf.FAST_MA_PERIOD} diaria "
+            f"({consecutive_closes_below_daily_ema21} sesiones consecutivas)."
         )
 
     reduce_already_fired = bool(reasons_by_tier[ExitUrgency.REDUCE])

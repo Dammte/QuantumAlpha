@@ -38,20 +38,25 @@ DAILY_STAGE_MA_WINDOW = 150
 # signal - not a strict data requirement of the functions themselves (they
 # degrade to None/Stage.STAGE_1 gracefully), just a "don't bother" threshold
 # matching what compute_core_signals already does for the daily case (>= 200).
+# The propietario's own short/medium-term system times entries and exits off
+# a 21-period EMA against a 55-period EMA (see docs/quant_methodology.md and
+# Parte 3.2/6 of the reconstruction brief - "single constant EMA21/EMA55
+# everywhere"), not a 20/50 SMA pair and not the more common 20. Those
+# field/constant names below keep the historical "20_50"/"sma20" spelling
+# deliberately (API/schema stability - a rename is pure churn with zero
+# behavior change), but every one of them is real EMA(FAST_MA_PERIOD)/
+# EMA(SLOW_MA_PERIOD) data since the 2026-09 reconstruction, never a bare
+# SMA20/50 - these two constants are the single source of truth for that
+# pair, never a bare literal. `market_screener_service.py`'s own "Tendencia"
+# panel imports `FAST_MA_PERIOD`/`SLOW_MA_PERIOD` from here for the exact
+# same reason - one definition, not a second independent one.
+FAST_MA_PERIOD = 21
+SLOW_MA_PERIOD = 55
+
 MIN_DAILY_BARS_FOR_STAGE = 200
 MIN_WEEKLY_BARS_FOR_STAGE = 60
 MIN_BARS_FOR_50_200_CROSS = 200
-MIN_BARS_FOR_20_50_CROSS = 50
-
-# The propietario's own short/medium-term system times entries and exits off
-# a 21-period fast MA against the 50-period, not the more common 20 (see
-# docs/quant_methodology.md) - this is the actual period every "*_20_50"
-# field below is computed with. Those field/constant names keep the
-# historical "20_50" spelling deliberately (API/schema stability - a rename
-# is pure churn with zero behavior change), but every one of them is real
-# 21-period data, not 20 - this constant is the single source of truth for
-# that period, never a bare literal.
-FAST_MA_PERIOD = 21
+MIN_BARS_FOR_20_50_CROSS = SLOW_MA_PERIOD
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,22 +69,25 @@ class TimeframeRead:
     timeframe: str  # "weekly" | "daily" | "intraday_1h"
     trend: ta.TrendState
     stage: ta.Stage | None
-    ma_cross_50_200: str | None  # "golden" | "death" | None, confirmed within the last few closed bars
-    ma_cross_20_50: str | None  # despite the name, the fast leg is FAST_MA_PERIOD (21), not 20 - see that constant
-    # Full quality read (separation/slope/volume) for the fast/50 pair -
+    ma_cross_50_200: str | None  # "golden" | "death" - a real SMA50/SMA200 cross, unrelated to the fast pair below
+    # Despite the "20_50" name (API/schema stability), this is the real
+    # EMA21/EMA55 cross the reconstruction brief calls "the fast pair" -
+    # see FAST_MA_PERIOD/SLOW_MA_PERIOD.
+    ma_cross_20_50: str | None
+    # Full quality read (separation/slope/volume) for the EMA21/55 pair -
     # unlike the 50/200 pair, `exit_engine.py` needs `quality`, not just
     # direction, for its death-cross hard trigger, so this carries the whole
     # object rather than just bars_since like ma_cross_50_200 does.
     cross_quality_20_50: ta.CrossQuality | None
     imminent_cross_50_200: ta.ImminentCross | None
-    imminent_cross_20_50: ta.ImminentCross | None  # fast/50 pair, see FAST_MA_PERIOD
+    imminent_cross_20_50: ta.ImminentCross | None  # EMA21/55 pair, see FAST_MA_PERIOD/SLOW_MA_PERIOD
     macd_cross: str | None  # "bullish" | "bearish" - MACD line vs its own signal line
     macd_histogram_turning: str | None  # "up" | "down" - histogram's own last-2-bar direction
     rsi14: float | None
     adx14: float | None
     di_bias: str | None  # "bullish" | "bearish" - +DI vs -DI, only reported when ADX shows a real trend (>=25)
-    price_vs_sma20: str | None  # "above" | "below" - vs the fast MA (FAST_MA_PERIOD=21), not a literal SMA20
-    price_vs_sma50: str | None
+    price_vs_sma20: str | None  # "above" | "below" - vs EMA(FAST_MA_PERIOD=21), not a literal SMA20
+    price_vs_sma50: str | None  # vs EMA(SLOW_MA_PERIOD=55), the fast pair's own slow leg - not the SMA50 above
     price_vs_sma200: str | None
     bars_since_cross: int | None  # bars since ma_cross_50_200 confirmed, if any
 
@@ -117,9 +125,21 @@ def _read_timeframe(
     close, high, low, volume = closed["close"], closed["high"], closed["low"], closed["volume"]
     price = float(close.iloc[-1])
 
-    sma_fast_s, sma50_s, sma200_s = ta.sma(close, FAST_MA_PERIOD), ta.sma(close, 50), ta.sma(close, 200)
-    sma_fast, sma50, sma200 = _last(sma_fast_s), _last(sma50_s), _last(sma200_s)
-    trend = ta.classify_trend(price, sma_fast, sma50, sma200)
+    # Two genuinely separate mid-length MAs, on purpose: `sma50_s` (a real,
+    # standard SMA50) feeds only the classic golden/death cross against
+    # SMA200 below - a well-known, unrelated signal most trading systems
+    # already use as-is, never mentioned by the reconstruction brief's "fast
+    # pair" unification. `ema_slow_s` (EMA55) is that fast pair's own slow
+    # leg, paired with `ema_fast_s` (EMA21) - see FAST_MA_PERIOD/SLOW_MA_PERIOD.
+    ema_fast_s, ema_slow_s = ta.ema(close, FAST_MA_PERIOD), ta.ema(close, SLOW_MA_PERIOD)
+    sma50_s, sma200_s = ta.sma(close, 50), ta.sma(close, 200)
+    ema_fast, ema_slow, sma200 = _last(ema_fast_s), _last(ema_slow_s), _last(sma200_s)
+    # Fast/mid legs from the EMA21/55 pair, long leg from the standard
+    # SMA200 - a common combination in practice (a faster-reacting timing
+    # pair layered over the slower structural baseline), not an inconsistent
+    # mix: SMA200's own ~10-month window is a different concept entirely
+    # (multi-year trend confirmation) from the 21/55 timing pair.
+    trend = ta.classify_trend(price, ema_fast, ema_slow, sma200)
 
     stage = None
     if len(close) >= min_bars_for_stage:
@@ -135,10 +155,10 @@ def _read_timeframe(
 
     ma_cross_20_50, cross_quality_20_50, imminent_20_50 = None, None, None
     if len(close) >= MIN_BARS_FOR_20_50_CROSS:
-        cross_quality_20_50 = ta.detect_cross_with_quality(sma_fast_s, sma50_s, high, low, close, volume)
+        cross_quality_20_50 = ta.detect_cross_with_quality(ema_fast_s, ema_slow_s, high, low, close, volume)
         if cross_quality_20_50 is not None:
             ma_cross_20_50 = cross_quality_20_50.direction
-        imminent_20_50 = ta.detect_imminent_cross(sma_fast_s, sma50_s)
+        imminent_20_50 = ta.detect_imminent_cross(ema_fast_s, ema_slow_s)
 
     macd_line, macd_signal, macd_hist = ta.macd(close)
     raw_macd_cross = ta.detect_recent_cross(macd_line, macd_signal, lookback=5)
@@ -170,8 +190,8 @@ def _read_timeframe(
         rsi14=_last(ta.rsi(close)),
         adx14=adx14,
         di_bias=di_bias,
-        price_vs_sma20=_price_vs(price, sma_fast),
-        price_vs_sma50=_price_vs(price, sma50),
+        price_vs_sma20=_price_vs(price, ema_fast),
+        price_vs_sma50=_price_vs(price, ema_slow),
         price_vs_sma200=_price_vs(price, sma200),
         bars_since_cross=bars_since_cross,
     )

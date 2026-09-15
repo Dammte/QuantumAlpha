@@ -122,7 +122,7 @@ def test_build_raw_atr_multiple_sma21_differs_from_the_default_50_day_one():
 
 def _reversal_closes(rally_bars: int) -> list[float]:
     """A decline (60 bars) followed by a rally, truncated to `rally_bars` of
-    that rally - the fast MA (SMA21) is below the slow one (SMA50) after the
+    that rally - the fast MA (EMA21) is below the slow one (EMA55) after the
     decline, then catches up and eventually crosses above it during the
     rally. Varying `rally_bars` picks a point either before the actual cross
     (still converging - imminent_cross_short_term's territory) or after it
@@ -133,10 +133,10 @@ def _reversal_closes(rally_bars: int) -> list[float]:
 
 
 def test_build_raw_ma_cross_short_detects_a_confirmed_golden_cross():
-    # 81 bars total: the SMA21/SMA50 golden cross actually completes at bar
-    # 79 (verified against ta.detect_recent_cross directly) - well within
-    # ma_cross_short's own lookback=5 of this series' last bar (80).
-    df = _df(_reversal_closes(rally_bars=21))
+    # 82 bars total: the EMA21/EMA55 golden cross actually completes at bar
+    # 82 (verified against ta.detect_recent_cross directly) - well within
+    # ma_cross_short's own lookback=5 of this series' last bar.
+    df = _df(_reversal_closes(rally_bars=22))
     raw = mss._build_raw("TEST", "Tecnología", None, df, None)
     assert raw is not None
     assert raw.ma_cross_short == "golden"
@@ -145,8 +145,8 @@ def test_build_raw_ma_cross_short_detects_a_confirmed_golden_cross():
 
 
 def test_build_raw_imminent_cross_short_term_projects_a_golden_cross_before_it_happens():
-    # Same reversal, cut 5 bars earlier (76 bars total) - well before the
-    # actual cross at bar 79, but the SMA21/SMA50 gap is already converging
+    # Same reversal, cut 6 bars earlier (76 bars total) - well before the
+    # actual cross at bar 82, but the EMA21/EMA55 gap is already converging
     # in a straight enough line to project it.
     df = _df(_reversal_closes(rally_bars=16))
     raw = mss._build_raw("TEST", "Tecnología", None, df, None)
