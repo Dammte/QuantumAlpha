@@ -307,6 +307,13 @@ def assess_position_risk(
             consecutive_below_ema21 = ta.consecutive_closes_below(
                 closed["close"], ta.ema(closed["close"], mtf.FAST_MA_PERIOD)
             )
+            # Parte 9 recalibration: exit_engine's own overextension trigger
+            # measures against EMA21 now, not the shared (SMA50-based)
+            # signals.atr_multiple every other display in the app still uses
+            # - see exit_engine.py's own docstring on why these stay separate.
+            atr_multiple_from_ema21 = ta.atr_multiple_from_ema(
+                closed["close"], closed["high"], closed["low"], ema_window=mtf.FAST_MA_PERIOD
+            )
             rsi_recent_max = _recent_max(ta.rsi(closed["close"]))
             adx_recent_max = _recent_max(ta.adx(closed["high"], closed["low"], closed["close"]))
             bars_held = tps.bars_held_since(closed, plan.entry_date)
@@ -351,7 +358,7 @@ def assess_position_risk(
                 rsi_recent_max=rsi_recent_max,
                 adx14=signals.adx14,
                 adx_recent_max=adx_recent_max,
-                atr_multiple=signals.atr_multiple,
+                atr_multiple_from_ema21=atr_multiple_from_ema21,
                 candlestick_pattern=signals.candlestick_pattern,
             )
             exit_urgency = assessment.urgency.value

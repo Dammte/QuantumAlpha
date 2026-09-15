@@ -222,6 +222,29 @@ def atr_multiple_from_sma(
     return float((close.iloc[-1] - moving_avg) / latest_atr)
 
 
+def atr_multiple_from_ema(
+    close: pd.Series, high: pd.Series, low: pd.Series, ema_window: int = 21, atr_window: int = 14
+) -> float | None:
+    """Same overextension gauge as `atr_multiple_from_sma`, against an EMA
+    instead - a deliberately separate function, not a parametrized "SMA or
+    EMA" flag on the one above: `atr_multiple_from_sma`'s own consumers
+    (`levels_engine.evaluate_gate`'s "sin extensión parabólica" condition,
+    `CoreTickerSignals.atr_multiple` shown across the app) are an
+    independent, already-reasoned design this function must never silently
+    change just by existing - see CLAUDE.md's own note on why the fast-pair
+    EMA21/55 unification stopped short of this exact field. Parte 9's own
+    recalibration ("extensión >3 ATR sobre EMA21", was "4 ATR sobre SMA50")
+    is `exit_engine.py`'s REDUCE trigger alone, fed by this function
+    specifically - see that module's own docstring."""
+    if len(close) < max(ema_window, atr_window) + 1:
+        return None
+    moving_avg = ema(close, ema_window).iloc[-1]
+    latest_atr = atr(high, low, close, atr_window).iloc[-1]
+    if pd.isna(moving_avg) or pd.isna(latest_atr) or latest_atr == 0:
+        return None
+    return float((close.iloc[-1] - moving_avg) / latest_atr)
+
+
 def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     """On-Balance Volume: cumulative volume, added on up days and subtracted on
     down days. Purely causal (each value only uses data up to that bar), so it

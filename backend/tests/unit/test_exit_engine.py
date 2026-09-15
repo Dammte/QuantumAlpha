@@ -105,7 +105,7 @@ def _evaluate(
     rsi_recent_max: float | None = None,
     adx14: float | None = None,
     adx_recent_max: float | None = None,
-    atr_multiple: float | None = None,
+    atr_multiple_from_ema21: float | None = None,
     candlestick_pattern: str | None = None,
 ) -> ee.ExitAssessment:
     return ee.evaluate_exit(
@@ -122,7 +122,7 @@ def _evaluate(
         rsi_recent_max=rsi_recent_max,
         adx14=adx14,
         adx_recent_max=adx_recent_max,
-        atr_multiple=atr_multiple,
+        atr_multiple_from_ema21=atr_multiple_from_ema21,
         candlestick_pattern=candlestick_pattern,
     )
 
@@ -315,14 +315,15 @@ def test_reduce_when_original_target_is_reached():
     assert any("Objetivo original alcanzado" in r for r in result.reasons)
 
 
-def test_reduce_extended_beyond_4_atr_while_in_profit():
-    result = _evaluate(atr_multiple=4.5, position=_position(r_multiple=1.2))
+def test_reduce_extended_beyond_3_atr_from_ema21_while_in_profit():
+    # EXTENDED_ATR_MULTIPLE = 3.0 (Parte 9 recalibration, was 4.0 vs SMA50).
+    result = _evaluate(atr_multiple_from_ema21=3.5, position=_position(r_multiple=1.2))
     assert result.urgency == ee.ExitUrgency.REDUCE
-    assert any("Extensión parabólica" in r for r in result.reasons)
+    assert any("Extensión parabólica" in r and "EMA21" in r for r in result.reasons)
 
 
-def test_no_reduce_extended_beyond_4_atr_when_not_in_profit():
-    result = _evaluate(atr_multiple=4.5, position=_position(r_multiple=-0.3))
+def test_no_reduce_extended_beyond_3_atr_when_not_in_profit():
+    result = _evaluate(atr_multiple_from_ema21=3.5, position=_position(r_multiple=-0.3))
     assert not any("Extensión parabólica" in r for r in result.reasons)
 
 

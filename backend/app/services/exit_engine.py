@@ -58,7 +58,11 @@ ADX_FALLING_EXIT = 20.0  # ...to count as "falling" once it drops below this
 # breaking is a smaller move than the slow one breaking, so it takes less
 # unusual volume behind it to be a real signal rather than noise.
 EMA21_LOSS_MIN_REL_VOLUME = 1.3
-EXTENDED_ATR_MULTIPLE = 4.0
+# Parte 9 recalibration: was 4.0 ATR above SMA50 - now measured against
+# EMA21 (see `atr_multiple_from_ema21`'s own docstring for why this is a
+# deliberately separate field from the shared, SMA50-based `atr_multiple`
+# every other display in the app still uses).
+EXTENDED_ATR_MULTIPLE = 3.0
 PROFIT_TIGHTEN_R = 1.5
 # A position that's gone this many closed daily bars without reaching +1R
 # (and hasn't already stopped out) is tying up capital that isn't working -
@@ -135,7 +139,7 @@ def evaluate_exit(
     rsi_recent_max: float | None,
     adx14: float | None,
     adx_recent_max: float | None,
-    atr_multiple: float | None,
+    atr_multiple_from_ema21: float | None,
     candlestick_pattern: str | None,
 ) -> ExitAssessment:
     """Runs every disparador in `docs/quant_methodology.md`'s exit-engine
@@ -153,7 +157,7 @@ def evaluate_exit(
       short-term timing MA, faster and more reactive than the EMA55 above.
     - `nearest_support`/`nearest_resistance`: from
       `technical_analysis.support_resistance_levels` on the daily frame.
-    - `obv_divergence`, `rsi14`, `adx14`, `atr_multiple`, `candlestick_pattern`:
+    - `obv_divergence`, `rsi14`, `adx14`, `candlestick_pattern`:
       the same daily-bar reads `compute_core_signals` already produces -
       passed in rather than recomputed, so this stays a pure function of
       already-computed inputs (no OHLCV frame here at all).
@@ -161,6 +165,11 @@ def evaluate_exit(
       lookback (e.g. the same window `compute_core_signals` uses for the
       chart) - needed to tell "RSI is falling from an overbought peak" or
       "ADX is falling from a real trend" apart from "RSI/ADX is just low".
+    - `atr_multiple_from_ema21`: `technical_analysis.atr_multiple_from_ema`
+      against `mtf.FAST_MA_PERIOD` (Parte 9) - deliberately NOT the same
+      value as `CoreTickerSignals.atr_multiple` (SMA50-based) every other
+      display in the app still shows; this trigger is the one place that
+      needs the EMA21 version specifically.
     """
     reasons_by_tier: dict[ExitUrgency, list[str]] = {tier: [] for tier in _URGENCY_SEVERITY}
     daily = multi_timeframe.daily
@@ -253,18 +262,18 @@ def evaluate_exit(
             f"Objetivo original alcanzado ({position.initial_target:.2f}) - recoger parte y dejar correr el resto."
         )
 
-    # Parte 9 recalibrates this to "3 ATR above EMA21" (was 4 ATR above
-    # SMA50) - NOT done here yet: `atr_multiple` is `ta.atr_multiple_from_sma`,
-    # a widely shared field (also read by levels_engine.evaluate_gate's own
-    # "parabolic" condition and market_screener_service's snapshots).
-    # Changing its basis to EMA21 is a separate, larger change than this
-    # pass's fast-pair unification - left as explicitly open, not silently
-    # half-applied (a 3.0 threshold against the *wrong* basis would be a
-    # worse mismatch than leaving both numbers as they were).
+    # Parte 9 recalibration: "3 ATR above EMA21" (was 4 ATR above SMA50) -
+    # `atr_multiple_from_ema21` is its own separate computation
+    # (`technical_analysis.atr_multiple_from_ema`), not the shared,
+    # SMA50-based `CoreTickerSignals.atr_multiple` every other display in
+    # the app still uses (levels_engine.evaluate_gate's own "parabolic"
+    # condition and market_screener_service's snapshots keep that one
+    # unchanged, on purpose - see this module's own docstring for why).
     in_profit = position.r_multiple is not None and position.r_multiple > 0
-    if atr_multiple is not None and atr_multiple > EXTENDED_ATR_MULTIPLE and in_profit:
+    if atr_multiple_from_ema21 is not None and atr_multiple_from_ema21 > EXTENDED_ATR_MULTIPLE and in_profit:
         reasons_by_tier[ExitUrgency.REDUCE].append(
-            f"Extensión parabólica ({atr_multiple:.1f} ATR sobre la SMA50) en una posición ya en beneficio."
+            f"Extensión parabólica ({atr_multiple_from_ema21:.1f} ATR sobre la EMA21) "
+            "en una posición ya en beneficio."
         )
 
     # Stalled position ("stop temporal", Fase 3): capital sitting in a trade

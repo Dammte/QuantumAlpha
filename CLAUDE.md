@@ -181,9 +181,10 @@ una migración de esquema aparte, no un efecto secundario de esta conexión) y `
 (el original) sigue siendo lo único que ese job persiste. `trade_plan_service.py` tampoco cambia -
 llama a `compute_stop_and_target` directamente, nunca a `evaluate_gate`.
 
-**Deuda conocida, explícitamente no resuelta todavía** (no asumir que ya está hecho solo porque
-el nombre del archivo sugiere que sí): la extensión parabólica de `exit_engine.py`/
-`levels_engine.py` (`EXTENDED_ATR_MULTIPLE`) sigue midiéndose sobre `atr_multiple` (base SMA50,
-un campo ampliamente compartido) en vez de EMA21 como pide Parte 9 - cambiar esa base es una
-decisión aparte, de mayor alcance, no un efecto secundario de la unificación del par rápido de
-arriba.
+**Resuelto (septiembre 2026)**: la extensión parabólica de `exit_engine.py` (REDUCE) se mide
+ahora sobre `technical_analysis.atr_multiple_from_ema` (EMA21, `EXTENDED_ATR_MULTIPLE=3.0`, Parte
+9) a través de su propio parámetro `atr_multiple_from_ema21` - una función y un parámetro
+deliberadamente separados de `atr_multiple_from_sma`/`CoreTickerSignals.atr_multiple` (SMA50), que
+`levels_engine.evaluate_gate`'s "sin extensión parabólica" y `market_screener_service.py` siguen
+usando sin cambios, a propósito - no era el mismo campo con dos consumidores, era un umbral nuevo
+que necesitaba su propia base, no la del gate.

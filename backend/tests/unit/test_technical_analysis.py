@@ -359,6 +359,32 @@ def test_atr_multiple_from_sma_none_when_not_enough_data():
     assert ta.atr_multiple_from_sma(close, close, close, sma_window=50, atr_window=14) is None
 
 
+def test_atr_multiple_from_ema_positive_when_price_above_average():
+    close = pd.Series([100.0] * 30 + [130.0])
+    high = close + 2
+    low = close - 2
+    multiple = ta.atr_multiple_from_ema(close, high, low, ema_window=21, atr_window=14)
+    assert multiple is not None
+    assert multiple > 0
+
+
+def test_atr_multiple_from_ema_none_when_not_enough_data():
+    close = pd.Series([100.0] * 10)
+    assert ta.atr_multiple_from_ema(close, close, close, ema_window=21, atr_window=14) is None
+
+
+def test_atr_multiple_from_ema_reacts_faster_than_the_sma_version():
+    # EMA weighs recent bars more - the same late jump pulls the EMA up more
+    # than the SMA, so the *same* series reads a smaller overextension
+    # against EMA21 than against SMA50 (the SMA lags further behind, so the
+    # gap to price looks bigger).
+    close = pd.Series([100.0] * 60 + [130.0])
+    high, low = close + 2, close - 2
+    ema_multiple = ta.atr_multiple_from_ema(close, high, low, ema_window=21, atr_window=14)
+    sma_multiple = ta.atr_multiple_from_sma(close, high, low, sma_window=50, atr_window=14)
+    assert ema_multiple < sma_multiple
+
+
 def test_atr_percentile_none_with_fewer_than_two_observations():
     assert ta.atr_percentile(pd.Series([0.02])) is None
     assert ta.atr_percentile(pd.Series([], dtype=float)) is None
