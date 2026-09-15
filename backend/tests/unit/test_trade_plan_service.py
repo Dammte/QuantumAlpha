@@ -6,6 +6,8 @@ import pytest
 
 from app.domain.models.trade_plan import TradePlan
 from app.domain.models.transaction import Transaction, TransactionType
+from app.services import technical_analysis as ta
+from app.services import trade_geometry as tg
 from app.services import trade_plan_service as tps
 
 
@@ -152,6 +154,29 @@ def test_reconstruct_stop_and_target_none_with_too_little_history_for_atr():
     assert result.stop_loss is None
 
 
+# --- generate_thesis (Parte 5.4) ----------------------------------------------
+
+
+def test_generate_thesis_describes_trend_stop_and_target():
+    stop_and_target = tg.StopAndTarget(
+        stop_loss=90.0, take_profit=120.0, take_profit_method="objetivo 2:1 sobre el riesgo", risk_reward=2.0
+    )
+    thesis = tps.generate_thesis("AAPL", 100.0, ta.TrendState.UPTREND, stop_and_target)
+    assert "AAPL" in thesis
+    assert "100.00" in thesis
+    assert "tendencia alcista" in thesis
+    assert "90.00" in thesis and "10.0%" in thesis  # (100-90)/100 risk
+    assert "120.00" in thesis and "2.0:1" in thesis
+
+
+def test_generate_thesis_omits_stop_and_target_sentences_when_not_available():
+    stop_and_target = tg.StopAndTarget(stop_loss=None, take_profit=None, take_profit_method=None, risk_reward=None)
+    thesis = tps.generate_thesis("AAPL", 100.0, ta.TrendState.SIDEWAYS, stop_and_target)
+    assert "Stop en" not in thesis
+    assert "Objetivo en" not in thesis
+    assert "tendencia lateral" in thesis
+
+
 # --- build_position_context ---------------------------------------------------
 
 
@@ -245,7 +270,7 @@ class _FakeRepo:
         self, portfolio_id, ticker, entry_price, entry_date, initial_stop, initial_target, initial_quantity,
         thesis, engine_version,
     ) -> TradePlan:
-        self.created_with = {"entry_price": entry_price, "entry_date": entry_date}
+        self.created_with = {"entry_price": entry_price, "entry_date": entry_date, "thesis": thesis}
         self.plan = TradePlan(
             id=2, portfolio_id=portfolio_id, ticker=ticker, entry_price=entry_price, entry_date=entry_date,
             initial_stop=initial_stop, initial_target=initial_target, current_stop=initial_stop,
@@ -297,6 +322,28 @@ def test_ensure_trade_plan_rebuilds_a_fresh_plan_when_the_open_ones_entry_date_i
     assert result.entry_date == date(2024, 3, 1)
     assert repo.created_with is not None
     assert repo.created_with["entry_price"] == pytest.approx(50.0)
+
+
+def test_ensure_trade_plan_persists_an_auto_generated_thesis_with_the_reconstruction_disclaimer():
+    # Parte 5.4: the persisted thesis is no longer a bare disclaimer - it
+    # carries the real, computed setup facts too. 220 bars (clears the
+    # sma200 requirement for a real trend read, not the SIDEWAYS fallback a
+    # shorter series would force) of a clean uptrend - entry priced at the
+    # series' own last close, so it's genuinely above every SMA (classify_trend
+    # needs price > sma20 > sma50 > sma200, not just a rising series).
+    n = 220
+    df = _ohlcv_df(n, 50 + np.arange(n) * 0.3)
+    entry_price = float(df["close"].iloc[-1])
+    txs = [_tx("AAPL", TransactionType.BUY, 10, price=entry_price, executed_at=datetime(2024, 1, 1))]
+    repo = _FakeRepo(existing=None)
+
+    result = tps.ensure_trade_plan(repo, portfolio_id=1, ticker="AAPL", transactions=txs, ohlcv=df)
+
+    assert result is not None
+    assert "AAPL" in result.thesis
+    assert "tendencia alcista" in result.thesis
+    assert tps.RECONSTRUCTED_THESIS in result.thesis
+    assert repo.created_with["thesis"] == result.thesis
 
 
 def test_ensure_trade_plan_never_closes_a_stale_plan_it_cannot_replace():

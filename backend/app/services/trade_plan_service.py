@@ -9,10 +9,15 @@ for the per-ticker latency incident this is careful not to repeat), and
 reconstructing from point-in-time history produces the *same* stop/target
 number a live capture would have (identical formula -
 `trade_geometry.compute_stop_and_target` - identical historical window). The
-one thing this genuinely can't reconstruct is *why* the position was opened -
-nobody but the person doing the buying can fill in a thesis, so a
-reconstructed plan says so honestly (`RECONSTRUCTED_THESIS`) rather than
-inventing one.
+one thing this genuinely can't reconstruct is the propietario's own
+subjective reasoning for buying - nobody but the person doing the buying can
+supply that. `thesis` (Parte 5.4) is deliberately not that: it's
+`generate_thesis`'s auto-generated, factual description of the setup at
+entry (trend, stop distance, target basis) built from the same already-
+computed `StopAndTarget` this function needed anyway, with
+`RECONSTRUCTED_THESIS` appended honestly - every plan through this path is,
+and will remain, built after the fact (see "deliberately lazy" above), so
+that disclaimer is never stale or misleading to drop.
 
 Trailing-stop updates (Chandelier Exit) and scaled exits are `trade_manager.py`'s
 job - this module only ever sets `current_stop` once, equal to `initial_stop`,
@@ -42,6 +47,38 @@ RECONSTRUCTED_THESIS = (
     "Plan reconstruido retroactivamente a partir del histórico de precio en la fecha de entrada - "
     "no es el stop/objetivo que se habría mostrado en el momento real de la compra."
 )
+
+_TREND_LABEL = {
+    ta.TrendState.UPTREND: "una tendencia alcista confirmada",
+    ta.TrendState.DOWNTREND: "una tendencia bajista",
+    ta.TrendState.SIDEWAYS: "una tendencia lateral, sin una dirección clara",
+}
+
+
+def generate_thesis(ticker: str, entry_price: float, trend: ta.TrendState, stop_and_target: StopAndTarget) -> str:
+    """Parte 5.4: an auto-generated, factual description of the setup at
+    entry - never the propietario's own subjective reasoning (nobody but
+    the person buying can supply that, see this module's own docstring),
+    just the technical facts a fresh gate evaluation would have shown at
+    the time: trend, stop distance, target and its basis. Built entirely
+    from values `ensure_trade_plan` already computes (`trend` from the same
+    `as_of_entry` frame `reconstruct_stop_and_target` uses, that function's
+    own `StopAndTarget`) - no extra computation, no network call, safe to
+    call from the same lazy reconstruction path every plan already goes
+    through. `None` stop/target fields (no ATR yet, e.g.) are simply
+    omitted rather than guessed at."""
+    parts = [f"Entrada en {ticker} a {entry_price:.2f}, con {_TREND_LABEL[trend]}."]
+    if stop_and_target.stop_loss is not None:
+        risk_pct = (entry_price - stop_and_target.stop_loss) / entry_price
+        parts.append(f"Stop en {stop_and_target.stop_loss:.2f} ({risk_pct:.1%} de riesgo).")
+    if stop_and_target.take_profit is not None and stop_and_target.take_profit_method is not None:
+        target_sentence = f"Objetivo en {stop_and_target.take_profit:.2f} ({stop_and_target.take_profit_method})"
+        if stop_and_target.risk_reward is not None:
+            target_sentence += f", relación beneficio:riesgo {stop_and_target.risk_reward:.1f}:1."
+        else:
+            target_sentence += "."
+        parts.append(target_sentence)
+    return " ".join(parts)
 
 
 def find_current_lot_entry(transactions: list[Transaction], ticker: str) -> Transaction | None:
@@ -154,6 +191,20 @@ def ensure_trade_plan(
         repo.close(portfolio_id, ticker)
 
     stop_target = reconstruct_stop_and_target(entry_tx.price, as_of_entry)
+    # Same classify_trend basis (SMA20/50/200) evaluate_gate itself judges
+    # entries against - cheap, already-in-memory, no extra network cost,
+    # just for the auto-generated thesis below (Parte 5.4).
+    entry_close = as_of_entry["close"]
+    sma20 = ta.sma(entry_close, 20).iloc[-1] if len(entry_close) >= 20 else None
+    sma50 = ta.sma(entry_close, 50).iloc[-1] if len(entry_close) >= 50 else None
+    sma200 = ta.sma(entry_close, 200).iloc[-1] if len(entry_close) >= 200 else None
+    trend = ta.classify_trend(
+        entry_tx.price,
+        None if sma20 is None or pd.isna(sma20) else float(sma20),
+        None if sma50 is None or pd.isna(sma50) else float(sma50),
+        None if sma200 is None or pd.isna(sma200) else float(sma200),
+    )
+    thesis = f"{generate_thesis(ticker, entry_tx.price, trend, stop_target)} {RECONSTRUCTED_THESIS}"
     # The quantity held *right now*, not just entry_tx's own quantity - a
     # DCA'd position (bought more after the initial entry, before this plan
     # was ever created) should start scaled-exit tracking from what's
@@ -167,7 +218,7 @@ def ensure_trade_plan(
         initial_stop=stop_target.stop_loss,
         initial_target=stop_target.take_profit,
         initial_quantity=initial_quantity,
-        thesis=RECONSTRUCTED_THESIS,
+        thesis=thesis,
         engine_version=GATE_VERSION,
     )
 

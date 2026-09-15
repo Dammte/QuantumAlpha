@@ -1930,6 +1930,21 @@ Como todo lo demás de la Fase 8 (sección 25/25.1), esto empieza vacío y solo 
 adelante - no hay atajo honesto para comparar retroactivamente lo que se tomó de lo que no, dado
 que la propia tabla de eventos empezó a acumularse recién en la Fase 2.
 
+### 26.10 Tesis autogenerada al abrir posición (Parte 5.4)
+
+`trade_plan_service.py` persistía siempre `RECONSTRUCTED_THESIS`, una constante fija sin ningún
+hecho real del setup - la Parte 5.4 pide una tesis autogenerada a partir de lo ya calculado
+(tendencia, base del stop, objetivo), persistida al abrir la posición. El propio módulo explica por
+qué nunca captura el plan de forma síncrona en el momento de la compra (mantener el endpoint de
+transacciones rápido, sin coste de red/suite cuantitativa - ver su docstring) - lo que sí puede
+hacer, sin ese coste, es generar una tesis *factual* (no el razonamiento subjetivo del propietario,
+que de verdad es irrecuperable) a partir de los mismos datos que `reconstruct_stop_and_target` ya
+calcula: `generate_thesis` la construye (tendencia vía el mismo `classify_trend(sma20,50,200)` que
+el propio gate usa para decidir entradas, distancia del stop, objetivo y su base) y
+`ensure_trade_plan` la persiste seguida del disclaimer honesto de reconstrucción - todo plan por
+este camino se construye después del hecho, así que ese disclaimer nunca queda obsoleto ni engañoso
+al mantenerlo.
+
 **Tests**: 5 nuevos en `test_trade_manager.py` reescritos + 4 nuevos (ladder completo con costes,
 techo de posición pequeña, cierre por tiempo del último tercio); 3 en `test_backtest_engine.py`
 recalculados contra los nuevos multiplicadores del Chandelier; 1 nuevo en `test_market_screener_service.py`
@@ -1939,6 +1954,8 @@ recalculado contra el cruce EMA real; ~15 en `test_exit_engine.py` renombrados/r
 `ema21`/`ema55`); 3 nuevos en `test_technical_analysis.py` (`atr_multiple_from_ema`, incluida la
 comparación de reactividad contra la versión SMA); 8 nuevos en `test_gemini_degradation.py`; 7
 nuevos en `test_trigger_performance_service.py` (`taken`/`_was_taken`) + 1 de integración nueva en
-`test_system_api.py` end-to-end contra portafolio/transacción reales. Suite completa verde en cada
-commit (`pytest -q`, unit + integración, ejecutada en domingo sin fallos - la propia Parte 17 exige
-verde cualquier día de la semana).
+`test_system_api.py` end-to-end contra portafolio/transacción reales; 3 nuevos en
+`test_trade_plan_service.py` (`generate_thesis` con y sin stop/objetivo disponibles, y
+`ensure_trade_plan` persistiendo la tesis real + el disclaimer). Suite completa verde en cada commit
+(`pytest -q`, unit + integración, ejecutada en domingo sin fallos - la propia Parte 17 exige verde
+cualquier día de la semana).
