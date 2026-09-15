@@ -147,14 +147,19 @@ escalada de salida con coste incluido y excepción de posición pequeña
 `app/core/trading_params.py` como fuente única de parámetros; capa Gemini de solo lectura
 (`GeminiNarrator.explain_gate`), inerte sin clave.
 
+**Resuelto (septiembre 2026)**: el "par rápido" ya está unificado en una sola definición
+EMA21/EMA55 (`multi_timeframe.FAST_MA_PERIOD`/`SLOW_MA_PERIOD`) - `multi_timeframe.py`,
+`market_screener_service.py` y las reglas duras de `exit_engine.py` (vía
+`portfolio_risk_service.py`) leen todos el mismo cálculo; ya no hay una SMA21/50 independiente
+compitiendo con el EMA21/55 real de `technical_analysis.detect_fast_pair_bearish_veto`. El cruce
+dorado/de la muerte SMA50/SMA200 sigue siendo, a propósito, un concepto SMA estándar y separado -
+Parte 3.2 nunca pidió tocar ese.
+
 **Deuda conocida, explícitamente no resuelta todavía** (no asumir que ya está hecho solo porque
 el nombre del archivo sugiere que sí): `trade_geometry.py` todavía usa un stop de ATR fijo
 (`ATR_STOP_MULTIPLE`) y un objetivo 2:1 simple, no la cascada de stop por tipo de entrada ni el
-techo de riesgo adaptativo por percentil de ATR que el plan original describe; el "par rápido"
-sigue sin unificarse en una sola definición EMA21/EMA55 - `multi_timeframe.py` usa SMA21/SMA50 y
-`exit_engine.py` dispara sobre SMA20/SMA50 diarios, mientras que el único EMA21/55 real del
-código (`technical_analysis.detect_fast_pair_bearish_veto`) solo alimenta un veto puntual, no la
-clasificación de tendencia general. Tocar cualquiera de las dos cosas es un cambio grande y
-transversal (toca `multi_timeframe.py`, `exit_engine.py`, `levels_engine.py` y una parte grande
-de sus tests) - hazlo como su propio cambio aislado y bien probado, no como un efecto secundario
-de otra tarea.
+techo de riesgo adaptativo por percentil de ATR que el plan original describe; la extensión
+parabólica de `exit_engine.py`/`levels_engine.py` (`EXTENDED_ATR_MULTIPLE`) sigue midiéndose
+sobre `atr_multiple` (base SMA50, un campo ampliamente compartido) en vez de EMA21 como pide
+Parte 9 - cambiar esa base es una decisión aparte, de mayor alcance, no un efecto secundario de
+la unificación del par rápido de arriba.
