@@ -40,8 +40,7 @@ npm run lint      # eslint
 
 ```bash
 cd backend
-pytest -q                    # suite completa: ~500 tests, unitarios + integración, ~10-11 min
-                              # (GARCH/Monte Carlo por test la hace pesada — normal)
+pytest -q                    # suite completa: ~750 tests, unitarios + integración, ~2-3 min
 ruff check app tests         # linter, debe quedar limpio siempre
 ```
 
@@ -71,54 +70,91 @@ sin BD ni red. Ver `backend/README.md` para el detalle completo.
 
 ## Filosofía del motor de decisión
 
-Lee `backend/docs/quant_methodology.md` completo antes de tocar `recommendation_engine.py`,
-`exit_engine.py`, `technical_analysis.py` o cualquier script de ablación — documenta qué hace
-cada pieza, qué evidencia la respalda (o no todavía), y cómo se recalibra.
+Lee `backend/docs/quant_methodology.md` completo antes de tocar `levels_engine.py`,
+`trade_geometry.py`, `exit_engine.py`, `technical_analysis.py` o cualquier script de ablación —
+documenta qué hace cada pieza, qué evidencia la respalda (o no todavía), y cómo se recalibra.
 
 Puntos que no son negociables:
 
-- **Es un checklist de reglas transparente y ponderado, no una caja negra ni ML.** Cada señal
-  que dispara suma o resta puntos, y el porqué es siempre visible. Ver
-  `docs/quant_methodology.md` §1 y §6.6 (por qué se descartó meta-labeling).
-- **Ningún factor nuevo entra sin evidencia medida.** No añadas un indicador porque "suena
-  bien" o tiene buena cita académica detrás — el filtro de régimen de Faber se implementó,
-  se sometió al estudio de ablación (`scripts/factor_ablation_study.py`), y se retiró cuando
-  la evidencia propia lo contradijo (§6.1). Ese es el estándar: mide antes de confiar.
-  Cualquier peso nuevo o cambio de peso existente debe venir acompañado de correr (o
-  actualizar) ese estudio, no de intuición.
+- **Es un gate de reglas transparente, no una caja negra ni ML, y no una puntuación
+  ponderada.** `levels_engine.evaluate_gate` decide con condiciones booleanas (todas deben
+  cumplirse) en vez de sumar/restar puntos - un factor fuerte no puede compensar uno
+  genuinamente descalificante, y qué condición falló es siempre visible. El checklist
+  ponderado original (`recommendation_engine.build_recommendation`) se retiró por completo en
+  la reconstrucción de 2026-09 una vez el gate lo sustituyó en todos los caminos en vivo - ver
+  `levels_engine.py`/`recommendation_engine.py`, ambos con el porqué en su docstring, y
+  `docs/quant_methodology.md` §1 y §6.6.
+- **Ningún factor/condición nueva entra sin evidencia medida.** No añadas un indicador porque
+  "suena bien" o tiene buena cita académica detrás — el filtro de régimen de Faber se
+  implementó, se sometió al estudio de ablación (`scripts/factor_ablation_study.py`), y se
+  retiró cuando la evidencia propia lo contradijo (§6.1). Ese es el estándar: mide antes de
+  confiar. Cualquier condición nueva o cambio de una existente debe venir acompañado de correr
+  (o actualizar) ese estudio, no de intuición.
 - **Comprar y vender son preguntas distintas, con evidencia distinta.** `exit_engine.py`
   decide si una posición ya abierta debe cerrarse/recortarse/protegerse — y **nunca** importa
   `recommendation_engine.py` ni recibe RS Rating, fundamentales o el checklist de Minervini
-  como parámetros. Un buen fundamental no es razón para aguantar una ruptura técnica en una
-  cartera gestionada a semanas. Ver `docs/quant_methodology.md` §8.
+  como parámetros (verificado por AST, no solo por convención - ver
+  `test_exit_engine_never_imports_recommendation_engine`). Un buen fundamental no es razón
+  para aguantar una ruptura técnica en una cartera gestionada a semanas. Ver
+  `docs/quant_methodology.md` §8.
+- **Gemini nunca puntúa ni decide nada.** La capa de Gemini (`infrastructure/llm/`) es
+  exclusivamente una narrativa de solo lectura sobre una decisión que el gate ya tomó - nunca
+  entra en `evaluate_gate`, `trade_geometry` ni `exit_engine.py`, nunca bloquea el flujo
+  principal (sin `GEMINI_API_KEY`, o si la llamada falla por cualquier motivo, cada método
+  devuelve `None` de inmediato), y nunca sale de este backend hacia Google salvo que el
+  propietario active la clave explícitamente. Ver `GeminiNarrator`/`LLMNarrator`.
 - **No inventes datos.** Si algo no se puede calcular con la información disponible (p. ej.
   un "máximo de 52 semanas" con solo 60 barras de histórico), la función devuelve `None` —
   nunca una aproximación silenciosa etiquetada como si fuera el dato real.
-- **Todo cambio de puntuación se documenta y versiona.** Un cambio en qué factores entran o
-  con qué peso en `recommendation_engine.py` bumpea `ENGINE_VERSION` (se graba en cada
-  `RecommendationSnapshotORM`, para poder atribuir un veredicto pasado a la lógica exacta que
-  lo produjo) y se documenta en `docs/quant_methodology.md`. Un refactor puro (mover código sin
-  cambiar ningún resultado, verificado contra los tests existentes) no necesita bump.
+- **Todo cambio de lógica de decisión se documenta y versiona.** Un cambio material en las
+  condiciones del gate bumpea `levels_engine.GATE_VERSION` (se graba en cada
+  `PositionDailyState`/`TradePlan` persistido, para poder atribuir un veredicto pasado a la
+  lógica exacta que lo produjo); `recommendation_engine.ENGINE_VERSION` marca, más en general,
+  qué motor de decisión está en producción (`"2026-09-v6-levels"` desde que el gate sustituyó
+  al checklist por completo). Todo se documenta en `docs/quant_methodology.md`. Un refactor
+  puro (mover código sin cambiar ningún resultado, verificado contra los tests existentes) no
+  necesita bump.
+- **Los parámetros de trading viven en un solo sitio.** `app/core/trading_params.py` (tamaño de
+  posición, techos de riesgo, calibración del Chandelier, umbrales del gate) - un servicio que
+  necesita uno de estos números lo importa de ahí, nunca redefine su propia copia. Expuesto de
+  solo lectura en `GET /system/params`.
 - **No llamadas de red por ticker en los caminos calientes.** `PortfolioRiskService` ya sufrió
   un incidente de latencia en producción por esto (ver su docstring) — semanal/mensual se
   derivan del histórico diario ya descargado (`technical_analysis.resample_ohlcv`), nunca una
-  llamada nueva por posición.
+  llamada nueva por posición. Los endpoints de lectura del Radar/Hoy (`GET /portfolios/{id}/today`,
+  `GET /radar`) van más lejos: leen tablas precomputadas por los jobs nocturnos
+  (`scripts/daily_close.py`), sin calcular nada en el propio request.
 - **No `ThreadPoolExecutor` en el backend.** Ya se probó y empeoró las cosas en la instancia
   de Render por sobresuscripción de BLAS/OpenMP (ver el mismo docstring). Si hace falta
   velocidad, cachear, no paralelizar.
 
-## Estado del refactor del motor de salida (agosto 2026)
+## Estado de la reconstrucción del motor de entrada (septiembre 2026)
 
-Rama `exit-engine-overhaul` (ver el plan original en su historial de commits), completa en las
-8 fases previstas. Motor de salida independiente (`exit_engine.py`), lectura multi-timeframe
-(`multi_timeframe.py`), `trade_plan` persistido, trailing stops Chandelier y salidas escalonadas
-(`trade_manager.py`), instrumentación de rendimiento de señales (`signal_performance_service.py`,
-`GET /system/signal-performance`), backtest honesto con triple-barrera (`backtest_engine.py`),
-estudio de ablación reescrito (`factor_ablation_study.py` — reescrito y validado, **no ejecutado
-todavía contra el universo real ni usado para recalibrar ningún peso**, decisión explícita del
-propietario), riesgo a nivel de cartera (`portfolio_construction_service.py`), y la interfaz
-(panel "Acciones requeridas hoy", semáforo multi-timeframe, ficha de posición, vista
-"Rendimiento del sistema") — todo integrado en producción vía `GET /portfolios/{id}/risk` salvo
-`backtest_engine.py`/`portfolio_construction_service.py`, que existen y están probados pero
-todavía no están conectados a un endpoint en vivo (integrarlos es trabajo de UI nuevo, no una
-extensión de un campo existente). Ver `docs/quant_methodology.md` §8-9 para el detalle completo.
+Rama `trigger-engine-rebuild`, en curso. Objetivo: sustituir el checklist ponderado de
+`recommendation_engine.py` por un gate de reglas booleanas (`levels_engine.py`) con geometría de
+entrada explícita (`trade_geometry.py`), respondiendo a las 4 preguntas del propietario ("¿qué
+hago hoy con lo que tengo?", "¿qué está a punto de dar entrada?", "¿es buena entrada este activo
+concreto?", "¿está funcionando mi sistema?") con datos precomputados por jobs nocturnos en vez de
+cómputo en caliente por request. Ver `backend/docs/quant_methodology.md` §25 en adelante para el
+detalle completo, con su propio historial de qué está hecho y qué no.
+
+**Completo y en producción**: `levels_engine.evaluate_gate` como único camino de decisión de
+entrada (el checklist viejo, retirado); precompute diario (`scripts/daily_close.py`,
+`ticker_daily_state`/`position_daily_state`/`daily_brief`) y refresco intradía
+(`scripts/intraday_refresh.py`); lecturas puras `GET /portfolios/{id}/today`, `GET /radar`;
+escalada de salida con coste incluido y excepción de posición pequeña
+(`trade_manager.compute_scaled_exit_plan`); universo dinámico activado (Fase 10);
+`app/core/trading_params.py` como fuente única de parámetros; capa Gemini de solo lectura
+(`GeminiNarrator.explain_gate`), inerte sin clave.
+
+**Deuda conocida, explícitamente no resuelta todavía** (no asumir que ya está hecho solo porque
+el nombre del archivo sugiere que sí): `trade_geometry.py` todavía usa un stop de ATR fijo
+(`ATR_STOP_MULTIPLE`) y un objetivo 2:1 simple, no la cascada de stop por tipo de entrada ni el
+techo de riesgo adaptativo por percentil de ATR que el plan original describe; el "par rápido"
+sigue sin unificarse en una sola definición EMA21/EMA55 - `multi_timeframe.py` usa SMA21/SMA50 y
+`exit_engine.py` dispara sobre SMA20/SMA50 diarios, mientras que el único EMA21/55 real del
+código (`technical_analysis.detect_fast_pair_bearish_veto`) solo alimenta un veto puntual, no la
+clasificación de tendencia general. Tocar cualquiera de las dos cosas es un cambio grande y
+transversal (toca `multi_timeframe.py`, `exit_engine.py`, `levels_engine.py` y una parte grande
+de sus tests) - hazlo como su propio cambio aislado y bien probado, no como un efecto secundario
+de otra tarea.
