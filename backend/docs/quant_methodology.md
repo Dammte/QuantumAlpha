@@ -1728,3 +1728,175 @@ y 4 en `test_relationship_map_service.py` que probaban la anotación de setup/pe
 en total, 713 → 675 unitarios). 8 nuevos en `test_opportunity_cost.py`, 3 de integración nuevos en
 `test_portfolio_today_api.py` (675 → 683 unitarios). 1 nuevo en `test_dynamic_universe_service.py`
 (normalización de espacio/punto a guion en tickers STOXX 600 - 683 → 684 unitarios).
+
+## 26. Quinta auditoría: verificación contra el texto literal del encargo (septiembre 2026)
+
+La sección 25 se escribió, como su propia nota de procedencia explica, después de que el texto
+literal de las 20 partes del encargo saliera de contexto - una reconstrucción de memoria, con el
+visto bueno explícito del propietario para proceder así en vez de repetir el pegado completo. En
+una sesión posterior el propietario sí volvió a pegar el texto literal completo, con una instrucción
+adicional explícita: seguir el plan tal cual, fase por fase, sin volver a consultar nada. Esta
+sección documenta esa verificación - qué de la sección 25 resultó ser exactamente lo que el encargo
+pedía (o una desviación deliberada y ya razonada, que se deja tal cual), y qué resultó ser una
+aproximación real que necesitaba corrección. Ninguno de los hallazgos de abajo implica que la
+sección 25 fuera descuidada - la mayoría de sus decisiones de diseño (el reparto de condiciones del
+gate, el alcance reducido de la capa Gemini, el campo único de percentil sectorial) resultaron
+coincidir con el espíritu del encargo real o estar ya justificadas con un razonamiento que esta
+auditoría no tenía motivo para deshacer. Lo que sigue son las excepciones reales, encontradas con
+grep y lectura directa antes de tocar nada, nunca asumidas.
+
+### 26.1 Fase 1 (cierre real), incluido un error propio corregido antes de comitear
+
+Un grep sistemático confirmó que la mayoría del borrado de la Parte 2 ya estaba hecho en la sesión
+anterior; lo que quedaba de verdad: `analysis_tools.py` (Gann/estacionalidad/analogos históricos) y
+toda su cablería en `ticker_analysis_service.py`/`PriceChart.jsx`/`TickerAnalysisPanel.jsx`,
+retirados por completo (no solo desconectados); el rendimiento por sector/industria como
+endpoint/vista independiente (`get_sector_performance`/`get_industry_performance`,
+`/market/sectors`, `/market/industries`, `SectorsView.jsx` y sus componentes) - Parte 2.5 lo
+sustituye por un único campo de percentil, no por nada de lo retirado aquí; y
+`portfolio_construction_service.final_position_size`, cuyo parámetro seguía llamándose `kelly_size`
+pese a que Kelly ya no existía - renombrado a `risk_based_size` para que el grep de aceptación de la
+Parte 17 (`monte_carlo|markov|kelly|garch|hurst|walk_forward|rrg`) diera cero fuera de comentarios
+históricos.
+
+Error real cometido y corregido en la misma pasada, documentado aquí por disciplina, no para
+ocultarlo: se borró `opportunity_cost.py` completo pensando que era la versión vieja (el embudo de 3
+niveles) sin darse cuenta de que la sesión anterior ya lo había reescrito en pequeño, contra el
+Radar (sección 25.6) - exactamente la versión correcta. Detectado revisando `git log` del archivo
+antes de comitear (mostraba una reescritura posterior a su primer retiro), restaurado íntegro
+(servicio, test, cableado en `GET /today`, schema, test de integración, panel de frontend y su CSS)
+sin pérdida de funcionalidad.
+
+### 26.2 `recommendation_engine.py`: el checklist retirado de verdad, no solo de la práctica
+
+La sección 25.4 documenta correctamente que nada en el camino en vivo llamaba ya a
+`build_recommendation` - pero el propio archivo, con las clases del checklist todavía definidas,
+seguía ahí (313 líneas). Un grep confirmó que ni un job, ni un endpoint, ni `scripts/
+factor_ablation_study.py` (que mide sus propios valores como constantes literales, nunca importando
+las clases retiradas) tenían ninguna razón real para que siguiera existiendo. Retirado: `build_recommendation`,
+`Recommendation`, `RecommendationFactor`, `BUY_THRESHOLD`, `AVOID_THRESHOLD`; `test_recommendation_engine.py`
+(sus 5 tests de `compute_stop_and_target` eran duplicados exactos de `test_trade_geometry.py`) y
+`test_golden_scenarios.py` (escenarios end-to-end del checklist retirado - `test_golden_gate_scenarios.py`
+ya cubre el mismo terreno contra `evaluate_gate`, el que de verdad decide). El archivo queda en 48
+líneas: solo re-exporta `compute_stop_and_target`/`StopAndTarget` de `trade_geometry.py` y define
+`ENGINE_VERSION = "2026-09-v6-levels"` - el valor exacto que la Parte 6/17 del encargo pide, no el
+`"2026-09-audit-v7"` que tenía (esa cadena era la numeración incremental correcta del checklist
+mientras seguía vivo, per su propio comentario de versión - simplemente nunca se hizo el último
+salto a la cadena final una vez el checklist quedó totalmente sustituido).
+
+### 26.3 `app/core/trading_params.py`: el módulo único de parámetros no existía, y varios valores en producción seguían siendo los de ANTES de esta reconstrucción
+
+La Parte 19 del encargo pide un módulo único con cada parámetro configurable y su valor exacto - no
+existía. Al crearlo y cablearlo donde de verdad importa, un grep reveló que el Chandelier Exit en
+`trade_manager.py` seguía en los valores canónicos de Chuck LeBeau sin recalibrar (ventana de 22
+barras, multiplicadores 2.5/3.0/3.25/3.5 por régimen, profit lock 2.0×@+2R) - los mismos números de
+ANTES de que esta reconstrucción empezara, no una aproximación de la Parte 3.2, que pide
+explícitamente 10 barras, 1.75/2.0/2.25/2.5, profit lock 1.5×@+1.5R (más ajustado a un holding de
+2-10 sesiones, no al swing de varias semanas para el que el original estaba pensado).
+`HIGH_CORRELATION_THRESHOLD` en `portfolio_construction_service.py` estaba en 0.8, no en el 0.7 que
+pide la Parte 19. La escalera de salida (`trade_manager.compute_scaled_exit_plan`) tampoco
+implementaba la Parte 8 completa: el break-even en +1R no incluía el coste de ida y vuelta; +2R
+dejaba el stop en `None` ("que gobierne el Chandelier") en vez de subirlo al nivel de +1R; no existía
+la excepción de posición pequeña (< $150 al abrir, sin escalado); y no existía el cierre por tiempo
+del último tercio (`LAST_TRANCHE_TIME_STOP_BARS`). Los tres primeros son value-level: valores
+correctos pero desactualizados, no un diseño equivocado; el cuarto y la excepción de posición pequeña
+eran comportamiento genuinamente ausente. Cada test de `compute_trailing_stop`/`label_triple_barrier`
+que fijaba un multiplicador a mano se recalculó a mano contra los nuevos valores - ningún assert se
+relajó para que pasara.
+
+### 26.4 El "par rápido" no estaba unificado: `multi_timeframe.py`/`market_screener_service.py`/`exit_engine.py` seguían en SMA21/SMA50
+
+La Parte 3.2 nombra explícitamente el síntoma: "3 definiciones competidoras (EMA21/55, SMA21/50,
+SMA20)". Un grep confirmó las tres siguen existiendo en el código de la sección 25:
+`technical_analysis.detect_fast_pair_bearish_veto` calculaba correctamente EMA21/EMA55 (el veto
+bajista del gate), pero `multi_timeframe.py` (el "fast pair" que `ma_cross_20_50`/
+`cross_quality_20_50`/`price_vs_sma20`/`price_vs_sma50` en realidad describen) lo hacía con
+`ta.sma(close, FAST_MA_PERIOD)` contra una SMA50 real, y `market_screener_service.py`'s panel
+"Tendencia" repetía el mismo cálculo SMA por su cuenta; las reglas duras de `exit_engine.py`
+(pérdida del par rápido, con o sin volumen) leían una TERCERA computación SMA independiente hecha en
+`portfolio_risk_service.py`. Corregido introduciendo `SLOW_MA_PERIOD=55` junto a `FAST_MA_PERIOD=21`
+en `multi_timeframe.py` y recalculando esas tres piezas contra EMA21/EMA55 reales - deliberadamente
+SIN tocar el cruce dorado/de la muerte SMA50/SMA200 (un concepto estándar y separado que la Parte 3.2
+nunca pidió cambiar) ni `atr_multiple`/`CoreTickerSignals` (ver 26.6). El impacto en tests fue menor
+de lo esperado: la mayoría de los escenarios end-to-end de `test_multi_timeframe.py` usan series de
+tendencia larga e inequívoca, insensibles a SMA vs EMA - solo 1 test de `test_market_screener_service.py`
+(una serie de reversión afinada a mano para un cruce SMA exacto) y ~15 de `test_exit_engine.py`
+(renombrado de parámetro, textos "SMA"→"EMA", y 2 tests cuya premisa - "semanal alcista suprime la
+ruptura de la pierna lenta" - dejó de aplicar, porque la Parte 9 quita ese calificador a propósito
+para el disparador de EMA55) necesitaron cambios.
+
+Aprovechando el mismo disparador dividido en dos exactos que pide la Parte 9 (antes uno solo, sobre
+SMA50, con y sin volumen): "pérdida de EMA21 confirmada con volumen relativo ≥1.3 + semanal no
+alcista" (antes ≥1.5 sobre SMA50) y "2 cierres consecutivos bajo EMA55" (nuevo, sin el calificador
+semanal - la Parte 9 lo lista como disparador propio, sin condición extra). El disparador de death
+cross del par rápido quedó corregido gratis, sin tocar `exit_engine.py`: ya leía
+`cross_quality_20_50`/`price_vs_sma20`/`price_vs_sma50`, que ahora son EMA21/55 reales.
+
+### 26.5 `trade_geometry.py`: el diseño real de la Parte 7 nunca se construyó
+
+La propia sección 25.3 documenta con honestidad que `compute_stop_and_target` se "movió sin cambios"
+desde `recommendation_engine.py` - y ese es exactamente el problema: la Parte 7 del encargo describe
+una cascada de stop por tipo de entrada (ruptura, rebote en soporte, retroceso a EMA21, continuación
+sobre EMA55) con un techo duro de 2.0 ATR, un techo de riesgo adaptativo por percentil de ATR, un
+objetivo neto de costes de transacción, y un tamaño de posición con tres límites - nada de eso existía;
+lo que había era un stop de ATR fijo (`ATR_STOP_MULTIPLE=2.5`) y un objetivo 2:1 simple, la misma
+aproximación que el checklist retirado ya usaba. Construido de cero como `compute_entry_geometry` +
+`TradeGeometry`/`EntryType`, verificado contra los dos ejemplos numéricos exactos que la Parte 15/20
+del encargo dan (techo de 3.0% de riesgo para un nombre calmado de 1.2% ATR con un stop natural de
+4% → rechazado; techo de 7.0% para un semiconductor de 3.5% ATR con un stop natural de 6% →
+aceptado). Un bug real de ordenamiento se encontró y corrigió antes de publicar el diseño: la primera
+versión comprobaba el techo de riesgo adaptativo DESPUÉS de aplicar el techo duro de 2.0 ATR, lo que
+enmascaraba silenciosamente el rechazo en el primer ejemplo de arriba (el stop ya recortado a 2.0 ATR
+mostraba 2.4% de riesgo, por debajo del techo de 3.0%, cuando el stop natural real - 4% - sí debía
+rechazarse). Corregido comprobando el techo contra la distancia natural, sin recortar, antes de
+aplicar el techo duro - que entonces nunca puede volver a disparar el rechazo, porque solo reduce el
+riesgo.
+
+Separado deliberadamente en dos funciones antes de cablearlo en ningún sitio: `daily_close.py` puntúa
+todo el universo curado una vez al día, en un paso estructuralmente independiente del bucle por
+cartera (ese es solo para el riesgo de posiciones ya abiertas) - no hay ningún `capital_total` que
+darle al gate de un ticker en ese punto. `compute_entry_geometry` (stop/objetivo/techo de riesgo, sin
+capital) es lo que `evaluate_gate` puede llamar; `size_position` (acciones/valor de posición/% de
+cartera) solo tiene sentido una vez se conoce el capital de una cartera específica, y sigue sin
+llamarse desde ningún sitio de producción - el Radar renderizado para una cartera, o
+`trade_plan_service.py` al abrir una posición de verdad, son los candidatos naturales, todavía
+pendientes. `evaluate_gate` sí quedó conectado a `compute_entry_geometry`: acepta `ema21`/`ema55`
+opcionales y, cuando `ticker_analysis_service.compute_core_signals` se los da (ya calcula el mismo
+EMA21/55 unificado en 26.4), `GateResult.entry_geometry` lleva la geometría real - verificado
+end-to-end contra la respuesta real de `/market/tickers/{ticker}/analysis`. `daily_close.py` sigue
+sin pasarle `ema21`/`ema55` a propósito: `TickerDailyState` no tiene columnas para persistir
+`entry_geometry`, así que calcularlo ahí sería trabajo tirado hasta que exista esa migración de
+esquema, que queda fuera de esta pasada.
+
+### 26.6 Extensión parabólica de `exit_engine.py`: recalibrada a EMA21 sin tocar el campo compartido
+
+La Parte 9 recalibra este disparador a "3 ATR sobre EMA21" (antes "4 ATR sobre SMA50") - pero
+`atr_multiple` (`technical_analysis.atr_multiple_from_sma`) es un campo ampliamente compartido:
+también lo lee la condición "sin extensión parabólica" del propio gate (`levels_engine.evaluate_gate`)
+y `market_screener_service.py`'s snapshots, ninguno de los cuales la Parte 9 pide tocar. Cambiar su
+base habría alterado esos dos consumidores como efecto secundario, no como decisión. Resuelto con
+una función hermana, `atr_multiple_from_ema` (misma lógica, `ema()` en vez de `sma()`), y un
+parámetro propio en `exit_engine.evaluate_exit` (`atr_multiple_from_ema21`, calculado en
+`portfolio_risk_service.py` con las series que ya tiene en scope para el resto de disparadores
+EMA21/55) - el gate y el screener siguen leyendo la versión SMA50 sin cambios.
+
+### 26.7 Qué queda abierto, honestamente
+
+`scripts/daily_close.py` no persiste `entry_geometry`/`size_position` - necesita una migración de
+esquema en `TickerDailyState` que esta pasada no hizo, deliberadamente, para no mezclar una migración
+de base de datos con la construcción y verificación del cálculo en sí. `size_position` no se llama
+desde ningún camino de producción todavía. Ninguna de las dos cosas es una afirmación de que estén
+"casi listas" - son, con toda honestidad, trabajo de ingeniería real que sigue pendiente, registrado
+aquí y en `CLAUDE.md` para que la próxima pasada (de este reconstructor o de otro) no tenga que
+volver a descubrirlo con grep.
+
+**Tests**: 5 nuevos en `test_trade_manager.py` reescritos + 4 nuevos (ladder completo con costes,
+techo de posición pequeña, cierre por tiempo del último tercio); 3 en `test_backtest_engine.py`
+recalculados contra los nuevos multiplicadores del Chandelier; 1 nuevo en `test_market_screener_service.py`
+recalculado contra el cruce EMA real; ~15 en `test_exit_engine.py` renombrados/recalculados; 44 en
+`test_trade_geometry.py` (39 para `compute_entry_geometry`/`size_position`/`compute_trade_geometry`,
+5 para el split); 2 nuevos en `test_levels_engine.py` (`entry_geometry` presente/ausente según
+`ema21`/`ema55`); 3 nuevos en `test_technical_analysis.py` (`atr_multiple_from_ema`, incluida la
+comparación de reactividad contra la versión SMA). Suite completa verde en cada commit (`pytest -q`,
+unit + integración, ejecutada en domingo sin fallos - la propia Parte 17 exige verde cualquier día de
+la semana).
