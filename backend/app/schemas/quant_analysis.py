@@ -43,11 +43,44 @@ class StopAndTargetResponse(BaseModel):
     risk_reward: float | None
 
 
+class TradeGeometryResponse(BaseModel):
+    """See `trade_geometry.TradeGeometry` (Parte 7) - the richer stop-cascade/
+    adaptive-risk-ceiling/cost-net-target read, alongside the simpler
+    `StopAndTargetResponse` above. `None` sizing fields
+    (`shares_for_risk_budget`/`position_value`/`pct_of_portfolio`) are
+    expected here - `evaluate_gate` never sizes a position (see
+    `GateResultResponse.entry_geometry`'s own docstring), so this always
+    describes the trade's shape, never how many shares of it to take."""
+
+    entry_price: float
+    stop_price: float | None
+    stop_basis: str | None
+    entry_type: str | None  # "breakout" | "pullback_support" | "pullback_ema21" | "continuation_ema55"
+    risk_pct: float | None
+    risk_atr: float | None
+    risk_ceiling_pct: float | None
+    target_price: float | None
+    target_basis: str | None
+    reward_pct: float | None
+    risk_reward_gross: float | None
+    risk_reward_net: float | None
+    shares_for_risk_budget: float | None
+    position_value: float | None
+    pct_of_portfolio: float | None
+    viable: bool
+    rejection_reason: str | None
+
+
 class GateResultResponse(BaseModel):
     passes: bool
     conditions: list[GateConditionResponse]
     entry_trigger: EntryTriggerResponse | None
     stop_and_target: StopAndTargetResponse | None
+    # Parte 7 - `None` whenever the caller didn't have real EMA21/55 reads to
+    # give `evaluate_gate` (see that function's own docstring); deliberately
+    # never sized (no capital in scope at the point a ticker's own gate is
+    # evaluated - see `trade_geometry.size_position`'s docstring for why).
+    entry_geometry: TradeGeometryResponse | None = None
 
 
 class ImminentCrossResponse(BaseModel):

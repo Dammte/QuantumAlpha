@@ -67,7 +67,14 @@ from app.services.technical_analysis import (
     detect_fast_pair_bearish_veto,
     obv_divergence,
 )
-from app.services.trade_geometry import EntryTrigger, StopAndTarget, compute_entry_trigger, compute_stop_and_target
+from app.services.trade_geometry import (
+    EntryTrigger,
+    StopAndTarget,
+    TradeGeometry,
+    compute_entry_geometry,
+    compute_entry_trigger,
+    compute_stop_and_target,
+)
 
 # Bumped whenever a gate condition or threshold changes materially - same
 # discipline as recommendation_engine.ENGINE_VERSION, its own separate
@@ -94,12 +101,24 @@ class GateResult:
     can be `None` even when `passes` is `True`: a clean, tradeable setup with
     no support/resistance level close enough to define an imminent watch
     price yet is a real, if less actionable-today, state - see
-    `trade_geometry.compute_entry_trigger`."""
+    `trade_geometry.compute_entry_trigger`.
+
+    `entry_geometry` (Parte 7, added once the literal brief text was back in
+    hand) is the richer stop-cascade/adaptive-risk-ceiling/cost-net-target
+    read from `trade_geometry.compute_entry_geometry` - `None` whenever the
+    caller doesn't pass `ema21`/`ema55` (e.g. `replay_gate_at`'s point-in-time
+    backtest replay, which doesn't compute them). Deliberately still no
+    sizing on it (`shares_for_risk_budget`/`position_value`/`pct_of_portfolio`
+    are always `None` here) - a ticker's own gate isn't scoped to any one
+    portfolio's capital; call `trade_geometry.size_position` separately once
+    a specific portfolio is in view. `stop_and_target` (the original, simpler
+    read) is kept alongside, unchanged, for every existing consumer."""
 
     passes: bool
     conditions: list[GateCondition]
     entry_trigger: EntryTrigger | None
     stop_and_target: StopAndTarget | None
+    entry_geometry: TradeGeometry | None = None
 
 
 def evaluate_gate(
@@ -116,6 +135,8 @@ def evaluate_gate(
     nearest_resistance: PriceLevel | None,
     obv_divergence: str | None = None,
     fast_pair_bearish_signal: str | None = None,
+    ema21: float | None = None,
+    ema55: float | None = None,
 ) -> GateResult:
     conditions: list[GateCondition] = []
 
@@ -149,11 +170,22 @@ def evaluate_gate(
 
     entry_trigger = compute_entry_trigger(price, nearest_support, nearest_resistance)
 
+    # Parte 7: only computed when the caller has real EMA21/55 reads to give
+    # it (e.g. not `replay_gate_at`'s point-in-time backtest replay, which
+    # doesn't compute them - see that function's own docstring) - `None`
+    # otherwise, never a guess built from `stop_and_target`'s simpler read.
+    entry_geometry = None
+    if ema21 is not None and ema55 is not None:
+        entry_geometry = compute_entry_geometry(
+            price, atr14, nearest_support, nearest_resistance, ema21, ema55, trend
+        )
+
     return GateResult(
         passes=all(c.passed for c in conditions),
         conditions=conditions,
         entry_trigger=entry_trigger,
         stop_and_target=stop_and_target,
+        entry_geometry=entry_geometry,
     )
 
 

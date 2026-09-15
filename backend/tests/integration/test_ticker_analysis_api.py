@@ -18,6 +18,16 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
     assert len(gate["conditions"]) == 6
     assert {"label", "passed"} <= gate["conditions"][0].keys()
 
+    # Parte 7: AAPL's fake OHLCV history comfortably clears the EMA55 warm-up,
+    # so evaluate_gate always gets real ema21/ema55 here - entry_geometry is
+    # never sized (no capital in scope at this endpoint, see its own
+    # docstring), but the rest of the fields must be there.
+    geometry = gate["entry_geometry"]
+    assert geometry is not None
+    assert geometry["shares_for_risk_budget"] is None
+    assert geometry["position_value"] is None
+    assert isinstance(geometry["viable"], bool)
+
     assert body["fundamentals"]["name"] == "AAPL Inc."
     assert len(body["news"]) > 0
 

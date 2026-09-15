@@ -155,24 +155,31 @@ compitiendo con el EMA21/55 real de `technical_analysis.detect_fast_pair_bearish
 dorado/de la muerte SMA50/SMA200 sigue siendo, a propósito, un concepto SMA estándar y separado -
 Parte 3.2 nunca pidió tocar ese.
 
-**Resuelto (septiembre 2026), pero todavía no conectado**: `trade_geometry.py` implementa el
-diseño real de Parte 7 - cascada de stop por tipo de entrada (`EntryType`: ruptura, rebote en
-soporte, retroceso a EMA21, continuación sobre EMA55) con el techo duro de 2.0 ATR, techo de
-riesgo adaptativo por percentil de ATR (`RISK_CEILING_*` de `trading_params.py`, verificado
-contra los ejemplos exactos de Parte 15/20), objetivo neto de costes con caída a 2:1 fijo, y
-tamaño de posición con sus tres límites (riesgo fijo, techo de capital, mínimo viable) -
-**deliberadamente partido en dos funciones**, no una sola: `compute_entry_geometry` (stop/
-objetivo/techo de riesgo, sin capital) es lo que `evaluate_gate`/`daily_close.py` podrían llamar
-al puntuar todo el universo una vez al día, sin ninguna cartera concreta en juego - el gate de un
-ticker no pertenece a ninguna cartera en particular; `size_position` (acciones/valor de posición/
-% de cartera) solo tiene sentido una vez se conoce el capital de una cartera *específica* (el
-Radar renderizado para una cartera, o `trade_plan_service.py` al abrir una posición de verdad).
-`compute_trade_geometry` es un envoltorio de conveniencia sobre ambas, para quien ya tiene los
-dos contextos de antemano (los tests, un cálculo puntual bajo demanda). Añadido **junto a**
-`compute_stop_and_target` (el original, más simple), no en su lugar - `levels_engine.evaluate_gate`,
-`trade_plan_service.py` y el job diario siguen usando el original sin cambios. Conectar el nuevo
-cálculo a esos caminos es su propio trabajo de cableado, todavía pendiente - existe, está probado
-(44 tests, `test_trade_geometry.py`), pero nada en producción lo llama todavía.
+**Resuelto (septiembre 2026)**: `trade_geometry.py` implementa el diseño real de Parte 7 -
+cascada de stop por tipo de entrada (`EntryType`: ruptura, rebote en soporte, retroceso a EMA21,
+continuación sobre EMA55) con el techo duro de 2.0 ATR, techo de riesgo adaptativo por percentil
+de ATR (`RISK_CEILING_*` de `trading_params.py`, verificado contra los ejemplos exactos de Parte
+15/20), objetivo neto de costes con caída a 2:1 fijo, y tamaño de posición con sus tres límites
+(riesgo fijo, techo de capital, mínimo viable) - **deliberadamente partido en dos funciones**, no
+una sola: `compute_entry_geometry` (stop/objetivo/techo de riesgo, sin capital) es lo que
+`evaluate_gate` llama - el gate de un ticker no pertenece a ninguna cartera en particular, no hay
+capital que darle; `size_position` (acciones/valor de posición/% de cartera) solo tiene sentido
+una vez se conoce el capital de una cartera *específica* y sigue sin llamarse desde ningún sitio
+en producción todavía (el Radar renderizado para una cartera, o `trade_plan_service.py` al abrir
+una posición de verdad, son los candidatos naturales). `compute_trade_geometry` es un envoltorio
+de conveniencia sobre ambas, para quien ya tiene los dos contextos de antemano (los tests, un
+cálculo puntual bajo demanda).
+
+**Ya conectado**: `evaluate_gate` acepta `ema21`/`ema55` opcionales y, cuando se le dan, rellena
+`GateResult.entry_geometry` (`None` si no) - `ticker_analysis_service.compute_core_signals` ya
+calcula y pasa el EMA21/55 real, así que tanto "Analizar activo" como el `/risk` de cartera (que
+reutiliza `compute_core_signals`) devuelven la geometría real de Parte 7 hoy mismo
+(`GateResultResponse.entry_geometry` en la API). **Todavía no conectado**: `scripts/daily_close.py`
+(`build_ticker_daily_state`) sigue llamando a `evaluate_gate` sin `ema21`/`ema55` - `entry_geometry`
+sale `None` ahí a propósito, porque `TickerDailyState` no tiene columnas para persistirlo (sería
+una migración de esquema aparte, no un efecto secundario de esta conexión) y `compute_stop_and_target`
+(el original) sigue siendo lo único que ese job persiste. `trade_plan_service.py` tampoco cambia -
+llama a `compute_stop_and_target` directamente, nunca a `evaluate_gate`.
 
 **Deuda conocida, explícitamente no resuelta todavía** (no asumir que ya está hecho solo porque
 el nombre del archivo sugiere que sí): la extensión parabólica de `exit_engine.py`/

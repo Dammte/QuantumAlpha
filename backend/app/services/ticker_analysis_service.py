@@ -370,6 +370,10 @@ def compute_core_signals(
     # surfaced for context but not fed into the verdict.
     market_trend, vix_regime_label = ta.market_regime_inputs(benchmark_close, vix_close)
     fast_pair_veto = ta.detect_fast_pair_bearish_veto(close)
+    # Same EMA21/55 pair multi_timeframe.py itself uses (Parte 3.2/6) - feeds
+    # the gate's own Parte 7 geometry below, not a third independent read.
+    ema21 = _last(ta.ema(close, mtf.FAST_MA_PERIOD))
+    ema55 = _last(ta.ema(close, mtf.SLOW_MA_PERIOD))
 
     gate = evaluate_gate(
         price=price,
@@ -385,6 +389,8 @@ def compute_core_signals(
         nearest_resistance=nearest_resistance,
         obv_divergence=obv_div,
         fast_pair_bearish_signal=fast_pair_veto,
+        ema21=ema21,
+        ema55=ema55,
     )
 
     confirmed_gate = None

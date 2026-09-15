@@ -1,6 +1,7 @@
 import pytest
 
 from app.services import levels_engine as le
+from app.services import trade_geometry as tg
 from app.services.technical_analysis import PriceLevel, Stage, TrendState
 
 # A support at exactly the 3% pullback-proximity boundary and no resistance -
@@ -34,6 +35,23 @@ def test_all_conditions_pass_is_a_clean_gate():
     assert result.entry_trigger is not None
     assert result.entry_trigger.trigger_type == "pullback_bounce"
     assert result.stop_and_target.risk_reward == pytest.approx(2.0)
+
+
+def test_entry_geometry_is_none_without_ema21_ema55():
+    # Parte 7: callers that don't have real EMA reads (e.g. replay_gate_at's
+    # point-in-time backtest replay) simply don't get the richer geometry -
+    # never a guess built from stop_and_target's simpler numbers.
+    result = le.evaluate_gate(**_passing_kwargs())
+    assert result.entry_geometry is None
+
+
+def test_entry_geometry_computed_when_ema21_ema55_are_given():
+    result = le.evaluate_gate(**_passing_kwargs(), ema21=98.0, ema55=90.0)
+    assert result.entry_geometry is not None
+    assert result.entry_geometry.viable is True
+    assert result.entry_geometry.entry_type == tg.EntryType.PULLBACK_SUPPORT
+    # No capital passed in at this layer - evaluate_gate never sizes.
+    assert result.entry_geometry.shares_for_risk_budget is None
 
 
 def test_gate_fails_when_trend_is_down_and_not_stage2():
