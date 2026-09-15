@@ -155,11 +155,21 @@ compitiendo con el EMA21/55 real de `technical_analysis.detect_fast_pair_bearish
 dorado/de la muerte SMA50/SMA200 sigue siendo, a propósito, un concepto SMA estándar y separado -
 Parte 3.2 nunca pidió tocar ese.
 
+**Resuelto (septiembre 2026), pero todavía no conectado**: `trade_geometry.compute_trade_geometry`
+implementa el diseño real de Parte 7 - cascada de stop por tipo de entrada (`EntryType`: ruptura,
+rebote en soporte, retroceso a EMA21, continuación sobre EMA55) con el techo duro de 2.0 ATR,
+techo de riesgo adaptativo por percentil de ATR (`RISK_CEILING_*` de `trading_params.py`,
+verificado contra los ejemplos exactos de Parte 15/20), objetivo neto de costes con caída a 2:1
+fijo, y tamaño de posición con sus tres límites (riesgo fijo, techo de capital, mínimo viable).
+Añadido **junto a** `compute_stop_and_target` (el original, más simple), no en su lugar -
+`levels_engine.evaluate_gate`, `trade_plan_service.py` y el job diario siguen usando el original
+sin cambios. Conectar el nuevo cálculo a esos caminos es su propio trabajo de cableado, todavía
+pendiente - `compute_trade_geometry` existe, está probado (39 tests, `test_trade_geometry.py`),
+pero nada en producción lo llama todavía.
+
 **Deuda conocida, explícitamente no resuelta todavía** (no asumir que ya está hecho solo porque
-el nombre del archivo sugiere que sí): `trade_geometry.py` todavía usa un stop de ATR fijo
-(`ATR_STOP_MULTIPLE`) y un objetivo 2:1 simple, no la cascada de stop por tipo de entrada ni el
-techo de riesgo adaptativo por percentil de ATR que el plan original describe; la extensión
-parabólica de `exit_engine.py`/`levels_engine.py` (`EXTENDED_ATR_MULTIPLE`) sigue midiéndose
-sobre `atr_multiple` (base SMA50, un campo ampliamente compartido) en vez de EMA21 como pide
-Parte 9 - cambiar esa base es una decisión aparte, de mayor alcance, no un efecto secundario de
-la unificación del par rápido de arriba.
+el nombre del archivo sugiere que sí): la extensión parabólica de `exit_engine.py`/
+`levels_engine.py` (`EXTENDED_ATR_MULTIPLE`) sigue midiéndose sobre `atr_multiple` (base SMA50,
+un campo ampliamente compartido) en vez de EMA21 como pide Parte 9 - cambiar esa base es una
+decisión aparte, de mayor alcance, no un efecto secundario de la unificación del par rápido de
+arriba.
