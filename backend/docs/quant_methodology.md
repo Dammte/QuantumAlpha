@@ -2293,3 +2293,49 @@ Weinstein semanal real, `ticker_daily_state` enriquecido, Gemini G1-G5, el scree
 cambio de núcleo que toca prácticamente todo el pipeline de decisión (14 archivos consumen
 `PriceLevel` directamente). Se aborda en sub-pasos separados, cada uno con su propio commit y suite
 verde, siguiendo la propia Parte 16 ("cada fase termina con la suite en verde y un commit propio").
+
+### 27.5 `Level`/`LevelKind`/`LevelState`: el motor de niveles real (Parte 5.1), añadido junto al existente
+
+Primer sub-paso del núcleo pendiente (27.4). `PriceLevel`/`support_resistance_levels`
+(`technical_analysis.py`) se dejan intactos - siguen siendo lo que 14 consumidores ya usan hoy;
+migrarlos es un paso posterior. `Level`/`LevelKind`/`LevelState`/`detect_levels` son el diseño real
+de la Parte 5.1, añadidos al lado, todavía sin ningún llamador en producción.
+
+- `LevelKind` (12 valores: EMA21/55, SMA50/200, MA30 semanal, pivote de soporte/resistencia, rango
+  alto/bajo de 20 días, máximo de 52 semanas, máximo/mínimo del día anterior) y `LevelState` (6
+  valores: FAR/APPROACHING/TESTING por distancia en ATR, más BREAKING/BROKEN_CONFIRMED/
+  LOST_CONFIRMED por transición de lado) tal como los describe el texto literalmente.
+- `_level_state_and_duration` es el corazón: mide primero la *racha actual* (`run_length`) del lado
+  en el que está el precio, contando desde la última barra hacia atrás. Si la racha cubre toda la
+  ventana, no ha habido cruce reciente y el estado es puro de distancia. Si no, hubo un cruce hace
+  `run_length` barras, y se confirma con 1 cierre con volumen relativo >= 1,2 (`run_length == 1`) o
+  con 2 cierres consecutivos sin exigir volumen (`run_length >= 2`) - sin ninguna de las dos,
+  `BREAKING`, no confirmado. La primera versión de esta función comparaba solo la última barra
+  contra la penúltima para decidir "¿hubo cruce?", lo que fallaba exactamente en el caso de "2
+  cierres consecutivos confirman la ruptura": con ambas últimas barras ya al nuevo lado, esa
+  comparación nunca veía ningún cruce en absoluto. Se detectó con los propios tests de esta sección
+  (dos fallos reales, no cosméticos) antes de comitear - corregido con la racha completa, no un par
+  de barras.
+- **El sesgo de filtrado que la Parte 5.1 señala explícitamente queda corregido en `detect_levels`**:
+  los pivotes se detectan con `_fractal_pivots` (sin el `if p > current_price`/`if p < current_price`
+  que `support_resistance_levels` sigue aplicando) - un soporte roto sigue apareciendo en la lista,
+  con `side="above"` y el estado que le corresponda, en vez de desaparecer porque el precio ya lo
+  dejó atrás. Verificado con un test dedicado
+  (`test_detect_levels_pivots_are_not_filtered_by_which_side_of_price_they_sit_on`).
+- `strength` solo se rellena para pivotes (nº de toques históricos); `slope_pct_20d` solo para
+  medias - los niveles estáticos (rango, 52 semanas, día anterior) no tienen ninguno de los dos,
+  honestamente `None`.
+- `weekly_close=None` omite `WEEKLY_MA30` en vez de fabricarla desde una proxy diaria - la MA30
+  semanal real (Parte 5.5, todavía pendiente de conectar a `classify_stage`) sigue siendo trabajo
+  de un sub-paso posterior; este módulo ya sabe construir el nivel una vez que alguien le pase el
+  cierre semanal (`resample_ohlcv`, ya existente).
+
+**Tests**: 20 nuevos en `test_technical_analysis.py` - los 6 estados y sus condiciones de frontera
+(FAR/APPROACHING/TESTING por umbral de ATR, BREAKING sin confirmar, BROKEN_CONFIRMED tanto por
+volumen como por 2 cierres, LOST_CONFIRMED simétrico, el caso "1 cierre sin volumen ni segundo
+cierre se queda en BREAKING"), `bars_in_state` contando solo la racha de la categoría actual, y 9
+tests de `detect_levels` (lista vacía con poco histórico, cada `LevelKind` de media presente,
+rango/52 semanas/día anterior presentes, `WEEKLY_MA30` ausente/presente según se dé el cierre
+semanal, el propio test del sesgo de filtrado corregido, y que `strength`/`slope_pct_20d` solo se
+rellenan donde corresponde). Suite completa verde (715 unit, 133 integración), ruff limpio - sin
+tocar ningún consumidor existente todavía.

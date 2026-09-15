@@ -987,3 +987,317 @@ def support_resistance_levels(
         :max_levels
     ]
     return sorted(supports + resistances, key=lambda lv: lv.price)
+
+
+# --- Parte 5.1 (encargo literal, sexta auditoría): el motor de niveles real -
+# --- distance_atr/estado/duración, no solo el PriceLevel simple de arriba ---
+#
+# `PriceLevel`/`support_resistance_levels` arriba se dejan intactos - siguen
+# siendo lo que `trade_geometry.py`/`levels_engine.py`/14 consumidores más ya
+# usan hoy, y migrarlos es un cambio de núcleo aparte (docs/quant_methodology.md
+# §27.4). `Level`/`LevelKind`/`LevelState`/`detect_levels` son el diseño real
+# de la Parte 5.1, añadido junto a lo anterior, no en su lugar todavía.
+
+
+class LevelKind(str, Enum):
+    EMA21 = "ema21"
+    EMA55 = "ema55"
+    SMA50 = "sma50"
+    SMA200 = "sma200"
+    WEEKLY_MA30 = "weekly_ma30"
+    PIVOT_RESISTANCE = "pivot_resistance"
+    PIVOT_SUPPORT = "pivot_support"
+    RANGE_HIGH_20 = "range_high_20"
+    RANGE_LOW_20 = "range_low_20"
+    HIGH_52W = "high_52w"
+    PRIOR_DAY_HIGH = "prior_day_high"
+    PRIOR_DAY_LOW = "prior_day_low"
+
+
+class LevelState(str, Enum):
+    FAR = "far"  # > 2 ATR
+    APPROACHING = "approaching"  # 0.5 - 2 ATR
+    TESTING = "testing"  # < 0.5 ATR
+    BREAKING = "breaking"  # cruzado intradía, sin cierre confirmado
+    BROKEN_CONFIRMED = "broken_confirmed"  # cruce alcista confirmado
+    LOST_CONFIRMED = "lost_confirmed"  # cruce bajista confirmado
+
+
+# Mismos umbrales que `TRIGGER_MAX_DISTANCE_ATR`/`BREAKOUT_MIN_REL_VOLUME` de
+# `app.core.trading_params` (Parte 19) - constantes propias, no una
+# importación de ese módulo, para que esta biblioteca de primitivas puras siga
+# sin depender de nada fuera de pandas/numpy (ver el docstring del módulo).
+LEVEL_FAR_ATR = 2.0
+LEVEL_APPROACHING_ATR = 0.5
+BREAKOUT_CONFIRM_MIN_REL_VOLUME = 1.2
+
+
+@dataclass(frozen=True, slots=True)
+class Level:
+    """Un nivel técnico con su estado actual y hace cuánto está en él -
+    Parte 5.1. A diferencia de `PriceLevel`, `distance_atr` es la métrica
+    principal (comparable entre activos de volatilidad muy distinta), y el
+    estado captura transiciones (`BREAKING`/`BROKEN_CONFIRMED`/
+    `LOST_CONFIRMED`), no solo la distancia actual."""
+
+    kind: LevelKind
+    price: float
+    side: str  # "above" | "below" - dónde está el precio actual respecto al nivel
+    distance_pct: float
+    distance_atr: float
+    state: LevelState
+    bars_in_state: int
+    strength: int | None  # nº de toques históricos, solo pivotes
+    slope_pct_20d: float | None  # pendiente del nivel, solo medias
+
+
+def _side_series(close: pd.Series, level: pd.Series) -> pd.Series:
+    """"above"/"below" por barra - `close`/`level` ya alineadas e iguales en
+    longitud. Un empate exacto cuenta como "above" (el lado que una ruptura
+    ya alcanzó, no todavía por alcanzar)."""
+    return pd.Series(np.where(close.to_numpy() >= level.to_numpy(), "above", "below"), index=close.index)
+
+
+def _level_state_and_duration(
+    close: pd.Series,
+    level: pd.Series,
+    atr_series: pd.Series,
+    relative_volume_series: pd.Series | None = None,
+    min_rel_volume: float = BREAKOUT_CONFIRM_MIN_REL_VOLUME,
+) -> tuple[LevelState, int, str]:
+    """El estado actual de un nivel, cuántas barras cerradas lleva en él, y de
+    qué lado está el precio - sobre velas ya cerradas (`close`/`level`/
+    `atr_series` deben venir ya recortadas a `closed_bars`; `BREAKING` es el
+    único estado que un caller puede alimentar con la barra viva, pasándola
+    aparte, ver `detect_levels`).
+
+    Primero mide la racha actual (`run_length`): cuántas barras consecutivas,
+    contando desde la última, están del mismo lado que hoy. Si esa racha
+    cubre toda la ventana dada, no ha habido ningún cruce reciente - el
+    estado es puramente de distancia (`FAR`/`APPROACHING`/`TESTING`). Si no,
+    hubo un cruce hace `run_length` barras, y la regla de confirmación de la
+    Parte 5.1 decide si ya cuenta como roto: 1 cierre al otro lado con
+    volumen relativo >= `min_rel_volume` (`run_length == 1` y esa única barra
+    tuvo volumen), o 2 cierres consecutivos al otro lado sin exigir volumen
+    (`run_length >= 2`) - sin ninguna de las dos, es `BREAKING`, no
+    confirmado todavía. Nota de calibración, no de corrección: una vez
+    confirmado, el estado se queda en `BROKEN_CONFIRMED`/`LOST_CONFIRMED`
+    mientras el precio no vuelva a cruzar al lado original, sin importar
+    cuánto se aleje después - el propio texto no dice cuándo una ruptura
+    confirmada pasa a ser "historia lejana", así que no se inventa una regla
+    para eso aquí."""
+    sides = _side_series(close, level)
+    current_side = sides.iloc[-1]
+
+    run_length = 1
+    for i in range(len(sides) - 2, -1, -1):
+        if sides.iloc[i] != current_side:
+            break
+        run_length += 1
+
+    distance_pct = float(close.iloc[-1] / level.iloc[-1] - 1) if level.iloc[-1] != 0 else 0.0
+    atr_now = float(atr_series.iloc[-1]) if pd.notna(atr_series.iloc[-1]) else None
+    last_close = float(close.iloc[-1])
+    distance_atr = abs(distance_pct * last_close / atr_now) if atr_now and atr_now > 0 else float("inf")
+
+    if run_length < len(sides):
+        if run_length >= 2:
+            confirmed = True
+        else:
+            confirmed = bool(
+                relative_volume_series is not None
+                and pd.notna(relative_volume_series.iloc[-1])
+                and relative_volume_series.iloc[-1] >= min_rel_volume
+            )
+        if confirmed:
+            state = LevelState.BROKEN_CONFIRMED if current_side == "above" else LevelState.LOST_CONFIRMED
+        else:
+            state = LevelState.BREAKING
+        return state, run_length, current_side
+
+    if distance_atr > LEVEL_FAR_ATR:
+        state = LevelState.FAR
+    elif distance_atr > LEVEL_APPROACHING_ATR:
+        state = LevelState.APPROACHING
+    else:
+        state = LevelState.TESTING
+
+    # Nunca hubo cruce en la ventana dada - `bars_in_state` cuenta cuántas
+    # barras consecutivas, desde el final, están en la misma categoría de
+    # distancia (alejarse/acercarse dentro del mismo lado también cambia de
+    # estado sin haber cruzado nada).
+    bars_in_state = 1
+    for i in range(len(sides) - 2, -1, -1):
+        atr_i = float(atr_series.iloc[i]) if pd.notna(atr_series.iloc[i]) else None
+        level_i = float(level.iloc[i])
+        close_i = float(close.iloc[i])
+        distance_pct_i = close_i / level_i - 1 if level_i != 0 else 0.0
+        distance_atr_i = abs(distance_pct_i * close_i / atr_i) if atr_i and atr_i > 0 else float("inf")
+        if distance_atr_i > LEVEL_FAR_ATR:
+            state_i = LevelState.FAR
+        elif distance_atr_i > LEVEL_APPROACHING_ATR:
+            state_i = LevelState.APPROACHING
+        else:
+            state_i = LevelState.TESTING
+        if state_i != state:
+            break
+        bars_in_state += 1
+
+    return state, bars_in_state, current_side
+
+
+def _ma_slope_pct_20d(series: pd.Series) -> float | None:
+    """Pendiente de una media en los últimos 20 cierres, en % - el
+    `slope_pct_20d` de `Level` para los niveles basados en medias."""
+    valid = series.dropna()
+    if len(valid) <= 20:
+        return None
+    previous = valid.iloc[-21]
+    if pd.isna(previous) or previous == 0:
+        return None
+    return float(valid.iloc[-1] / previous - 1)
+
+
+def _build_ma_level(
+    kind: LevelKind,
+    close: pd.Series,
+    ma_series: pd.Series,
+    atr_series: pd.Series,
+    relative_volume_series: pd.Series,
+) -> Level | None:
+    valid_idx = ma_series.dropna().index
+    if len(valid_idx) < 3:
+        return None
+    aligned_close = close.loc[valid_idx]
+    aligned_ma = ma_series.loc[valid_idx]
+    aligned_atr = atr_series.loc[valid_idx]
+    aligned_vol = relative_volume_series.loc[relative_volume_series.index.intersection(valid_idx)]
+    state, bars_in_state, side = _level_state_and_duration(
+        aligned_close, aligned_ma, aligned_atr, aligned_vol.reindex(valid_idx)
+    )
+    price = float(aligned_ma.iloc[-1])
+    distance_pct = float(aligned_close.iloc[-1] / price - 1) if price != 0 else 0.0
+    atr_now = float(aligned_atr.iloc[-1]) if pd.notna(aligned_atr.iloc[-1]) else None
+    last_close = float(aligned_close.iloc[-1])
+    distance_atr = abs(distance_pct * last_close / atr_now) if atr_now and atr_now > 0 else float("inf")
+    return Level(
+        kind=kind, price=price, side=side, distance_pct=distance_pct, distance_atr=distance_atr,
+        state=state, bars_in_state=bars_in_state, strength=None, slope_pct_20d=_ma_slope_pct_20d(ma_series),
+    )
+
+
+def _build_static_level(
+    kind: LevelKind,
+    level_price: float,
+    close: pd.Series,
+    atr_series: pd.Series,
+    relative_volume_series: pd.Series,
+    strength: int | None = None,
+) -> Level:
+    level_series = pd.Series(level_price, index=close.index)
+    state, bars_in_state, side = _level_state_and_duration(
+        close, level_series, atr_series, relative_volume_series
+    )
+    distance_pct = float(close.iloc[-1] / level_price - 1) if level_price != 0 else 0.0
+    atr_now = float(atr_series.iloc[-1]) if pd.notna(atr_series.iloc[-1]) else None
+    distance_atr = abs(distance_pct * close.iloc[-1] / atr_now) if atr_now and atr_now > 0 else float("inf")
+    return Level(
+        kind=kind, price=level_price, side=side, distance_pct=distance_pct, distance_atr=distance_atr,
+        state=state, bars_in_state=bars_in_state, strength=strength, slope_pct_20d=None,
+    )
+
+
+def detect_levels(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+    weekly_close: pd.Series | None = None,
+    max_pivots_per_side: int = 3,
+) -> list[Level]:
+    """Todos los niveles de la Parte 5.1 para un ticker, ya con su estado y
+    duración: EMA21/55, SMA50/200, la MA30 semanal (si se da `weekly_close` -
+    ver `resample_ohlcv`; `None` la omite, no la fabrica de una serie diaria),
+    los pivotes de soporte/resistencia (sin filtrar por lado del precio -
+    Parte 5.1: "guarda los pivotes sin filtrar... deja que el estado del
+    nivel diga de qué lado estás", corrige el sesgo de
+    `support_resistance_levels` que hacía "rotura de soporte" inalcanzable),
+    el rango de 20 días, el máximo de 52 semanas y el máximo/mínimo del día
+    anterior. `[]` si no hay suficiente historial para nada útil."""
+    if len(close) < 3:
+        return []
+    atr_series = atr(high, low, close)
+    rel_vol_series = volume.rolling(21).apply(
+        lambda w: w.iloc[-1] / w.iloc[:-1].mean() if w.iloc[:-1].mean() > 0 else np.nan, raw=False
+    )
+
+    levels: list[Level] = []
+
+    ema21_s, ema55_s = ema(close, 21), ema(close, 55)
+    sma50_s, sma200_s = sma(close, 50), sma(close, 200)
+    for kind, series in (
+        (LevelKind.EMA21, ema21_s),
+        (LevelKind.EMA55, ema55_s),
+        (LevelKind.SMA50, sma50_s),
+        (LevelKind.SMA200, sma200_s),
+    ):
+        level = _build_ma_level(kind, close, series, atr_series, rel_vol_series)
+        if level is not None:
+            levels.append(level)
+
+    if weekly_close is not None and len(weekly_close) >= 30:
+        weekly_ma30 = sma(weekly_close, 30)
+        if pd.notna(weekly_ma30.iloc[-1]):
+            # La MA30 semanal se reporta al valor diario más reciente - el
+            # estado/distancia de este nivel se lee a diario (Parte 5.1: los
+            # niveles alimentan disparadores diarios), la semana solo decide
+            # su valor, no su cadencia de evaluación.
+            levels.append(
+                _build_static_level(
+                    LevelKind.WEEKLY_MA30, float(weekly_ma30.iloc[-1]), close, atr_series, rel_vol_series
+                )
+            )
+
+    resistance_pivots = _fractal_pivots(high, 3, 3, "high")
+    support_pivots = _fractal_pivots(low, 3, 3, "low")
+    for price, strength in _cluster_levels(resistance_pivots, 1.5)[:max_pivots_per_side]:
+        levels.append(
+            _build_static_level(LevelKind.PIVOT_RESISTANCE, price, close, atr_series, rel_vol_series, strength)
+        )
+    for price, strength in _cluster_levels(support_pivots, 1.5)[:max_pivots_per_side]:
+        levels.append(
+            _build_static_level(LevelKind.PIVOT_SUPPORT, price, close, atr_series, rel_vol_series, strength)
+        )
+
+    if len(close) >= 20:
+        levels.append(
+            _build_static_level(
+                LevelKind.RANGE_HIGH_20, float(close.iloc[-20:].max()), close, atr_series, rel_vol_series
+            )
+        )
+        levels.append(
+            _build_static_level(
+                LevelKind.RANGE_LOW_20, float(close.iloc[-20:].min()), close, atr_series, rel_vol_series
+            )
+        )
+
+    if len(close) >= 252:
+        levels.append(
+            _build_static_level(
+                LevelKind.HIGH_52W, float(close.iloc[-252:].max()), close, atr_series, rel_vol_series
+            )
+        )
+
+    if len(high) >= 2:
+        levels.append(
+            _build_static_level(
+                LevelKind.PRIOR_DAY_HIGH, float(high.iloc[-2]), close, atr_series, rel_vol_series
+            )
+        )
+        levels.append(
+            _build_static_level(
+                LevelKind.PRIOR_DAY_LOW, float(low.iloc[-2]), close, atr_series, rel_vol_series
+            )
+        )
+
+    return levels

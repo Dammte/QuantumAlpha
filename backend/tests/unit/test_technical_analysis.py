@@ -957,3 +957,212 @@ def test_market_regime_inputs_none_when_insufficient_benchmark_history():
     market_trend, vix_label = ta.market_regime_inputs(short_benchmark, None)
     assert market_trend is None
     assert vix_label is None
+
+
+# --- Parte 5.1 (sexta auditoría): Level/LevelKind/LevelState -------------------
+
+
+def _flat_index(n: int) -> pd.DatetimeIndex:
+    return pd.bdate_range("2020-01-01", periods=n)
+
+
+def _level_inputs(closes: list[float], atr_value: float = 2.0, rel_volumes: list[float] | None = None):
+    index = _flat_index(len(closes))
+    close = pd.Series(closes, index=index)
+    level = pd.Series(100.0, index=index)  # nivel fijo en 100 para simplificar los cálculos a mano
+    atr_series = pd.Series(atr_value, index=index)
+    rel_vol = pd.Series(rel_volumes if rel_volumes is not None else [1.0] * len(closes), index=index)
+    return close, level, atr_series, rel_vol
+
+
+def test_level_state_far_when_distance_atr_exceeds_two():
+    # precio 130 vs nivel 100, ATR 1.0 -> distance_atr = 30/1.0 = 30, muy > 2.
+    close, level, atr_series, rel_vol = _level_inputs([130.0] * 10, atr_value=1.0)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.FAR
+    assert side == "above"
+    assert bars == 10
+
+
+def test_level_state_approaching_between_half_and_two_atr():
+    # precio 102 vs nivel 100, ATR 2.0 -> distance_pct=0.02, distance_atr = 0.02*102/2.0 = 1.02.
+    close, level, atr_series, rel_vol = _level_inputs([102.0] * 10, atr_value=2.0)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.APPROACHING
+    assert side == "above"
+
+
+def test_level_state_testing_under_half_atr():
+    # precio 100.5 vs nivel 100, ATR 2.0 -> distance_atr = 0.005*100.5/2.0 = 0.251.
+    close, level, atr_series, rel_vol = _level_inputs([100.5] * 10, atr_value=2.0)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.TESTING
+    assert side == "above"
+
+
+def test_level_state_below_the_level_is_testing_not_far():
+    # Mismo caso que arriba pero por debajo del nivel - side="below", mismo estado por distancia.
+    close, level, atr_series, rel_vol = _level_inputs([99.5] * 10, atr_value=2.0)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.TESTING
+    assert side == "below"
+
+
+def test_level_state_breaking_on_a_single_unconfirmed_cross():
+    # 9 cierres por debajo, el último cruza por encima sin volumen y sin un
+    # segundo cierre que lo respalde todavía - ruptura intradía, no confirmada.
+    closes = [99.0] * 9 + [101.0]
+    close, level, atr_series, rel_vol = _level_inputs(closes, atr_value=2.0)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.BREAKING
+    assert side == "above"
+    assert bars == 1
+
+
+def test_level_state_broken_confirmed_by_volume():
+    closes = [99.0] * 9 + [101.0]
+    rel_volumes = [1.0] * 9 + [1.5]  # >= BREAKOUT_CONFIRM_MIN_REL_VOLUME (1.2)
+    close, level, atr_series, rel_vol = _level_inputs(closes, atr_value=2.0, rel_volumes=rel_volumes)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.BROKEN_CONFIRMED
+    assert side == "above"
+
+
+def test_level_state_broken_confirmed_by_two_consecutive_closes_without_volume():
+    # Dos cierres seguidos por encima, sin exigencia de volumen.
+    closes = [99.0] * 8 + [101.0, 101.5]
+    close, level, atr_series, rel_vol = _level_inputs(closes, atr_value=2.0)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.BROKEN_CONFIRMED
+    assert side == "above"
+
+
+def test_level_state_lost_confirmed_on_a_bearish_cross():
+    # Simétrico al de arriba, cruzando de "above" a "below".
+    closes = [101.0] * 8 + [99.0, 98.5]
+    close, level, atr_series, rel_vol = _level_inputs(closes, atr_value=2.0)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.LOST_CONFIRMED
+    assert side == "below"
+
+
+def test_level_state_single_cross_without_volume_or_second_close_stays_breaking():
+    # Un solo cierre al otro lado, sin volumen y sin segundo cierre que lo
+    # confirme - debe quedarse en BREAKING, no saltar a confirmado.
+    closes = [99.0] * 9 + [101.0]
+    close, level, atr_series, rel_vol = _level_inputs(closes, atr_value=2.0, rel_volumes=[1.0] * 10)
+    state, _, _ = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.BREAKING
+
+
+def test_level_state_bars_in_state_counts_consecutive_bars_in_the_same_state():
+    # 5 barras FAR (ATR pequeño -> distance_atr grande), luego 3 barras
+    # APPROACHING (mismo nivel, precio más cerca) - bars_in_state debe contar
+    # solo las 3 últimas.
+    far = [130.0] * 5
+    approaching = [102.0] * 3
+    close, level, atr_series, rel_vol = _level_inputs(far + approaching, atr_value=2.0)
+    state, bars, side = ta._level_state_and_duration(close, level, atr_series, rel_vol)
+    assert state == ta.LevelState.APPROACHING
+    assert bars == 3
+    assert side == "above"
+
+
+# --- detect_levels --------------------------------------------------------
+
+
+def _rich_ohlcv(n: int = 300, drift: float = 0.3) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    index = _flat_index(n)
+    close = pd.Series(100 + np.arange(n) * drift, index=index)
+    high = close + 1.0
+    low = close - 1.0
+    volume = pd.Series([1_000_000.0] * n, index=index)
+    return high, low, close, volume
+
+
+def test_detect_levels_empty_with_too_little_history():
+    high, low, close, volume = _rich_ohlcv(n=2)
+    assert ta.detect_levels(high, low, close, volume) == []
+
+
+def test_detect_levels_includes_every_moving_average_kind():
+    high, low, close, volume = _rich_ohlcv(n=300)
+    levels = ta.detect_levels(high, low, close, volume)
+    kinds = {lv.kind for lv in levels}
+    assert ta.LevelKind.EMA21 in kinds
+    assert ta.LevelKind.EMA55 in kinds
+    assert ta.LevelKind.SMA50 in kinds
+    assert ta.LevelKind.SMA200 in kinds
+
+
+def test_detect_levels_includes_range_and_52w_and_prior_day_levels():
+    high, low, close, volume = _rich_ohlcv(n=300)
+    levels = ta.detect_levels(high, low, close, volume)
+    kinds = {lv.kind for lv in levels}
+    assert ta.LevelKind.RANGE_HIGH_20 in kinds
+    assert ta.LevelKind.RANGE_LOW_20 in kinds
+    assert ta.LevelKind.HIGH_52W in kinds
+    assert ta.LevelKind.PRIOR_DAY_HIGH in kinds
+    assert ta.LevelKind.PRIOR_DAY_LOW in kinds
+
+
+def test_detect_levels_omits_weekly_ma30_without_weekly_close():
+    high, low, close, volume = _rich_ohlcv(n=300)
+    levels = ta.detect_levels(high, low, close, volume, weekly_close=None)
+    assert ta.LevelKind.WEEKLY_MA30 not in {lv.kind for lv in levels}
+
+
+def test_detect_levels_includes_weekly_ma30_when_given_enough_weekly_bars():
+    high, low, close, volume = _rich_ohlcv(n=300)
+    weekly_index = pd.bdate_range("2015-01-02", periods=40, freq="W-FRI")
+    weekly_close = pd.Series(100 + np.arange(40) * 1.0, index=weekly_index)
+    levels = ta.detect_levels(high, low, close, volume, weekly_close=weekly_close)
+    assert ta.LevelKind.WEEKLY_MA30 in {lv.kind for lv in levels}
+
+
+def test_detect_levels_pivots_are_not_filtered_by_which_side_of_price_they_sit_on():
+    # Parte 5.1: el bug real de `support_resistance_levels` (arriba en este
+    # mismo módulo) era filtrar los pivotes por el lado del precio actual en
+    # el momento de detectarlos, lo que hacía "rotura de soporte" matemáticamente
+    # inalcanzable. Serie: sube, forma un pivot low claro, sigue subiendo muy
+    # por encima de ese pivot low - el pivote de soporte debe seguir apareciendo
+    # en la lista (con su propio estado/side), no desaparecer porque el precio
+    # ya está muy por encima de él.
+    n = 280
+    rise1 = 100 + np.arange(100) * 0.3
+    dip = rise1[-1] - np.array([0.0, 3.0, 5.0, 3.0, 0.0])  # pivot low claro
+    rise2 = dip[-1] + np.arange(1, n - 104) * 0.3  # sigue subiendo, lejos del pivot low
+    close_vals = np.concatenate([rise1, dip, rise2])
+    index = _flat_index(len(close_vals))
+    close = pd.Series(close_vals, index=index)
+    high = close + 1.0
+    low = close - 1.0
+    volume = pd.Series([1_000_000.0] * len(close_vals), index=index)
+
+    levels = ta.detect_levels(high, low, close, volume)
+    pivot_supports = [lv for lv in levels if lv.kind == ta.LevelKind.PIVOT_SUPPORT]
+    assert len(pivot_supports) > 0
+    # El precio ya está muy por encima del pivot low - el nivel debe reportar
+    # side="above" (el precio dejó ese soporte muy atrás), no desaparecer.
+    assert all(lv.side == "above" for lv in pivot_supports)
+
+
+def test_detect_levels_strength_is_only_set_for_pivots():
+    high, low, close, volume = _rich_ohlcv(n=300)
+    levels = ta.detect_levels(high, low, close, volume)
+    for lv in levels:
+        if lv.kind in (ta.LevelKind.PIVOT_SUPPORT, ta.LevelKind.PIVOT_RESISTANCE):
+            assert lv.strength is not None
+        else:
+            assert lv.strength is None
+
+
+def test_detect_levels_slope_is_only_set_for_moving_averages():
+    high, low, close, volume = _rich_ohlcv(n=300)
+    levels = ta.detect_levels(high, low, close, volume)
+    ma_kinds = {ta.LevelKind.EMA21, ta.LevelKind.EMA55, ta.LevelKind.SMA50, ta.LevelKind.SMA200}
+    for lv in levels:
+        if lv.kind in ma_kinds:
+            assert lv.slope_pct_20d is not None
+        else:
+            assert lv.slope_pct_20d is None
