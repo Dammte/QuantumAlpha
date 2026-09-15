@@ -20,6 +20,13 @@ class PricePoint:
     sma50: float | None
     sma150: float | None
     sma200: float | None
+    # Parte 3.2/11: the real EMA21/EMA55 pair the gate/exit engine actually
+    # decide against - drawn on the chart alongside the SMAs above, a
+    # confirmed gap before this (only SMA50/SMA200 were ever visible, never
+    # the pair the whole system depends on). Same mtf.FAST_MA_PERIOD/
+    # SLOW_MA_PERIOD basis as everywhere else, not a fifth definition.
+    ema21: float | None
+    ema55: float | None
     bb_upper: float | None
     bb_middle: float | None
     bb_lower: float | None

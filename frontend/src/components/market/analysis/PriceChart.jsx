@@ -3,15 +3,20 @@ import { CartesianGrid, Line, ComposedChart, ReferenceLine, ResponsiveContainer,
 import { formatCurrency } from '../../../format'
 import ChartTooltip from '../../ChartTooltip'
 
+// EMA21/EMA55 (el "par rápido" del que dependen el gate y el motor de
+// salida - Parte 3.2/11) van primero, justo después del precio: son las
+// medias que de verdad deciden algo en este sistema, no solo contexto.
 const SERIES = [
   { key: 'close', label: 'Precio', color: 'var(--series-1)', width: 2, dash: undefined },
+  { key: 'ema21', label: 'EMA21', color: 'var(--cat-1)', width: 1.5, dash: undefined },
+  { key: 'ema55', label: 'EMA55', color: 'var(--cat-3)', width: 1.5, dash: undefined },
   { key: 'sma50', label: 'MA50', color: 'var(--cat-2)', width: 1.5, dash: undefined },
   { key: 'sma200', label: 'MA200', color: 'var(--cat-4)', width: 1.5, dash: undefined },
   { key: 'bb_upper', label: 'Bollinger sup.', color: 'var(--chart-muted)', width: 1, dash: '3 3' },
   { key: 'bb_lower', label: 'Bollinger inf.', color: 'var(--chart-muted)', width: 1, dash: '3 3' },
 ]
 
-const PRICE_RELEVANT_FIELDS = ['close', 'sma50', 'sma200', 'bb_upper', 'bb_lower']
+const PRICE_RELEVANT_FIELDS = ['close', 'ema21', 'ema55', 'sma50', 'sma200', 'bb_upper', 'bb_lower']
 
 function toTs(dateStr) {
   return new Date(`${dateStr}T00:00:00`).getTime()

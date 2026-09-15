@@ -4,6 +4,7 @@ import { formatCurrency, formatPercent, formatRatio } from '../../../format'
 import { stageLabel } from '../../../marketFormat'
 import StatTile from '../../StatTile'
 import TrendBadge from '../TrendBadge'
+import MultiTimeframeSemaphore from '../../MultiTimeframeSemaphore'
 import PriceChart from './PriceChart'
 import VolumeChart from './VolumeChart'
 import RsiMacdChart from './RsiMacdChart'
@@ -141,9 +142,9 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
 
       {!analysis && !loading && (
         <p className="empty-state">
-          Escribe un ticker para ver su análisis cuantitativo completo: gráfico con Bollinger/Gann/soportes, RSI,
-          MACD, fundamentales, noticias, estacionalidad, análogos históricos, backtest de barrera triple y una
-          recomendación con stop-loss y objetivo sugeridos.
+          Escribe un ticker para ver su análisis cuantitativo completo: gráfico con EMA21/55, Bollinger,
+          soportes/resistencias, RSI, MACD, semáforo semanal/diario, fundamentales, noticias, backtest de
+          barrera triple y el gate de entrada con stop y objetivo sugeridos.
         </p>
       )}
 
@@ -204,6 +205,7 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
             <>
               <section className="panel panel--nested">
                 <h3>Gate de entrada</h3>
+                <MultiTimeframeSemaphore multiTimeframe={analysis.multi_timeframe} />
                 <RecommendationCard
                   gate={analysis.gate}
                   imminentCross={analysis.imminent_cross}
@@ -223,7 +225,7 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
 
           {tab === 'charts' && (
             <section className="panel panel--nested">
-              <h3>Gráfico (precio, Bollinger, MA50/200, Gann 1x1, soportes/resistencias)</h3>
+              <h3>Gráfico (precio, EMA21/55, MA50/200, Bollinger, soportes/resistencias)</h3>
               <PriceChart
                 data={analysis.price_history}
                 currency={analysis.currency ?? 'USD'}

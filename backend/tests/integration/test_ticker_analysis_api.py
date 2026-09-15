@@ -12,6 +12,12 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
     assert len(body["price_history"]) > 0
     first_point = body["price_history"][0]
     assert {"close", "sma20", "bb_upper"} <= first_point.keys()
+    # Parte 3.2/11: the real fast pair, drawn on the chart - a confirmed gap
+    # before this (only SMA50/SMA200 were ever visible).
+    last_point = body["price_history"][-1]
+    assert "ema21" in last_point and "ema55" in last_point
+    assert last_point["ema21"] is not None
+    assert last_point["ema55"] is not None
 
     gate = body["gate"]
     assert isinstance(gate["passes"], bool)

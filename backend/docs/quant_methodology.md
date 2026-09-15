@@ -1945,6 +1945,24 @@ el propio gate usa para decidir entradas, distancia del stop, objetivo y su base
 este camino se construye después del hecho, así que ese disclaimer nunca queda obsoleto ni engañoso
 al mantenerlo.
 
+### 26.11 El gráfico dibuja EMA21/EMA55 y el semáforo semanal/diario se monta en la ficha
+
+Dos huecos de la Parte 11 confirmados con grep, no supuestos: el gráfico de precio solo dibujaba
+SMA50/SMA200 - EMA21/EMA55, el par del que de verdad dependen el gate y el motor de salida desde la
+sección 26.4, nunca fue visible; y `MultiTimeframeSemaphore.jsx` existía y se usaba en las
+posiciones de cartera, pero `multi_timeframe` en `TickerAnalysisResponse` - calculado en el backend
+desde siempre - nunca se renderizaba en la ficha del activo.
+
+- `PricePoint` (dominio, schema, `ticker_analysis_service.py`) gana `ema21`/`ema55`, calculados con
+  el mismo `mtf.FAST_MA_PERIOD`/`SLOW_MA_PERIOD` que todo lo demás desde la sección 26.4 - no una
+  sexta definición. `PriceChart.jsx` los dibuja justo después del precio, antes de las SMA - son las
+  medias que de verdad deciden algo aquí, el resto es contexto.
+- `MultiTimeframeSemaphore` se monta en la sección "Gate de entrada" de `TickerAnalysisPanel.jsx`,
+  sin ningún cambio de backend - el dato ya estaba en la respuesta, solo nadie lo leía.
+- Aprovechado para corregir dos textos que seguían nombrando Gann/estacionalidad/análogos
+  históricos, retirados por completo en el cierre de la Fase 1 (sección 26.1) y nunca actualizados
+  en la UI hasta ahora.
+
 **Tests**: 5 nuevos en `test_trade_manager.py` reescritos + 4 nuevos (ladder completo con costes,
 techo de posición pequeña, cierre por tiempo del último tercio); 3 en `test_backtest_engine.py`
 recalculados contra los nuevos multiplicadores del Chandelier; 1 nuevo en `test_market_screener_service.py`
@@ -1956,6 +1974,7 @@ comparación de reactividad contra la versión SMA); 8 nuevos en `test_gemini_de
 nuevos en `test_trigger_performance_service.py` (`taken`/`_was_taken`) + 1 de integración nueva en
 `test_system_api.py` end-to-end contra portafolio/transacción reales; 3 nuevos en
 `test_trade_plan_service.py` (`generate_thesis` con y sin stop/objetivo disponibles, y
-`ensure_trade_plan` persistiendo la tesis real + el disclaimer). Suite completa verde en cada commit
+`ensure_trade_plan` persistiendo la tesis real + el disclaimer); integración de `test_ticker_analysis_api.py`
+actualizada para verificar `ema21`/`ema55` en `price_history`. Suite completa verde en cada commit
 (`pytest -q`, unit + integración, ejecutada en domingo sin fallos - la propia Parte 17 exige verde
 cualquier día de la semana).

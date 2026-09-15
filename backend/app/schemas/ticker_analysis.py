@@ -22,6 +22,8 @@ class PricePointResponse(BaseModel):
     sma50: float | None
     sma150: float | None
     sma200: float | None
+    ema21: float | None
+    ema55: float | None
     bb_upper: float | None
     bb_middle: float | None
     bb_lower: float | None

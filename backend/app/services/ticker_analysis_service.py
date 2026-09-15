@@ -563,6 +563,11 @@ class TickerAnalysisService:
         # not the triple-barrier backtest work compute_core_signals already did once).
         sma20_s, sma50_s = ta.sma(close, 20), ta.sma(close, 50)
         sma150_s, sma200_s = ta.sma(close, 150), ta.sma(close, 200)
+        # Parte 3.2/11: the real fast pair the gate/exit engine decide
+        # against, drawn on the chart too - same mtf.FAST_MA_PERIOD/
+        # SLOW_MA_PERIOD basis multi_timeframe.py itself uses.
+        ema21_s = ta.ema(close, mtf.FAST_MA_PERIOD)
+        ema55_s = ta.ema(close, mtf.SLOW_MA_PERIOD)
         rsi_s = ta.rsi(close)
         _, _, macd_hist_s = ta.macd(close)
         bb_mid_s, bb_up_s, bb_low_s = ta.bollinger_bands(close)
@@ -580,6 +585,8 @@ class TickerAnalysisService:
                 sma50=_safe_at(sma50_s, ts),
                 sma150=_safe_at(sma150_s, ts),
                 sma200=_safe_at(sma200_s, ts),
+                ema21=_safe_at(ema21_s, ts),
+                ema55=_safe_at(ema55_s, ts),
                 bb_upper=_safe_at(bb_up_s, ts),
                 bb_middle=_safe_at(bb_mid_s, ts),
                 bb_lower=_safe_at(bb_low_s, ts),
