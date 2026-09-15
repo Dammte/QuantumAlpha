@@ -12,6 +12,7 @@ function PortfolioConstructionPanel({ construction, currency }) {
     correlated_pairs: correlatedPairs,
     sector_concentrations: sectorConcentrations,
     concentrated_sectors: concentratedSectors,
+    risk_contributions: riskContributions,
     portfolio_volatility_pct: portfolioVolatilityPct,
     volatility_target_pct: volatilityTargetPct,
     suggested_to_trim: suggestedToTrim,
@@ -20,6 +21,10 @@ function PortfolioConstructionPanel({ construction, currency }) {
   } = construction
 
   const concentratedSet = new Set((concentratedSectors ?? []).map((s) => s.sector))
+  const trimSet = new Set((suggestedToTrim ?? []).map((r) => r.ticker))
+  const sortedRiskContributions = [...(riskContributions ?? [])].sort(
+    (a, b) => b.risk_contribution_pct - a.risk_contribution_pct
+  )
   const hasAnything =
     (sectorConcentrations ?? []).length > 0 || (correlatedPairs ?? []).length > 0 || aggregateRisk
 
@@ -109,6 +114,36 @@ function PortfolioConstructionPanel({ construction, currency }) {
                   />
                 </div>
                 <p className="construction-sector__tickers">{s.tickers.join(', ')}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {sortedRiskContributions.length > 0 && (
+        <div className="construction-block">
+          <h3>Contribución al riesgo por posición</h3>
+          <p className="panel__hint">
+            El peso de capital y la contribución al riesgo real de la cartera no siempre coinciden - una posición
+            pequeña pero mucho más volátil que el resto puede pesar poco en capital y mucho en riesgo.
+          </p>
+          <ul className="construction-sector-list">
+            {sortedRiskContributions.map((r) => (
+              <li key={r.ticker} className={trimSet.has(r.ticker) ? 'construction-sector--over' : ''}>
+                <div className="construction-sector__row">
+                  <span>{r.ticker}</span>
+                  <span>
+                    {formatPercent(r.risk_contribution_pct)} del riesgo
+                    {trimSet.has(r.ticker) && ' ⚠️'}
+                  </span>
+                </div>
+                <div className="construction-sector__bar">
+                  <div
+                    className="construction-sector__bar-fill"
+                    style={{ width: `${Math.min(100, r.risk_contribution_pct * 100)}%` }}
+                  />
+                </div>
+                <p className="construction-sector__tickers">{formatPercent(r.weight_pct)} del capital</p>
               </li>
             ))}
           </ul>

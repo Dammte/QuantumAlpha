@@ -2138,3 +2138,19 @@ intradía, agregada a `App.css`) cuando no, con el resultado exacto de cada lect
 sección 26.12/complemento anterior) - verificado por revisión de código y por `npm run lint`/
 `npm run build` limpios; el `taken`/`confirmed_gate` que consumen ambos cambios ya estaba tipado y
 probado en el backend desde sus propias secciones (26.9, Fase 4).
+
+**Tercer hallazgo de la misma pasada, resuelto igual**: `PortfolioConstructionResponse.risk_contributions`
+(la contribución de *cada* posición al riesgo real de la cartera, no solo `suggested_to_trim` - el
+subconjunto top-N que solo aparece cuando la volatilidad ya supera el objetivo) se calculaba y se
+enviaba, pero `PortfolioConstructionPanel.jsx` nunca lo dibujaba - la información de "esta posición
+pesa poco en capital pero mucho en riesgo real" quedaba invisible hasta que la volatilidad agregada
+ya había superado el objetivo, en vez de estar disponible de forma proactiva. Nuevo bloque
+"Contribución al riesgo por posición" (mismo estilo de barra que "Concentración por sector", misma
+clase CSS reutilizada sin duplicar reglas) - siempre visible cuando hay posiciones con retorno
+suficiente para calcularla, marcando con el mismo aviso visual las que ya aparecen en
+`suggested_to_trim`. **Deliberadamente no resuelto en la misma pasada**: `correlation_matrix` (la
+matriz completa N×N, frente a `correlated_pairs`, ya mostrado, que solo lista los pares por encima
+del umbral) - a diferencia de una lista de porcentajes que ya tenía un patrón visual establecido en
+el mismo panel para copiar, una matriz completa es una decisión de diseño propia (disposición,
+mapa de color, qué hacer con carteras grandes) que no correspondía inventar sin más contexto -
+queda como hueco conocido, no como omisión silenciosa.
