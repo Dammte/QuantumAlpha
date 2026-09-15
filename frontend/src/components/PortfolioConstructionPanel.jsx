@@ -9,6 +9,7 @@ function PortfolioConstructionPanel({ construction, currency }) {
   if (!construction) return null
 
   const {
+    correlation_matrix: correlationMatrix,
     correlated_pairs: correlatedPairs,
     sector_concentrations: sectorConcentrations,
     concentrated_sectors: concentratedSectors,
@@ -25,6 +26,7 @@ function PortfolioConstructionPanel({ construction, currency }) {
   const sortedRiskContributions = [...(riskContributions ?? [])].sort(
     (a, b) => b.risk_contribution_pct - a.risk_contribution_pct
   )
+  const correlationTickers = Object.keys(correlationMatrix ?? {}).sort()
   const hasAnything =
     (sectorConcentrations ?? []).length > 0 || (correlatedPairs ?? []).length > 0 || aggregateRisk
 
@@ -78,6 +80,56 @@ function PortfolioConstructionPanel({ construction, currency }) {
             </>
           )}
         </p>
+      )}
+
+      {correlationTickers.length > 1 && (
+        <div className="construction-block">
+          <h3>Matriz de correlación (60 sesiones)</h3>
+          <p className="panel__hint">
+            Correlación de retornos diarios entre cada par de posiciones - fondo rojo cuanto más correlacionadas
+            positivamente, verde cuanto más se mueven en direcciones opuestas. La diagonal es siempre 1.00.
+          </p>
+          <div className="table-scroll">
+            <table className="construction-correlation-table">
+              <thead>
+                <tr>
+                  <th />
+                  {correlationTickers.map((t) => (
+                    <th key={t} className="num">
+                      {t}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {correlationTickers.map((rowTicker) => (
+                  <tr key={rowTicker}>
+                    <th scope="row">{rowTicker}</th>
+                    {correlationTickers.map((colTicker) => {
+                      const value = correlationMatrix[rowTicker]?.[colTicker] ?? null
+                      const isDiagonal = rowTicker === colTicker
+                      const tone = value === null ? 'transparent' : value >= 0 ? 'var(--series-critical)' : 'var(--series-good)'
+                      const opacity = value === null ? 0 : Math.min(1, Math.abs(value)) * 0.35
+                      return (
+                        <td
+                          key={colTicker}
+                          className="num"
+                          style={
+                            isDiagonal
+                              ? undefined
+                              : { background: `color-mix(in srgb, ${tone} ${opacity * 100}%, transparent)` }
+                          }
+                        >
+                          {value === null ? '—' : value.toFixed(2)}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
 
       {correlatedPairs && correlatedPairs.length > 0 && (

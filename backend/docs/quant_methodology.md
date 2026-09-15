@@ -2148,12 +2148,9 @@ ya había superado el objetivo, en vez de estar disponible de forma proactiva. N
 "Contribución al riesgo por posición" (mismo estilo de barra que "Concentración por sector", misma
 clase CSS reutilizada sin duplicar reglas) - siempre visible cuando hay posiciones con retorno
 suficiente para calcularla, marcando con el mismo aviso visual las que ya aparecen en
-`suggested_to_trim`. **Deliberadamente no resuelto en la misma pasada**: `correlation_matrix` (la
-matriz completa N×N, frente a `correlated_pairs`, ya mostrado, que solo lista los pares por encima
-del umbral) - a diferencia de una lista de porcentajes que ya tenía un patrón visual establecido en
-el mismo panel para copiar, una matriz completa es una decisión de diseño propia (disposición,
-mapa de color, qué hacer con carteras grandes) que no correspondía inventar sin más contexto -
-queda como hueco conocido, no como omisión silenciosa.
+`suggested_to_trim`. ~~**Deliberadamente no resuelto en la misma pasada**: `correlation_matrix`...
+queda como hueco conocido, no como omisión silenciosa.~~ Resuelto en la sección 26.16 (revisión
+propia, mismo día) - tachado, no borrado, mismo criterio que la sección 26.7.
 
 ### 26.15 `GET /market/radar?portfolio_id=` era real y probado, pero inalcanzable desde la interfaz
 
@@ -2176,3 +2173,31 @@ recién instalada), el parámetro simplemente no se envía - `toQueryString` ya 
 **Tests**: sin infraestructura de tests de componentes en este frontend - verificado por revisión
 de código y `npm run lint`/`npm run build` limpios; el propio parámetro ya estaba probado
 end-to-end en `test_radar_api.py` desde la sección 26.13.
+
+### 26.16 `correlation_matrix`: revisión propia del hueco que la sección 26.14 dejó deliberadamente abierto
+
+Antes de cerrar esta ronda de auditoría se revisó una vez más el propio criterio usado para
+diferir `correlation_matrix` (26.14): la razón dada - "una matriz completa es una decisión de
+diseño propia (disposición, mapa de color, qué hacer con carteras grandes)" - se sostiene para un
+mapa de calor elaborado, pero no para una tabla plana con las celdas coloreadas por magnitud, que
+es un patrón estándar y ya tiene precedente directo en el propio panel (`construction-sector__bar-fill`
+usa `style` en línea con un valor calculado exactamente de la misma forma). Revisado el criterio,
+la pieza restante no era una decisión de diseño pendiente sino, otra vez, el mismo patrón de esta
+sección: un dato real (`PortfolioConstructionResponse.correlation_matrix`, ya calculado, ya
+enviado) sin nada que lo dibujara.
+
+Tabla N×N en `PortfolioConstructionPanel.jsx`, mostrada solo con más de un ticker (con uno solo la
+matriz es un 1×1 trivial): fondo rojo (`var(--series-critical)`) para correlación positiva, verde
+(`var(--series-good)`) para negativa, opacidad proporcional a `|valor|` vía `color-mix` - mismo
+patrón CSS que la insignia `.construction-risk-card--over` y los indicadores `delta-up`/`delta-down`
+ya usan en el resto de la app, ninguna paleta nueva inventada. La diagonal (siempre 1.00) se
+muestra sin colorear. Envuelta en `table-scroll` (ya usado en `SupportResistancePanel.jsx`/
+`SystemPerformanceView.jsx`) para que una cartera con muchas posiciones se desplace horizontalmente
+en vez de romper el layout - la única concesión real a "qué hacer con carteras grandes" que la nota
+original de 26.14 mencionaba, y resulta que ya había una solución genérica hecha para eso en el
+propio proyecto.
+
+**Tests**: sin infraestructura de tests de componentes en este frontend - verificado por revisión
+de código (incluida la coincidencia exacta entre las claves de `correlation_matrix` y las de
+`sector_concentrations`/`risk_contributions`, ya cubiertas por tests de integración en
+`test_portfolios_api.py`) y `npm run lint`/`npm run build` limpios.

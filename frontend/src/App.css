@@ -410,6 +410,38 @@
   color: var(--text);
 }
 
+.construction-correlation-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.construction-correlation-table th,
+.construction-correlation-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.construction-correlation-table th.num,
+.construction-correlation-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.construction-correlation-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.construction-correlation-table th[scope='row'] {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 /* Hero row */
 
 .hero-row {
