@@ -4,6 +4,17 @@ import pytest
 
 from app.services import market_screener_service as mss
 
+# Parte 3.2: MIN_BARS_REQUIRED subió de 60 a 250 - estos tests de `_build_raw`
+# verifican un patrón concreto en las últimas barras (contracción de rango,
+# tendencia de volumen, cruce de medias...), no el umbral de barras mínimas en
+# sí, así que anteponen relleno plano para seguir superando el nuevo mínimo
+# sin cambiar la dinámica que cada test comprueba.
+FLAT_PAD_BARS = 200
+
+
+def _flat_pad(value: float, n: int = FLAT_PAD_BARS) -> list[float]:
+    return [value] * n
+
 
 def _df(closes, highs=None, lows=None, volumes=None) -> pd.DataFrame:
     n = len(closes)
@@ -19,13 +30,12 @@ def _df(closes, highs=None, lows=None, volumes=None) -> pd.DataFrame:
 
 
 def test_build_raw_atr_ratio_below_one_when_the_range_has_contracted():
-    # A wide daily range for 60 bars, then a much narrower one for the last
-    # 20 - volatility has genuinely contracted relative to its own recent
-    # (50-bar) average.
-    n = 90
-    closes = [100.0] * n
-    highs = [105.0] * 70 + [100.4] * 20
-    lows = [95.0] * 70 + [99.6] * 20
+    # A wide daily range for 70 bars (padded further back), then a much
+    # narrower one for the last 20 - volatility has genuinely contracted
+    # relative to its own recent (50-bar) average.
+    closes = [100.0] * (FLAT_PAD_BARS + 90)
+    highs = _flat_pad(105.0) + [105.0] * 70 + [100.4] * 20
+    lows = _flat_pad(95.0) + [95.0] * 70 + [99.6] * 20
     df = _df(closes, highs=highs, lows=lows)
     raw = mss._build_raw("TEST", "Tecnología", None, df, None)
     assert raw is not None
@@ -34,10 +44,9 @@ def test_build_raw_atr_ratio_below_one_when_the_range_has_contracted():
 
 
 def test_build_raw_atr_ratio_above_one_when_the_range_has_expanded():
-    n = 90
-    closes = [100.0] * n
-    highs = [100.4] * 70 + [110.0] * 20
-    lows = [99.6] * 70 + [90.0] * 20
+    closes = [100.0] * (FLAT_PAD_BARS + 90)
+    highs = _flat_pad(100.4) + [100.4] * 70 + [110.0] * 20
+    lows = _flat_pad(99.6) + [99.6] * 70 + [90.0] * 20
     df = _df(closes, highs=highs, lows=lows)
     raw = mss._build_raw("TEST", "Tecnología", None, df, None)
     assert raw is not None
@@ -46,7 +55,7 @@ def test_build_raw_atr_ratio_above_one_when_the_range_has_expanded():
 
 
 def test_build_raw_range_position_20d_near_one_at_a_20_day_high():
-    n = 80
+    n = FLAT_PAD_BARS + 80
     closes = list(100 + np.arange(n) * 0.5)  # steady climb - today is the 20-day high
     df = _df(closes)
     raw = mss._build_raw("TEST", "Tecnología", None, df, None)
@@ -55,8 +64,8 @@ def test_build_raw_range_position_20d_near_one_at_a_20_day_high():
 
 
 def test_build_raw_range_position_20d_near_zero_at_a_20_day_low():
-    n = 80
-    closes = list(200 - np.arange(n) * 0.5)  # steady decline - today is the 20-day low
+    n = FLAT_PAD_BARS + 80
+    closes = list(400 - np.arange(n) * 0.5)  # steady decline - today is the 20-day low
     df = _df(closes)
     raw = mss._build_raw("TEST", "Tecnología", None, df, None)
     assert raw is not None
@@ -81,7 +90,7 @@ def test_build_raw_mansfield_rs_4w_uses_a_20_session_window():
 
 
 def test_build_raw_relative_volume_trend_positive_when_volume_has_been_building():
-    n = 60
+    n = FLAT_PAD_BARS + 60
     closes = [100.0] * n
     volumes = [1_000_000.0] * (n - 5) + [3_000_000.0] * 5  # a recent, sustained pickup
     df = _df(closes, volumes=volumes)
@@ -92,7 +101,7 @@ def test_build_raw_relative_volume_trend_positive_when_volume_has_been_building(
 
 
 def test_build_raw_relative_volume_trend_negative_when_volume_has_been_fading():
-    n = 60
+    n = FLAT_PAD_BARS + 60
     closes = [100.0] * n
     volumes = [3_000_000.0] * (n - 5) + [1_000_000.0] * 5
     df = _df(closes, volumes=volumes)
@@ -121,15 +130,19 @@ def test_build_raw_atr_multiple_sma21_differs_from_the_default_50_day_one():
 
 
 def _reversal_closes(rally_bars: int) -> list[float]:
-    """A decline (60 bars) followed by a rally, truncated to `rally_bars` of
-    that rally - the fast MA (EMA21) is below the slow one (EMA55) after the
-    decline, then catches up and eventually crosses above it during the
-    rally. Varying `rally_bars` picks a point either before the actual cross
-    (still converging - imminent_cross_short_term's territory) or after it
-    (already happened - ma_cross_short's territory)."""
+    """Flat padding (well past MIN_BARS_REQUIRED) + a decline (60 bars) +
+    a rally, truncated to `rally_bars` of that rally - the fast MA (EMA21)
+    is below the slow one (EMA55) after the decline, then catches up and
+    eventually crosses above it during the rally. Varying `rally_bars`
+    picks a point either before the actual cross (still converging -
+    imminent_cross_short_term's territory) or after it (already happened -
+    ma_cross_short's territory). The flat pad settles both EMAs at 100
+    before the decline starts, so it doesn't shift where the cross falls
+    relative to the end of the series."""
+    pad = np.full(FLAT_PAD_BARS, 100.0)
     decline = 100 - np.arange(60) * 0.5
     rally = decline[-1] + np.arange(1, rally_bars + 1) * 0.8
-    return list(np.concatenate([decline, rally]))
+    return list(np.concatenate([pad, decline, rally]))
 
 
 def test_build_raw_ma_cross_short_detects_a_confirmed_golden_cross():
@@ -157,7 +170,7 @@ def test_build_raw_imminent_cross_short_term_projects_a_golden_cross_before_it_h
 
 
 def test_build_raw_ma_cross_short_and_imminent_cross_none_with_no_convergence():
-    df = _df([100.0] * 60)
+    df = _df([100.0] * (FLAT_PAD_BARS + 60))
     raw = mss._build_raw("TEST", "Tecnología", None, df, None)
     assert raw is not None
     assert raw.ma_cross_short is None

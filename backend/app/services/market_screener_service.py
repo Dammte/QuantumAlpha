@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL = timedelta(hours=3)
 HISTORY_DAYS = 400  # enough calendar days to cover a 252-trading-day lookback + SMA200
-MIN_BARS_REQUIRED = 60
+MIN_BARS_REQUIRED = 250  # Parte 3.2: por debajo, no hay SMA200 ni rango anual fiable - "datos insuficientes"
 
 
 def _snapshot_to_dict(snapshot: TickerSnapshot) -> dict[str, Any]:

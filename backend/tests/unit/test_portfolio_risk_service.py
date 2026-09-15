@@ -151,7 +151,7 @@ def test_uptrend_never_flagged_as_exit_warning():
 
 
 def test_add_candidate_when_uptrend_pulls_back_to_support():
-    rise = 100 + np.arange(200) * 0.4  # steady climb to ~180
+    rise = 100 + np.arange(260) * 0.4  # steady climb; Parte 3.2 raised MIN_BARS_REQUIRED to 250
     dip = rise[-1] - np.array([0.0, 1.0, 1.8, 1.3, 0.6])  # brief, shallow pullback forms a swing low
     bounce = dip[-1] + np.arange(1, 4) * 0.4  # starts recovering, still close to the swing low
     close = np.concatenate([rise, dip, bounce])
@@ -181,7 +181,7 @@ def test_strong_setup_near_resistance_is_add_candidate_not_watch():
     # regardless of any actual spike, which would defeat the point of this
     # fixture (a genuinely clean setup, not an extended one).
     rng = np.random.default_rng(11)
-    n = 220
+    n = 260  # Parte 3.2: MIN_BARS_REQUIRED subió a 250 - antes 220 bastaba
     trend = 100 + np.arange(n) * 0.4
     noise = rng.normal(0, 1.2, n).cumsum() * 0.15
     rise = trend + noise

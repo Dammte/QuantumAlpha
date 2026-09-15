@@ -70,7 +70,7 @@ from app.services.trade_geometry import EntryTrigger, StopAndTarget
 
 HISTORY_YEARS = 10
 CHART_BARS = 504  # ~2 trading years
-MIN_BARS_REQUIRED = 60
+MIN_BARS_REQUIRED = 250  # Parte 3.2: por debajo, no hay SMA200 ni rango anual fiable - "datos insuficientes"
 
 # 2026-09: used to also key a Monte Carlo horizon preset (1m/3m/6m -> a day
 # count + a set of forecast checkpoints); Monte Carlo is gone (see module

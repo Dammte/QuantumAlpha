@@ -2201,3 +2201,95 @@ propio proyecto.
 de código (incluida la coincidencia exacta entre las claves de `correlation_matrix` y las de
 `sector_concentrations`/`risk_contributions`, ya cubiertas por tests de integración en
 `test_portfolios_api.py`) y `npm run lint`/`npm run build` limpios.
+
+## 27. Sexta auditoría: verificación contra el texto literal completo de las 20 partes (septiembre 2026)
+
+Las auditorías previas (§25, §26) se hicieron contra fragmentos y contra el propio código, sin el
+texto literal completo del encargo original en contexto - las secciones 25/26 lo dicen explícitamente
+("escrito después de que el texto literal ya había salido de contexto"). El propietario volvió a
+pegar las 20 partes completas en esta sesión. Esta auditoría las compara, parte por parte, contra lo
+ya construido - y encuentra un panorama más divergente de lo que las auditorías previas asumían.
+
+### 27.1 Lo que coincide fielmente con el texto literal
+
+- **Parte 19 (parámetros)**: `trading_params.py` coincide casi exactamente con la lista literal -
+  `RISK_CEILING_ATR_MULTIPLE=2.5`, `RISK_CEILING_MIN_PCT/MAX_PCT=0.020/0.070`,
+  `CHANDELIER_WINDOW=10`, los multiplicadores 1.75/2.0/2.25/2.5, `CHANDELIER_PROFIT_LOCK_R=1.5`,
+  `SCALE_OUT_1R/2R_FRACTION=0.33`, `MIN_POSITION_FOR_SCALING=150`, `LAST_TRANCHE_TIME_STOP_BARS=15`,
+  `MIN_POSITION_USD=80`, `TRANSACTION_COST_PCT=0.001`.
+- **Parte 7 (geometría) y Parte 8 (escalera)**: la cascada de stop, el techo de riesgo adaptativo,
+  el sizing con sus tres límites y la escalera +1R/+2R/resto con break-even neto de costes coinciden
+  con los ejemplos numéricos literales de la Parte 15/20.
+- **Parte 2 (borrado)**: `monte_carlo_simulation.py`, `markov_chain_model.py`, `kelly_criterion.py`,
+  `volatility_model.py` (GARCH), `statistical_structure.py` (Hurst/ADF), `analysis_tools.py`
+  (Gann/estacionalidad/análogos), `walk_forward_backtest.py`, `sector_rotation_service.py`,
+  `sector_rrg_service.py`, `premium_watchlist_service.py`, `entry_timing.py`,
+  `ablation_report_service.py`, `macro_data_service.py`, `fred_client.py` - todos borrados. Solo
+  quedan menciones históricas en comentarios explicando por qué se retiraron, nada de código vivo.
+  `opportunity_cost.py` sigue vivo con 71 líneas, coherente con "se reescribe en ~30 líneas".
+- **Parte 13 (parcial)**: existe `trigger_event`/`trigger_performance_service` con el campo `taken`,
+  funcionalmente equivalente a `trigger_history`, aunque con otro nombre y un esquema más simple.
+
+### 27.2 Divergencias reales encontradas (verificadas contra el código, no supuestas)
+
+1. **El gate no es el gate literal.** El actual (`levels_engine.evaluate_gate`) tiene 6 condiciones
+   (tendencia/Fase2, no parabólico, no sobrecompra RSI≥80, no divergencia OBV, no veto par rápido,
+   R/R≥1.5). El literal (Parte 6.2) pide 5 criterios eliminatorios distintos: `liquidity_ok`
+   (volumen-dólar 20d≥20M USD y precio≥5 USD), `data_quality_ok` (≥250 barras), `weekly_not_stage4`
+   (unknown tampoco pasa), `no_fast_bearish_cross` (confirmado o proyectado con R²≥0.6),
+   `no_event_risk` (vía Gemini/earnings). Solo el del par rápido coincide conceptualmente. El
+   R/R≥1.5 en el literal es un criterio de *viabilidad del disparador* (Parte 5.2/7.4), no del gate
+   de elegibilidad (Parte 6.2) - son dos conceptos que el diseño literal separa y esta reconstrucción
+   había fusionado en un único gate de 6 condiciones.
+2. **`MIN_BARS_REQUIRED = 60`**, no 250 como pide la Parte 3.2 - **resuelto en esta misma sección**
+   (27.3).
+3. **No existe el sistema de grados A/B/C** (Parte 5.3) en ningún sitio. No existe `LevelKind`/
+   `LevelState` como enums (Parte 5.1) - el `PriceLevel` actual (`technical_analysis.py`) solo tiene
+   `price/kind/strength/distance_pct`, sin `distance_atr`, `bars_in_state`, `slope_pct_20d`, ni los 6
+   estados (FAR/APPROACHING/TESTING/BREAKING/BROKEN_CONFIRMED/LOST_CONFIRMED). Además,
+   `support_resistance_levels` filtra los pivotes por el lado del precio actual en el momento de
+   detectarlos (`p > current_price` para resistencia, `p < current_price` para soporte) -
+   exactamente el sesgo que la Parte 5.1 describe explícitamente como bug a corregir ("guarda los
+   pivotes sin filtrar por el precio actual y deja que el estado del nivel diga de qué lado estás").
+4. **`GET /market/screener` sigue calculando en vivo** (`market_screener_service.py`, ~800 líneas)
+   en vez de leer `ticker_daily_state` con filtros SQL - ya identificado como pendiente en auditorías
+   previas (§26.7), y el texto literal (Parte 10.2) confirma que es exactamente lo que pide.
+5. **Gemini tiene 1 uso** (`GeminiNarrator.explain_gate`), no los 5 de la Parte 12.3 (G1 catalizadores
+   fechados, G2 explicación de movimientos anómalos, G3 triaje de noticias, G4 revisión adversarial,
+   G5 journal al cerrar posición).
+6. **`ticker_daily_state` tiene muchos menos campos** que la Parte 4.3 (faltan `weekly_ma30`,
+   `weekly_stage/bias`, `daily_bias`, `rs_percentile_20d`, `sector_rs_percentile`,
+   `relative_volume(_trend)`, `di_bias`, `levels`/`triggers` JSONB ricos, `eligible`/`eligibility`
+   JSONB, `data_quality`).
+7. **Weinstein semanal usa una proxy diaria** (`classify_stage` con SMA150 diaria como sustituto de
+   la MA30 semanal), no la MA30 semanal real que pide la Parte 5.5 ("la de Weinstein de verdad").
+8. **~8.460 líneas de servicios**, no <6.500 (criterio de aceptación literal, Parte 17) - sin
+   verificar todavía cuánto de ese exceso es lógica real del sistema nuevo (que la Parte 17 no
+   contemplaba con este nivel de detalle) frente a algo recortable.
+
+### 27.3 Primer cierre: `MIN_BARS_REQUIRED` a 250
+
+Cambiado en los dos sitios donde vivía duplicado (`market_screener_service.py`,
+`ticker_analysis_service.py`) de 60 a 250, tal como pide la Parte 3.2 literalmente ("con 60 barras
+no hay SMA200 ni rango anual: el análisis sale degenerado... por debajo de 250, marca el activo como
+«datos insuficientes»"). Doce tests unitarios construían series sintéticas de 60-220 barras
+asumiendo que ese rango ya era "suficiente" - ninguno probaba el propio umbral (eso lo cubren tests
+dedicados aparte), así que se extendieron con relleno plano antes del patrón relevante (contracción
+de rango, tendencia de volumen, cruce de medias, rebote en soporte) sin cambiar la intención de cada
+uno. La excepción es `test_52_week_range_fields_never_fabricated_with_only_60_bars`
+(`test_ticker_analysis_service.py`): su propósito - verificar que sin las 252 barras completas los
+campos de rango de 52 semanas nunca se fabrican - ya no se podía probar con 60 barras (ahora
+"insuficiente" de entrada), así que pasó a usar 251 barras (por encima del nuevo mínimo, por debajo
+de las 252 que ese cálculo concreto exige) y se renombró en consecuencia.
+
+**Tests**: suite completa verde (830 passed, unit+integración) tras el ajuste, sin regresiones.
+ruff limpio.
+
+### 27.4 Qué queda pendiente de esta auditoría
+
+El resto de 27.2 (grados A/B/C, `Level`/`LevelKind`/`LevelState` completos con el sesgo de
+filtrado corregido, el gate de 5 criterios eliminatorios separado de la viabilidad del disparador,
+Weinstein semanal real, `ticker_daily_state` enriquecido, Gemini G1-G5, el screener por SQL) es un
+cambio de núcleo que toca prácticamente todo el pipeline de decisión (14 archivos consumen
+`PriceLevel` directamente). Se aborda en sub-pasos separados, cada uno con su propio commit y suite
+verde, siguiendo la propia Parte 16 ("cada fase termina con la suite en verde y un commit propio").

@@ -122,17 +122,18 @@ def test_triple_barrier_backtest_is_skipped_by_default():
     assert signals.triple_barrier_backtest is None
 
 
-def test_52_week_range_fields_never_fabricated_with_only_60_bars():
+def test_52_week_range_fields_never_fabricated_with_only_251_bars():
     # D11: rolling_extreme_price/distance_to_rolling_extreme require the full
-    # 252-bar window by default - a ticker with only 60 bars (the minimum
-    # MIN_BARS_REQUIRED accepts at all) must not have its "52-week range"
-    # answered with whatever 60 days happen to be available (CLAUDE.md: "no
+    # 252-bar window by default - a ticker with 251 bars (one short of that,
+    # but comfortably past MIN_BARS_REQUIRED=250 since Parte 3.2 - the rest
+    # of the analysis genuinely runs) must not have its "52-week range"
+    # answered with whatever 251 days happen to be available (CLAUDE.md: "no
     # inventes datos"). The old checklist's own range-confirmed factor that
     # used to be asserted here was retired with the rest of the weighted
     # checklist (2026-09, Fase 4) - the gate has no 52-week-range condition
     # to fire in the first place, so there's nothing left to assert about it
     # beyond these two fields themselves staying honestly None.
-    close, high, low, volume, open_ = _series(100 + np.arange(60) * 0.4)
+    close, high, low, volume, open_ = _series(100 + np.arange(251) * 0.4)
     signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=None)
     assert signals is not None
     assert signals.dist_52w_high is None
