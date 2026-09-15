@@ -1890,6 +1890,20 @@ desde ningún camino de producción todavía. Ninguna de las dos cosas es una af
 aquí y en `CLAUDE.md` para que la próxima pasada (de este reconstructor o de otro) no tenga que
 volver a descubrirlo con grep.
 
+### 26.8 Test explícito de degradación total sin `GEMINI_API_KEY` (criterio de aceptación de la Parte 17)
+
+La Parte 12/17 exige un test que arranque la app sin `GEMINI_API_KEY` y verifique que los endpoints
+responden - existía la condición (ningún test de integración configura una clave real; `.env.example`
+la deja comentada) pero no un test propio, explícito, que lo afirme como su único propósito. Toda la
+suite de integración ya pasaba "sin clave" por accidente de configuración, no por diseño verificado -
+`test_gemini_degradation.py` lo hace explícito: confirma primero la premisa
+(`get_settings().gemini_api_key is None`) y luego siete endpoints, incluidos los dos que de verdad
+ejecutan `GeminiNarrator.explain_gate` bajo el capó (`compute_core_signals`, compartido por "Analizar
+activo" y el riesgo de cartera) - todos responden con 200, `llm_narrative: null` donde aplica, sin
+ningún intento de red. Si alguna vez se configura un valor por defecto para la clave en el entorno de
+tests, este archivo es el primero en dejar de probar el camino "sin clave" en absoluto, no solo dejar
+de fallar en silencio.
+
 **Tests**: 5 nuevos en `test_trade_manager.py` reescritos + 4 nuevos (ladder completo con costes,
 techo de posición pequeña, cierre por tiempo del último tercio); 3 en `test_backtest_engine.py`
 recalculados contra los nuevos multiplicadores del Chandelier; 1 nuevo en `test_market_screener_service.py`
@@ -1897,6 +1911,6 @@ recalculado contra el cruce EMA real; ~15 en `test_exit_engine.py` renombrados/r
 `test_trade_geometry.py` (39 para `compute_entry_geometry`/`size_position`/`compute_trade_geometry`,
 5 para el split); 2 nuevos en `test_levels_engine.py` (`entry_geometry` presente/ausente según
 `ema21`/`ema55`); 3 nuevos en `test_technical_analysis.py` (`atr_multiple_from_ema`, incluida la
-comparación de reactividad contra la versión SMA). Suite completa verde en cada commit (`pytest -q`,
-unit + integración, ejecutada en domingo sin fallos - la propia Parte 17 exige verde cualquier día de
-la semana).
+comparación de reactividad contra la versión SMA); 8 nuevos en `test_gemini_degradation.py`. Suite
+completa verde en cada commit (`pytest -q`, unit + integración, ejecutada en domingo sin fallos - la
+propia Parte 17 exige verde cualquier día de la semana).
