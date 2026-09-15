@@ -205,6 +205,19 @@ function TickerAnalysisPanel({ presetTicker } = {}) {
             <>
               <section className="panel panel--nested">
                 <h3>Gate de entrada</h3>
+                {analysis.is_intraday_snapshot && analysis.confirmed_gate && (
+                  analysis.gate.passes === analysis.confirmed_gate.passes ? (
+                    <p className="ticker-analysis__section-hint">
+                      Con el último cierre confirmado (sin la sesión de hoy en curso) el gate da el mismo resultado.
+                    </p>
+                  ) : (
+                    <div className="banner banner--warning" style={{ marginBottom: 12 }}>
+                      Ojo: con la sesión de hoy en curso el gate {analysis.gate.passes ? 'aprueba' : 'no aprueba'},
+                      pero con el último cierre confirmado {analysis.confirmed_gate.passes ? 'aprobaría' : 'no aprobaría'} -
+                      la barra de hoy todavía puede cambiar antes del cierre.
+                    </div>
+                  )
+                )}
                 <MultiTimeframeSemaphore multiTimeframe={analysis.multi_timeframe} />
                 <RecommendationCard
                   gate={analysis.gate}

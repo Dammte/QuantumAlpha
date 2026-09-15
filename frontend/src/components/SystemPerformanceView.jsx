@@ -16,8 +16,31 @@ function outcomeLabel(kind, label) {
   return SIGNAL_LABELS[label] ?? label
 }
 
-function OutcomeTable({ title, hint, kind, outcomes, columnLabel = 'Señal' }) {
-  const sorted = [...outcomes].sort((a, b) => a.label.localeCompare(b.label) || a.horizon_days - b.horizon_days)
+// Parte 13: an `entry_triggered` row comes back three times per horizon -
+// the combined one (`taken: null`) plus its `taken: true`/`taken: false`
+// split (see trigger_performance_service.py) - "did a real BUY actually
+// follow this trigger" is exactly the "qué pasó con lo que no compraste"
+// question Parte 13 asks. Before this column existed the three rows shared
+// the same label *and* the same React key, rendering as identical-looking
+// duplicate rows with no way to tell which was which.
+function takenLabel(taken) {
+  if (taken === null || taken === undefined) return 'Todas'
+  return taken ? 'Sí' : 'No'
+}
+
+// Combined row (taken: null) first, then taken, then not-taken.
+function takenSortOrder(taken) {
+  if (taken === null || taken === undefined) return 0
+  return taken ? 1 : 2
+}
+
+function OutcomeTable({ title, hint, kind, outcomes, columnLabel = 'Señal', showTaken = false }) {
+  const sorted = [...outcomes].sort(
+    (a, b) =>
+      a.label.localeCompare(b.label) ||
+      a.horizon_days - b.horizon_days ||
+      takenSortOrder(a.taken) - takenSortOrder(b.taken)
+  )
   return (
     <section className="panel panel--nested">
       <h3>{title}</h3>
@@ -30,6 +53,7 @@ function OutcomeTable({ title, hint, kind, outcomes, columnLabel = 'Señal' }) {
             <thead>
               <tr>
                 <th>{columnLabel}</th>
+                {showTaken && <th>¿Comprado?</th>}
                 <th className="num">Horizonte</th>
                 <th className="num">N</th>
                 <th className="num">Hit rate</th>
@@ -39,8 +63,9 @@ function OutcomeTable({ title, hint, kind, outcomes, columnLabel = 'Señal' }) {
             </thead>
             <tbody>
               {sorted.map((o) => (
-                <tr key={`${o.label}-${o.horizon_days}`}>
+                <tr key={`${o.label}-${o.horizon_days}-${o.taken}`}>
                   <td>{outcomeLabel(kind, o.label)}</td>
+                  {showTaken && <td>{takenLabel(o.taken)}</td>}
                   <td className="num">{o.horizon_days} sesiones</td>
                   <td className="num">{o.n}</td>
                   <td className="num">{o.hit_rate !== null ? formatPercent(o.hit_rate) : '—'}</td>
@@ -102,10 +127,11 @@ function SystemPerformanceView() {
 
       <OutcomeTable
         title="Por evento del gate/disparador (Fase 8 - la lectura principal actual)"
-        hint="Retorno realizado a N sesiones desde cada cambio de estado que daily_close.py detectó (el gate pasó a aprobado, o el disparador de entrada se activó) - mide directamente si el gate nuevo tiene valor predictivo real, no lo asume. Historial disponible solo desde que empezó a correr el cron de cierre diario."
+        hint="Retorno realizado a N sesiones desde cada cambio de estado que daily_close.py detectó (el gate pasó a aprobado, o el disparador de entrada se activó) - mide directamente si el gate nuevo tiene valor predictivo real, no lo asume. Para 'Entrada disparada', la columna '¿Comprado?' separa lo que de verdad se compró (dentro de los 10 días siguientes) de lo que no - Parte 13. Historial disponible solo desde que empezó a correr el cron de cierre diario."
         kind="trigger"
         columnLabel="Evento"
         outcomes={triggerOutcomes}
+        showTaken
       />
 
       <OutcomeTable

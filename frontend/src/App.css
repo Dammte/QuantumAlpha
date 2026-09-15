@@ -279,6 +279,18 @@
   color: var(--series-critical);
 }
 
+.banner--warning {
+  background: rgba(237, 161, 0, 0.1);
+  border: 1px solid rgba(237, 161, 0, 0.35);
+  color: #ad7a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  .banner--warning {
+    color: #eda100;
+  }
+}
+
 .empty-state {
   color: var(--text);
   font-size: 15px;

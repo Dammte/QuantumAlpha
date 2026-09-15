@@ -2105,3 +2105,36 @@ que renderiza ninguno de los dos, así que este único cambio cubre tanto "Anali
 Radar. `npm run lint`/`npm run build` limpios; sin infraestructura de tests de componentes en este
 frontend (no hay Vitest/Jest configurado), verificado por revisión de código - el flujo de props ya
 existía, tipado y probado en el backend, para ambos casos.
+
+### 26.14 Dos huecos más del mismo patrón: `taken` colisionaba claves de React, `confirmed_gate` nunca se mostraba
+
+Tercera pasada del mismo agente de exploración (backend calcula un campo real, ningún componente
+lo lee) sobre los esquemas de respuesta restantes. Dos hallazgos, ambos genuinos:
+
+**`TriggerOutcomeResponse.taken` (Parte 13, sección 26.9) nunca llegaba a la interfaz - y peor, su
+ausencia producía filas duplicadas con la misma clave de React.** `compute_trigger_outcomes` emite,
+para `entry_triggered`, tres filas por horizonte (`taken=None` combinada, `taken=True`,
+`taken=False`) - exactamente la pregunta que Parte 13 pedía poder responder. `SystemPerformanceView.jsx`
+las recibía las tres, pero su `OutcomeTable` las mapeaba con la misma etiqueta ("Entrada disparada")
+y la misma `key={`${o.label}-${o.horizon_days}`}` para las tres - una colisión de claves de React
+real, no solo un dato que faltaba: sin la columna nueva, un usuario con historial de compras reales
+vería tres filas visualmente idénticas para el mismo horizonte, sin ninguna forma de saber cuál era
+cuál. Arreglado con una columna "¿Comprado?" (`showTaken`, activada solo en la tabla de
+gate/disparador - las de veredicto/señal nunca tienen `taken`) y una clave de fila que ahora incluye
+`taken`, eliminando la colisión de raíz.
+
+**`TickerAnalysisResponse.confirmed_gate` (Fase 4) nunca se comparaba contra `gate` en la
+interfaz.** Solo se calcula cuando `is_intraday_snapshot` es verdadero (la sesión de hoy sigue en
+curso) - la misma re-evaluación del gate, pero sobre `technical_analysis.closed_bars` en vez del
+marco en vivo, exactamente la pregunta "¿esto seguiría aprobando con el último cierre confirmado,
+o es un artefacto de una barra que todavía no cierra?" que la propia insignia "● Sesión en curso"
+ya advertía sin poder responder. `TickerAnalysisPanel.jsx` ya mostraba esa insignia con una
+`title` genérica; ahora, cuando `confirmed_gate` existe, compara `gate.passes` contra
+`confirmed_gate.passes` - una nota discreta (`ticker-analysis__section-hint`) cuando coinciden, un
+aviso más visible (`.banner--warning`, nueva variante ámbar - mismo tono que la propia insignia
+intradía, agregada a `App.css`) cuando no, con el resultado exacto de cada lectura en el texto.
+
+**Tests**: sin infraestructura de tests de componentes en este frontend (mismo estado que la
+sección 26.12/complemento anterior) - verificado por revisión de código y por `npm run lint`/
+`npm run build` limpios; el `taken`/`confirmed_gate` que consumen ambos cambios ya estaba tipado y
+probado en el backend desde sus propias secciones (26.9, Fase 4).
