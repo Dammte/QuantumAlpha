@@ -40,7 +40,7 @@ npm run lint      # eslint
 
 ```bash
 cd backend
-pytest -q                    # suite completa: ~750 tests, unitarios + integración, ~2-3 min
+pytest -q                    # suite completa: ~830 tests, unitarios + integración, ~2-3 min
 ruff check app tests         # linter, debe quedar limpio siempre
 ```
 
