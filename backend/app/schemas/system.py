@@ -40,6 +40,10 @@ class TriggerOutcomeResponse(BaseModel):
     hit_rate: float | None
     mean_return: float | None
     median_return: float | None
+    # Parte 13: None for the combined row - True/False only for
+    # entry_triggered rows split by whether a real BUY followed the trigger
+    # (see TriggerOutcomeStats.taken's own docstring).
+    taken: bool | None = None
 
 
 class SignalPerformanceResponse(BaseModel):

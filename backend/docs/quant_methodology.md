@@ -1904,6 +1904,32 @@ ningún intento de red. Si alguna vez se configura un valor por defecto para la 
 tests, este archivo es el primero en dejar de probar el camino "sin clave" en absoluto, no solo dejar
 de fallar en silencio.
 
+### 26.9 "Qué pasó con lo que no compraste" (Parte 13) - taken vs. no taken sobre `entry_triggered`
+
+El esquema literal `trigger_history` de la Parte 4.3 lleva un booleano `taken` que la
+`TriggerEvent` real de la sección 25.2 nunca tuvo - no hay ninguna columna que el propietario
+marque al abrir de verdad una posición. Resuelto sin añadir esa columna (nada más la habría
+escrito jamás): `taken` se deriva en `trigger_performance_service.py` a partir del historial real
+de `Transaction` - una compra real de ese ticker dentro de `TAKEN_WINDOW_DAYS` (10 días naturales,
+un margen holgado sobre el horizonte primario de 5 sesiones) después del `entry_triggered`, mirando
+las transacciones de **todas** las carteras, no una en particular. Deliberadamente acotado a
+`entry_triggered` únicamente - `gate_passed` es un estado más temprano y menos específico que el
+propietario no "actúa" directamente, así que "tomado" no es una pregunta coherente para hacerle.
+
+`compute_trigger_outcomes` acepta `buy_dates_by_ticker` opcional (`None` reproduce exactamente el
+comportamiento anterior, una sola fila combinada por tipo de evento/horizonte - nada se rompe para
+quien no lo pase); cuando se da, cada fila `entry_triggered` se divide en `taken=True`/`taken=False`,
+medidas cada una contra su propio subconjunto de eventos, sin tocar la fila combinada
+(`taken=None`) que sigue cubriendo ambos. `GET /system/signal-performance` construye ese
+diccionario a partir de `PortfolioRepository.list_all()`/`get_transactions` - una lectura completa,
+no optimizada, pero razonable para un puñado de carteras con unos cientos de transacciones cada
+una, y no es un camino caliente de las reglas de decisión (la prohibición de cómputo en vivo de la
+Parte 12/17 es sobre el propio gate, no sobre este endpoint de medición).
+
+Como todo lo demás de la Fase 8 (sección 25/25.1), esto empieza vacío y solo puede responder hacia
+adelante - no hay atajo honesto para comparar retroactivamente lo que se tomó de lo que no, dado
+que la propia tabla de eventos empezó a acumularse recién en la Fase 2.
+
 **Tests**: 5 nuevos en `test_trade_manager.py` reescritos + 4 nuevos (ladder completo con costes,
 techo de posición pequeña, cierre por tiempo del último tercio); 3 en `test_backtest_engine.py`
 recalculados contra los nuevos multiplicadores del Chandelier; 1 nuevo en `test_market_screener_service.py`
@@ -1911,6 +1937,8 @@ recalculado contra el cruce EMA real; ~15 en `test_exit_engine.py` renombrados/r
 `test_trade_geometry.py` (39 para `compute_entry_geometry`/`size_position`/`compute_trade_geometry`,
 5 para el split); 2 nuevos en `test_levels_engine.py` (`entry_geometry` presente/ausente según
 `ema21`/`ema55`); 3 nuevos en `test_technical_analysis.py` (`atr_multiple_from_ema`, incluida la
-comparación de reactividad contra la versión SMA); 8 nuevos en `test_gemini_degradation.py`. Suite
-completa verde en cada commit (`pytest -q`, unit + integración, ejecutada en domingo sin fallos - la
-propia Parte 17 exige verde cualquier día de la semana).
+comparación de reactividad contra la versión SMA); 8 nuevos en `test_gemini_degradation.py`; 7
+nuevos en `test_trigger_performance_service.py` (`taken`/`_was_taken`) + 1 de integración nueva en
+`test_system_api.py` end-to-end contra portafolio/transacción reales. Suite completa verde en cada
+commit (`pytest -q`, unit + integración, ejecutada en domingo sin fallos - la propia Parte 17 exige
+verde cualquier día de la semana).

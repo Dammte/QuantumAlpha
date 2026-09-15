@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -104,6 +104,75 @@ def test_compute_trigger_outcomes_negative_return_gives_zero_hit_rate():
     assert by_horizon[10].mean_return == pytest.approx(-0.10)
 
 
+# --- Parte 13: taken vs. not-taken ("qué pasó con lo que no compraste") -----
+
+
+def test_compute_trigger_outcomes_without_buy_dates_never_splits_by_taken():
+    # Default (pre-existing) behavior: one combined row, taken=None.
+    close = _close_series("2024-01-01", list(100.0 + i for i in range(80)))
+    when = datetime.combine(close.index[0].date(), datetime.min.time(), tzinfo=UTC)
+    events = [_event("AAPL", "entry_triggered", when)]
+
+    outcomes = tps.compute_trigger_outcomes(events, {"AAPL": close})
+
+    assert all(o.taken is None for o in outcomes)
+
+
+def test_compute_trigger_outcomes_splits_entry_triggered_by_taken():
+    close = _close_series("2024-01-01", list(100.0 + i for i in range(80)))
+    trigger_date = close.index[0].date()
+    when = datetime.combine(trigger_date, datetime.min.time(), tzinfo=UTC)
+    events = [
+        _event("AAPL", "entry_triggered", when),
+        _event("MSFT", "entry_triggered", when),
+    ]
+    # AAPL was bought 3 days after its trigger (within TAKEN_WINDOW_DAYS);
+    # MSFT never was.
+    buy_dates = {"AAPL": [trigger_date + timedelta(days=3)]}
+
+    outcomes = tps.compute_trigger_outcomes(
+        events, {"AAPL": close, "MSFT": close}, buy_dates_by_ticker=buy_dates
+    )
+
+    by_taken = {(o.event_type, o.horizon_days, o.taken): o for o in outcomes}
+    assert by_taken[("entry_triggered", 10, True)].n == 1
+    assert by_taken[("entry_triggered", 10, False)].n == 1
+    # The combined row still covers both, unaffected by the split existing.
+    assert by_taken[("entry_triggered", 10, None)].n == 2
+
+
+def test_compute_trigger_outcomes_never_splits_gate_passed_by_taken():
+    # Parte 13: "taken" is only a coherent question for entry_triggered -
+    # gate_passed is an earlier, less specific state nobody "acts on" directly.
+    close = _close_series("2024-01-01", list(100.0 + i for i in range(80)))
+    trigger_date = close.index[0].date()
+    when = datetime.combine(trigger_date, datetime.min.time(), tzinfo=UTC)
+    events = [_event("AAPL", "gate_passed", when)]
+    buy_dates = {"AAPL": [trigger_date + timedelta(days=1)]}
+
+    outcomes = tps.compute_trigger_outcomes(events, {"AAPL": close}, buy_dates_by_ticker=buy_dates)
+
+    assert all(o.taken is None for o in outcomes)
+
+
+def test_was_taken_outside_the_window_counts_as_not_taken():
+    trigger_date = date(2024, 1, 1)
+    buy_dates = {"AAPL": [trigger_date + timedelta(days=tps.TAKEN_WINDOW_DAYS + 1)]}
+    assert tps._was_taken("AAPL", trigger_date, buy_dates, tps.TAKEN_WINDOW_DAYS) is False
+
+
+def test_was_taken_a_buy_before_the_trigger_does_not_count():
+    # Bought it for some other reason before this specific trigger existed -
+    # not evidence the trigger itself was acted on.
+    trigger_date = date(2024, 1, 10)
+    buy_dates = {"AAPL": [trigger_date - timedelta(days=1)]}
+    assert tps._was_taken("AAPL", trigger_date, buy_dates, tps.TAKEN_WINDOW_DAYS) is False
+
+
+def test_was_taken_with_no_buys_at_all_for_the_ticker():
+    assert tps._was_taken("AAPL", date(2024, 1, 1), {}, tps.TAKEN_WINDOW_DAYS) is False
+
+
 # --- build_trigger_performance_report -----------------------------------------
 
 
@@ -135,3 +204,17 @@ def test_build_trigger_performance_report_fetches_only_measured_tickers():
     report = tps.build_trigger_performance_report(events, _FakeMarketData({"AAPL": close}))
 
     assert any(o.event_type == "gate_passed" for o in report.outcomes)
+
+
+def test_build_trigger_performance_report_passes_buy_dates_through_to_the_split():
+    close = _close_series("2024-01-01", list(100.0 + i for i in range(80)))
+    trigger_date = close.index[0].date()
+    when = datetime.combine(trigger_date, datetime.min.time(), tzinfo=UTC)
+    events = [_event("AAPL", "entry_triggered", when)]
+    buy_dates = {"AAPL": [trigger_date + timedelta(days=1)]}
+
+    report = tps.build_trigger_performance_report(
+        events, _FakeMarketData({"AAPL": close}), buy_dates_by_ticker=buy_dates
+    )
+
+    assert any(o.taken is True for o in report.outcomes)

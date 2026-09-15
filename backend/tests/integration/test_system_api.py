@@ -67,6 +67,41 @@ def test_signal_performance_reflects_a_trigger_event(client: TestClient, db_sess
     assert isinstance(body["trigger_outcomes"], list)
 
 
+def test_signal_performance_splits_entry_triggered_by_taken(client: TestClient, db_session: Session) -> None:
+    """Parte 13: an entry_triggered TriggerEvent followed by a real BUY of
+    the same ticker within TAKEN_WINDOW_DAYS shows up as its own taken=True
+    row, end to end through the real portfolio/transaction repositories -
+    not just `trigger_performance_service`'s own unit tests."""
+    TriggerEventRepository(db_session).record(
+        TriggerEvent(
+            id=None,
+            entity_type="ticker",
+            entity_key="AAPL",
+            event_type="entry_triggered",
+            previous_value=None,
+            new_value="125.40",
+            occurred_at=datetime(2024, 1, 2, tzinfo=UTC),
+            details={"price": 125.40},
+        )
+    )
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main", "base_currency": "USD"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={
+            "ticker": "AAPL",
+            "transaction_type": "buy",
+            "quantity": 10,
+            "price": 125.40,
+            "executed_at": "2024-01-03T00:00:00Z",
+        },
+    )
+
+    body = client.get("/api/v1/system/signal-performance").json()
+
+    entry_triggered_rows = [o for o in body["trigger_outcomes"] if o["event_type"] == "entry_triggered"]
+    assert any(o["taken"] is True for o in entry_triggered_rows)
+
+
 def test_trading_params_mirrors_the_core_module_exactly(client: TestClient) -> None:
     """Parte 19: a pure read, no DB/network involved - every field matches
     `app.core.trading_params`'s own constant value, so the UI never has a
