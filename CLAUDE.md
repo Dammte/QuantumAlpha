@@ -185,6 +185,18 @@ conectado. `trade_plan_service.py` sigue sin cambiar - llama a `compute_stop_and
 directamente, nunca a `evaluate_gate`: una posición reconstruida ya tiene una cantidad real y
 fija, dimensionarla no tendría sentido (ver ese módulo, "Deliberadamente lazy").
 
+**Resuelto (septiembre 2026)**: `size_position` por sí sola solo aplica los techos de *una*
+posición (riesgo fijo, `MAX_POSITION_PCT`) - ciega, por diseño propio, a cuánto del presupuesto de
+riesgo agregado (6%) o del techo de concentración por sector (30%) ya consume el resto de la
+cartera. `portfolio_construction_service.final_position_size`/`max_shares_for_position_risk`
+existían, probados, sin ningún llamador - la propia "capa por encima de una sola posición" que
+`size_position` señalaba como pendiente. `apply_portfolio_limits` (nuevo, mismo módulo) es esa capa:
+`GET /market/radar?portfolio_id=` la aplica después de `size_position` sobre cada candidato viable,
+con el riesgo agregado ya comprometido (`trade_plan` abierto por posición, mismo patrón de lectura
+que `/portfolios/{id}/construction`) y la concentración sectorial ya ocupada (`sector_of` +
+`compute_sector_concentration`) - nunca una llamada de red nueva por candidato, solo aritmética
+sobre datos ya en memoria.
+
 **Resuelto (septiembre 2026)**: la extensión parabólica de `exit_engine.py` (REDUCE) se mide
 ahora sobre `technical_analysis.atr_multiple_from_ema` (EMA21, `EXTENDED_ATR_MULTIPLE=3.0`, Parte
 9) a través de su propio parámetro `atr_multiple_from_ema21` - una función y un parámetro

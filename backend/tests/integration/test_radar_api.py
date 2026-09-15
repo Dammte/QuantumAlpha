@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.trading_params import RISK_PER_TRADE_PCT
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
+from app.services.portfolio_construction_service import MAX_SECTOR_CONCENTRATION_PCT
 
 _VIABLE_GEOMETRY = {
     "entry_price": 50.0,
@@ -222,3 +223,39 @@ def test_radar_with_unknown_portfolio_id_returns_404(client: TestClient, db_sess
     _seed_state(db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY)
     response = client.get("/api/v1/market/radar?region=us&portfolio_id=999")
     assert response.status_code == 404
+
+
+def test_radar_narrows_a_sized_candidate_by_the_portfolios_sector_concentration(
+    client: TestClient, db_session: Session
+) -> None:
+    # `size_position` alone (the previous test) is blind to every *other*
+    # open position - `portfolio_construction_service.apply_portfolio_limits`
+    # is the "one layer up" narrowing its own docstring points to. MSFT is
+    # "Tecnología", the same curated sector as the NVDA candidate below; TSLA
+    # (a different sector) only dilutes total capital, at the fake provider's
+    # shared 150.0 quote for both.
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "MSFT", "transaction_type": "buy", "quantity": 25, "price": 100},
+    )
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "TSLA", "transaction_type": "buy", "quantity": 75, "price": 100},
+    )
+    capital_total = 150.0 * (25 + 75)  # = 15,000; MSFT is exactly 25% of it.
+    _seed_state(db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY)
+
+    body = client.get(f"/api/v1/market/radar?region=us&portfolio_id={portfolio_id}").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    geometry = nvda["entry_geometry"]
+    # size_position alone would size this at capital*RISK_PER_TRADE_PCT/5 = 30
+    # shares - but Tecnología is already at 25% of capital, leaving only a 5%
+    # sector headroom (30% cap), narrower than the risk-based 30 shares.
+    sector_headroom_pct = MAX_SECTOR_CONCENTRATION_PCT - 0.25
+    expected_shares = (sector_headroom_pct * capital_total) / 50.0
+    assert expected_shares < (capital_total * RISK_PER_TRADE_PCT) / 5.0  # confirms the sector cap is what binds
+    assert geometry["shares_for_risk_budget"] == pytest.approx(expected_shares)
+    assert geometry["position_value"] == pytest.approx(expected_shares * 50.0)
+    assert geometry["viable"] is True

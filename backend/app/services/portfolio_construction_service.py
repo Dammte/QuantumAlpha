@@ -17,12 +17,14 @@ suggestion, not an instruction.
 """
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 
-from app.core.trading_params import HIGH_CORRELATION_THRESHOLD, MAX_AGGREGATE_RISK_PCT
+from app.core.trading_params import HIGH_CORRELATION_THRESHOLD, MAX_AGGREGATE_RISK_PCT, MIN_POSITION_USD
+from app.services.trade_geometry import TradeGeometry
+from app.services.trade_manager import max_shares_for_position_risk
 
 CORRELATION_WINDOW = 60  # trading days
 TRADING_DAYS_PER_YEAR = 252
@@ -233,3 +235,77 @@ def final_position_size(
     reason and all three must hold at once - this is never wider than any
     individual one, only ever the same or narrower."""
     return min(risk_based_size, portfolio_risk_limit_size, sector_limit_size)
+
+
+def sector_limit_shares(
+    sector_concentrations: list[SectorConcentration],
+    candidate_sector: str | None,
+    capital_total: float,
+    entry_price: float,
+    max_pct: float = MAX_SECTOR_CONCENTRATION_PCT,
+) -> float:
+    """How many more shares of `candidate_sector` fit before that sector's
+    weight would exceed `max_pct` of `capital_total` - `0.0` (never negative)
+    once the sector is already at or past the limit, so `final_position_size`'s
+    `min()` correctly reduces a candidate in an already-crowded sector to
+    nothing rather than letting a negative number pass through unnoticed.
+    `candidate_sector=None` (a ticker outside the curated universe) is looked
+    up under `sector_concentrations`' own "Desconocido" bucket - the same
+    grouping `compute_sector_concentration` already uses for unmapped
+    tickers, so a candidate correctly inherits whatever headroom that bucket
+    has left instead of being treated as its own, always-empty sector."""
+    sector = candidate_sector or "Desconocido"
+    current = next((s.weight_pct for s in sector_concentrations if s.sector == sector), 0.0)
+    headroom_pct = max(0.0, max_pct - current)
+    return (headroom_pct * capital_total) / entry_price if entry_price > 0 else 0.0
+
+
+def apply_portfolio_limits(
+    geometry: TradeGeometry,
+    candidate_sector: str | None,
+    sector_concentrations: list[SectorConcentration],
+    aggregate_risk: AggregateRiskReport,
+    capital_total: float,
+) -> TradeGeometry:
+    """The "one layer up" narrowing `trade_geometry.size_position`'s own
+    docstring points to: that function fixes a position at `RISK_PER_TRADE_PCT`
+    of capital and a flat `MAX_POSITION_PCT` ceiling, deliberately blind to
+    every *other* open position - it has no way to know the 6%
+    aggregate-risk budget is already half spent, or that this ticker's
+    sector is already at 28% of capital with a 30% ceiling. This is that
+    missing check, applied *after* `size_position` on a `geometry` that's
+    already sized (a no-op on one that isn't - see below).
+
+    `portfolio_risk_limit_size` reuses `max_shares_for_position_risk` not
+    with the flat per-trade 1% it defaults to (`size_position` already
+    enforced that), but with whatever room is *left* in the aggregate 6%
+    budget after every already-open position's own risk - the same function,
+    a different, portfolio-aware percentage. `sector_limit_size` mirrors
+    that for `MAX_SECTOR_CONCENTRATION_PCT`. `final_position_size` takes the
+    tightest of the three; a resulting position under `MIN_POSITION_USD`
+    rejects outright (same reasoning `size_position` already applies to its
+    own, narrower result) rather than persisting a number too small for
+    transaction costs to leave anything real behind."""
+    if not geometry.viable or geometry.shares_for_risk_budget is None or geometry.stop_price is None:
+        return geometry
+
+    remaining_risk_pct = max(0.0, MAX_AGGREGATE_RISK_PCT - (aggregate_risk.total_risk_pct_of_capital or 0.0))
+    portfolio_risk_limit_size = max_shares_for_position_risk(
+        capital_total, geometry.entry_price, geometry.stop_price, max_risk_pct=remaining_risk_pct
+    )
+    sector_limit_size = sector_limit_shares(
+        sector_concentrations, candidate_sector, capital_total, geometry.entry_price
+    )
+
+    shares = final_position_size(
+        geometry.shares_for_risk_budget, portfolio_risk_limit_size or 0.0, sector_limit_size
+    )
+    position_value = shares * geometry.entry_price
+    pct_of_portfolio = (position_value / capital_total) if capital_total > 0 else None
+    narrowed = replace(
+        geometry, shares_for_risk_budget=shares, position_value=position_value, pct_of_portfolio=pct_of_portfolio
+    )
+    if position_value < MIN_POSITION_USD:
+        reason = "posición demasiado pequeña una vez aplicados los límites de riesgo agregado/sector de la cartera"
+        return replace(narrowed, viable=False, rejection_reason=reason)
+    return narrowed

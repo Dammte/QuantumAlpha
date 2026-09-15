@@ -10,10 +10,12 @@ from app.api.deps import (
     get_market_screener_service,
     get_portfolio_service,
     get_ticker_daily_state_repository,
+    get_trade_plan_repository,
 )
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
+from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.schemas.market import (
     EntryTriggerResponse,
     GateConditionResponse,
@@ -39,6 +41,7 @@ from app.schemas.market import (
     UniverseResponse,
     VixSnapshotResponse,
 )
+from app.services import portfolio_construction_service as pcs
 from app.services.market_context_service import MarketContextService, assess_market_regime
 from app.services.market_screener_service import (
     MarketScreenerService,
@@ -48,7 +51,7 @@ from app.services.market_screener_service import (
     get_trend_breadth,
     get_trend_detail,
 )
-from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of
+from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of, sector_of
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
 from app.services.relationship_map_service import build_relationship_map
 from app.services.trade_geometry import geometry_from_dict, geometry_to_dict, size_position
@@ -238,6 +241,7 @@ def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
 def get_radar(
     ticker_daily_state_repo: Annotated[TickerDailyStateRepository, Depends(get_ticker_daily_state_repository)],
     portfolio_service: Annotated[PortfolioService, Depends(get_portfolio_service)],
+    trade_plan_repo: Annotated[TradePlanRepository, Depends(get_trade_plan_repository)],
     region: str = RegionQuery,
     portfolio_id: int | None = None,
 ) -> RadarResponse:
@@ -272,15 +276,53 @@ def get_radar(
     # same zero-network, pure-DB-read path it always was.
     if portfolio_id is not None:
         try:
-            capital_total = portfolio_service.get_portfolio_summary(portfolio_id).total_portfolio_value
+            portfolio = portfolio_service.get_portfolio_summary(portfolio_id)
         except PortfolioNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        capital_total = portfolio.total_portfolio_value
+
+        # `size_position` alone only enforces this *one* candidate's own
+        # fixed-risk/MAX_POSITION_PCT ceilings - blind, by its own docstring,
+        # to every other open position. `portfolio_construction_service.
+        # apply_portfolio_limits` is the "one layer up" narrowing that
+        # function points to: how much of the 6% aggregate-risk budget and
+        # the 30%-per-sector ceiling this specific candidate's sector still
+        # has room for, given what the portfolio already holds. Weight/risk
+        # here are measured against the same `capital_total` used for sizing
+        # (not `/construction`'s own `total_market_value` basis) so the two
+        # percentages stay comparable - a handful of DB reads (one per held
+        # position's trade plan, the same pattern `/construction` already
+        # uses), never one per Radar candidate.
+        held_positions = [p for p in portfolio.positions if p.quantity > 0]
+        weight_by_ticker = {
+            p.ticker: p.market_value_base / capital_total
+            for p in held_positions
+            if p.market_value_base is not None and capital_total > 0
+        }
+        sector_by_ticker = {p.ticker: sector_of(p.ticker) for p in held_positions}
+        sector_concentrations = pcs.compute_sector_concentration(weight_by_ticker, sector_by_ticker)
+
+        position_risks: list[pcs.HeldPositionRisk] = []
+        for p in held_positions:
+            plan = trade_plan_repo.get_open(portfolio_id, p.ticker)
+            if plan is None or plan.current_stop is None or p.current_price is None:
+                continue
+            position_risks.append(
+                pcs.HeldPositionRisk(
+                    ticker=p.ticker, price=p.current_price, stop=plan.current_stop, quantity=p.quantity
+                )
+            )
+        aggregate_risk = pcs.compute_aggregate_risk(position_risks, capital_total)
+
         for item in items:
             if item.entry_geometry is None or not item.entry_geometry.viable:
                 continue
             geometry = geometry_from_dict(item.entry_geometry.model_dump())
             sized = size_position(geometry, capital_total)
-            item.entry_geometry = TradeGeometryResponse(**geometry_to_dict(sized))
+            narrowed = pcs.apply_portfolio_limits(
+                sized, sector_of(item.ticker), sector_concentrations, aggregate_risk, capital_total
+            )
+            item.entry_geometry = TradeGeometryResponse(**geometry_to_dict(narrowed))
 
     return RadarResponse(items=items, computed_at=computed_at)
 

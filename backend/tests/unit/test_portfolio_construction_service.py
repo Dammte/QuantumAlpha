@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from app.services import portfolio_construction_service as pcs
+from app.services.trade_geometry import EntryType, TradeGeometry
 
 # --- compute_correlation_matrix / find_correlated_pairs ----------------------
 
@@ -200,3 +201,101 @@ def test_final_position_size_is_the_tightest_constraint():
     assert pcs.final_position_size(100.0, portfolio_risk_limit_size=80.0, sector_limit_size=120.0) == 80.0
     assert pcs.final_position_size(50.0, portfolio_risk_limit_size=80.0, sector_limit_size=120.0) == 50.0
     assert pcs.final_position_size(100.0, portfolio_risk_limit_size=80.0, sector_limit_size=30.0) == 30.0
+
+
+# --- sector_limit_shares ------------------------------------------------------
+
+
+def test_sector_limit_shares_returns_the_remaining_headroom():
+    concentrations = [pcs.SectorConcentration(sector="Tecnología", weight_pct=0.20, tickers=["AAPL"])]
+    # 30% cap - 20% already held = 10% headroom = $10,000 of $100,000 capital.
+    shares = pcs.sector_limit_shares(concentrations, "Tecnología", capital_total=100_000.0, entry_price=50.0)
+    assert shares == pytest.approx(200.0)
+
+
+def test_sector_limit_shares_is_zero_once_the_sector_is_already_at_or_past_the_cap():
+    concentrations = [pcs.SectorConcentration(sector="Tecnología", weight_pct=0.35, tickers=["AAPL"])]
+    shares = pcs.sector_limit_shares(concentrations, "Tecnología", capital_total=100_000.0, entry_price=50.0)
+    assert shares == 0.0
+
+
+def test_sector_limit_shares_full_headroom_for_a_sector_not_held_at_all():
+    shares = pcs.sector_limit_shares([], "Salud", capital_total=100_000.0, entry_price=50.0)
+    assert shares == pytest.approx(0.30 * 100_000.0 / 50.0)
+
+
+def test_sector_limit_shares_unmapped_candidate_uses_the_desconocido_bucket():
+    concentrations = [pcs.SectorConcentration(sector="Desconocido", weight_pct=0.25, tickers=["XYZ"])]
+    shares = pcs.sector_limit_shares(concentrations, None, capital_total=100_000.0, entry_price=50.0)
+    assert shares == pytest.approx(0.05 * 100_000.0 / 50.0)
+
+
+# --- apply_portfolio_limits ----------------------------------------------------
+
+
+def _sized_geometry(**overrides) -> TradeGeometry:
+    defaults = dict(
+        entry_price=50.0, stop_price=45.0, stop_basis="bajo el soporte en 45.00",
+        entry_type=EntryType.PULLBACK_SUPPORT, risk_pct=0.10, risk_atr=2.5, risk_ceiling_pct=0.07,
+        target_price=60.0, target_basis="objetivo 2:1 sobre el riesgo", reward_pct=0.20,
+        risk_reward_gross=2.0, risk_reward_net=1.9,
+        shares_for_risk_budget=20.0, position_value=1_000.0, pct_of_portfolio=0.10,
+        viable=True, rejection_reason=None,
+    )
+    defaults.update(overrides)
+    return TradeGeometry(**defaults)
+
+
+_NO_AGGREGATE_RISK = pcs.AggregateRiskReport(
+    total_risk_amount=0.0, total_risk_pct_of_capital=0.0, exceeds_limit=False
+)
+
+
+def test_apply_portfolio_limits_is_a_noop_on_a_non_viable_geometry():
+    geometry = _sized_geometry(viable=False, rejection_reason="algo", shares_for_risk_budget=None)
+    result = pcs.apply_portfolio_limits(geometry, "Tecnología", [], _NO_AGGREGATE_RISK, 10_000.0)
+    assert result == geometry
+
+
+def test_apply_portfolio_limits_is_a_noop_on_a_geometry_size_position_never_sized():
+    # compute_entry_geometry alone (no capital) - shares_for_risk_budget is None even though viable.
+    geometry = _sized_geometry(shares_for_risk_budget=None, position_value=None, pct_of_portfolio=None)
+    result = pcs.apply_portfolio_limits(geometry, "Tecnología", [], _NO_AGGREGATE_RISK, 10_000.0)
+    assert result == geometry
+
+
+def test_apply_portfolio_limits_narrows_to_the_tightest_of_risk_and_sector_caps():
+    # size_position alone already sized this at 20 shares ($1,000, 10% of a $10,000 book).
+    geometry = _sized_geometry(shares_for_risk_budget=20.0, position_value=1_000.0, pct_of_portfolio=0.10)
+    capital_total = 10_000.0
+    # Aggregate risk already at 5.5% of a 6% budget - only 0.5% of headroom left.
+    aggregate_risk = pcs.AggregateRiskReport(
+        total_risk_amount=550.0, total_risk_pct_of_capital=0.055, exceeds_limit=False
+    )
+    # 0.5% headroom * $10,000 / $5 risk-per-share (50-45) = 10 shares - tighter than the sector's room.
+    sector_concentrations = [pcs.SectorConcentration(sector="Tecnología", weight_pct=0.0, tickers=[])]
+
+    result = pcs.apply_portfolio_limits(
+        geometry, "Tecnología", sector_concentrations, aggregate_risk, capital_total
+    )
+
+    assert result.viable is True
+    assert result.shares_for_risk_budget == pytest.approx(10.0)
+    assert result.position_value == pytest.approx(500.0)
+    assert result.pct_of_portfolio == pytest.approx(0.05)
+    # Stop/target/entry_type untouched by the narrowing.
+    assert result.stop_price == 45.0
+    assert result.entry_type == EntryType.PULLBACK_SUPPORT
+
+
+def test_apply_portfolio_limits_rejects_when_the_narrowed_position_is_too_small():
+    geometry = _sized_geometry(shares_for_risk_budget=20.0, position_value=1_000.0, pct_of_portfolio=0.10)
+    # A sector already essentially maxed out leaves almost no room at all.
+    sector_concentrations = [pcs.SectorConcentration(sector="Tecnología", weight_pct=0.2999, tickers=["OTHER"])]
+
+    result = pcs.apply_portfolio_limits(
+        geometry, "Tecnología", sector_concentrations, _NO_AGGREGATE_RISK, 10_000.0
+    )
+
+    assert result.viable is False
+    assert "pequeña" in result.rejection_reason

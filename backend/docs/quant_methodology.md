@@ -2035,3 +2035,54 @@ nuevos en `test_radar_api.py` (geometría ausente antes de la migración, expues
 sin `portfolio_id`, dimensionada correctamente con `portfolio_id` contra el capital real de una
 cartera con una posición real, una geometría no viable que `portfolio_id` deja intacta, y 404 con
 un `portfolio_id` inexistente). Suite completa verde (`pytest -q`, unit + integración).
+
+### 26.13 `apply_portfolio_limits`: el techo agregado (6%) y de sector (30%) que `size_position` no podía ver
+
+Una auditoría independiente (agente de exploración, dedicado a buscar exactamente este patrón:
+comentarios que admiten algo pendiente sin la justificación explícita que sí acompaña a cada deuda
+ya conocida de este documento) encontró una más, real, no re-litigada: `size_position` (26.12) fija
+una posición en `RISK_PER_TRADE_PCT` del capital y un techo plano `MAX_POSITION_PCT` -
+deliberadamente ciega, por su propio diseño, a cualquier *otra* posición abierta. Su propio
+docstring ya lo decía: *"The 6% aggregate-risk-across-all-positions cap from the brief is
+deliberately NOT enforced here - that needs every other open position's own risk, which is
+`portfolio_construction_service.final_position_size`'s job, one layer up from a single ticker's own
+geometry."* Esa función - y `trade_manager.max_shares_for_position_risk`, su otra mitad - existían,
+probadas (`test_portfolio_construction_service.py`, `test_trade_manager.py`), sin un solo llamador
+real en `app/api`. A diferencia de cada "primera pasada, sin calibrar todavía" de este documento
+(todas con un porqué explícito y un estudio de ablación al que apuntan), esta frase no tenía ningún
+"queda pendiente a propósito" adjunto - simplemente daba la integración por hecha cuando no lo
+estaba.
+
+`apply_portfolio_limits` (nuevo, `portfolio_construction_service.py`) es esa capa que faltaba,
+aplicada *después* de `size_position`, nunca en su lugar: sobre una geometría ya dimensionada,
+calcula cuánto del 6% de riesgo agregado ya está comprometido por el resto de posiciones abiertas
+de la cartera (`compute_aggregate_risk` sobre sus `trade_plan`s reales, el mismo cálculo que
+`GET /portfolios/{id}/construction` ya hace) y cuánto del 30% de un sector ya ocupa esa cartera
+(`compute_sector_concentration` sobre los pesos actuales) - y estrecha el tamaño sugerido a lo que
+de verdad queda de margen en cada uno, vía `final_position_size` (el `min()` de las tres
+restricciones) y la nueva `sector_limit_shares` (el remanente de un sector concreto, `0.0` en vez
+de negativo una vez que ya está en o por encima del techo, para que ese `min()` lo excluya
+correctamente en vez de dejar pasar un número sin sentido). Una posición que el estrechamiento deja
+por debajo de `MIN_POSITION_USD` se rechaza igual que `size_position` ya rechaza la suya - nunca se
+persiste un tamaño tan pequeño que los costes de transacción se lo coman entero.
+
+`GET /market/radar?portfolio_id=` es el único llamador real: para cada candidato ya dimensionado,
+una lectura acotada por posición abierta (el mismo puñado de `trade_plan`s que `/construction` ya
+lee, nunca uno por candidato del Radar) más `sector_of` del propio candidato - toda la aritmética
+sobre datos ya en memoria, cero llamada de red nueva. El peso/riesgo aquí se mide contra el mismo
+`capital_total` (`total_portfolio_value`) que `size_position` ya usa - deliberadamente no el
+`total_market_value` que `/construction` usa para el suyo (una pregunta distinta: "de lo que ya
+invertí, cuánto hay en este sector" contra "de mi capital total, cuánto cabría aquí") - para que el
+6% y el 30% de esta narrowing sean comparables entre sí sin mezclar dos bases distintas.
+
+**Tests**: 3 nuevos en `test_portfolio_construction_service.py` para `sector_limit_shares`
+(remanente real, cero una vez agotado el techo, remanente completo para un sector no ocupado
+todavía, bucket "Desconocido" para un ticker fuera del universo curado) + 4 nuevos para
+`apply_portfolio_limits` (no-op sobre una geometría no viable, no-op sobre una geometría que
+`size_position` nunca llegó a dimensionar, estrechamiento a la más ajustada de riesgo agregado y
+sector con los campos de stop/objetivo/tipo de entrada intactos, rechazo cuando el tamaño ya
+estrechado cae por debajo de `MIN_POSITION_USD`); 1 nuevo en `test_radar_api.py` de integración
+end-to-end (una cartera real con dos posiciones - una en el mismo sector que el candidato, otra en
+uno distinto solo para diluir capital - confirma que el techo de sector, no el de riesgo por
+posición, es lo que efectivamente estrecha el tamaño sugerido). Suite completa verde
+(`pytest -q`, unit + integración), ruff limpio.
