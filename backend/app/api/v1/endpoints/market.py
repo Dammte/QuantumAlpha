@@ -8,6 +8,7 @@ from app.api.deps import (
     DbSession,
     get_market_context_service,
     get_market_screener_service,
+    get_portfolio_service,
     get_ticker_daily_state_repository,
 )
 from app.domain.models.ticker_daily_state import TickerDailyState
@@ -32,6 +33,7 @@ from app.schemas.market import (
     StopAndTargetResponse,
     SupportResistanceResponse,
     TickerSnapshotResponse,
+    TradeGeometryResponse,
     TrendBreadthResponse,
     TrendDetailResponse,
     UniverseResponse,
@@ -47,7 +49,9 @@ from app.services.market_screener_service import (
     get_trend_detail,
 )
 from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of
+from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
 from app.services.relationship_map_service import build_relationship_map
+from app.services.trade_geometry import geometry_from_dict, geometry_to_dict, size_position
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -186,6 +190,10 @@ def get_market_trend_detail(
     return TrendDetailResponse(**{group: [_to_response(s) for s in items] for group, items in detail.items()})
 
 
+def _geometry_dict_to_response(data: dict | None) -> TradeGeometryResponse | None:
+    return TradeGeometryResponse(**data) if data is not None else None
+
+
 def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
     return RadarItemResponse(
         ticker=state.ticker,
@@ -222,13 +230,16 @@ def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
             if state.stop_loss is not None
             else None
         ),
+        entry_geometry=_geometry_dict_to_response(state.entry_geometry),
     )
 
 
 @router.get("/radar", response_model=RadarResponse)
 def get_radar(
     ticker_daily_state_repo: Annotated[TickerDailyStateRepository, Depends(get_ticker_daily_state_repository)],
+    portfolio_service: Annotated[PortfolioService, Depends(get_portfolio_service)],
     region: str = RegionQuery,
+    portfolio_id: int | None = None,
 ) -> RadarResponse:
     """Reconstruction (2026-09), Fase 5: "qué está a punto de disparar una
     entrada" (Parte 0, pregunta 2) - a pure read over `daily_close.py`'s own
@@ -247,10 +258,31 @@ def get_radar(
     states = ticker_daily_state_repo.latest_by_region(region)
     candidates = [s for s in states if s.gate_passes or s.entry_trigger_price is not None]
     computed_at = max((s.computed_at for s in states), default=None)
-    return RadarResponse(
-        items=[_daily_state_to_radar_item(s) for s in candidates],
-        computed_at=computed_at,
-    )
+    items = [_daily_state_to_radar_item(s) for s in candidates]
+
+    # Parte 7 (later pass): "the Radar rendering for one portfolio" -
+    # `trade_geometry.py`'s own docstring names this as the natural place to
+    # call `size_position`, once a *specific* portfolio's capital is known.
+    # `compute_entry_geometry` (above, unsized) already did the one thing
+    # that needs a fresh read of the ticker's own technicals; sizing it
+    # against `capital_total` is a pure, in-memory function - no extra
+    # network call per candidate, only the one already-accepted live read
+    # `GET /portfolios/{id}/construction` also does for the same portfolio.
+    # Optional and additive: omitting `portfolio_id` keeps this endpoint the
+    # same zero-network, pure-DB-read path it always was.
+    if portfolio_id is not None:
+        try:
+            capital_total = portfolio_service.get_portfolio_summary(portfolio_id).total_portfolio_value
+        except PortfolioNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        for item in items:
+            if item.entry_geometry is None or not item.entry_geometry.viable:
+                continue
+            geometry = geometry_from_dict(item.entry_geometry.model_dump())
+            sized = size_position(geometry, capital_total)
+            item.entry_geometry = TradeGeometryResponse(**geometry_to_dict(sized))
+
+    return RadarResponse(items=items, computed_at=computed_at)
 
 
 @router.get("/levels/proximity", response_model=list[ProximityItemResponse])

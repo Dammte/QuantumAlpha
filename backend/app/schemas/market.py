@@ -10,6 +10,7 @@ from app.schemas.quant_analysis import (
     ImminentCrossResponse,
     MultiTimeframeResponse,
     StopAndTargetResponse,
+    TradeGeometryResponse,
 )
 
 
@@ -293,6 +294,12 @@ class RadarItemResponse(BaseModel):
     gate_version: str
     entry_trigger: EntryTriggerResponse | None
     stop_and_target: StopAndTargetResponse | None
+    # Parte 7 (later pass): the ticker-only half of the real design
+    # (`trade_geometry.compute_entry_geometry`), persisted by `daily_close.py`
+    # - `None` for rows computed before this column existed. Never sized here
+    # (see `TradeGeometryResponse`'s own docstring) - pass `portfolio_id` to
+    # size every viable one against that portfolio's capital instead.
+    entry_geometry: TradeGeometryResponse | None = None
 
 
 class RadarResponse(BaseModel):

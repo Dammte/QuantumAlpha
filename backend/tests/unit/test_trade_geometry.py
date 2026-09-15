@@ -196,6 +196,39 @@ def test_compute_trade_geometry_matches_the_two_step_split():
     assert wrapped == two_step
 
 
+def test_geometry_to_dict_and_back_round_trips_a_viable_geometry():
+    # `daily_close.py` persists exactly this dict shape on `TickerDailyState`
+    # (Parte 7, later pass) - a caller with a specific portfolio's capital
+    # (e.g. `GET /market/radar?portfolio_id=`) must get back a real
+    # `TradeGeometry` it can run through `size_position`, not just a display
+    # shape.
+    support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
+    geometry = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    assert geometry.viable is True
+
+    data = tg.geometry_to_dict(geometry)
+    assert data["entry_type"] == "pullback_support"
+    restored = tg.geometry_from_dict(data)
+    assert restored == geometry
+
+    sized = tg.size_position(restored, capital_total=100_000.0)
+    assert sized.shares_for_risk_budget is not None
+
+
+def test_geometry_to_dict_serializes_a_none_entry_type():
+    geometry = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    assert geometry.viable is False
+    data = tg.geometry_to_dict(geometry)
+    assert data["entry_type"] is None
+    assert tg.geometry_from_dict(data) == geometry
+
+
 # --- compute_trade_geometry: the real Parte 7 design (stop cascade + ---------
 # --- adaptive risk ceiling + cost-net target + fixed-risk sizing) -----------
 #

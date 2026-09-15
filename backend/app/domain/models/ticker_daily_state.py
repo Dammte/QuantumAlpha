@@ -43,3 +43,12 @@ class TickerDailyState:
     take_profit: float | None
     take_profit_method: str | None
     risk_reward: float | None
+    # Parte 7 (2026-09, later pass): the ticker-only half of the real design
+    # (`trade_geometry.compute_entry_geometry`, via `trade_geometry.geometry_to_dict`)
+    # - `None` for rows computed before this column existed, or when the gate
+    # itself never got a real ema21/ema55 to build it from. Never sized
+    # (`shares_for_risk_budget`/`position_value`/`pct_of_portfolio` are always
+    # `None` inside it) - a precomputed universe-wide row doesn't belong to
+    # any one portfolio; a caller with a specific portfolio's capital sizes it
+    # via `trade_geometry.size_position`/`geometry_from_dict` at read time.
+    entry_geometry: dict | None = None

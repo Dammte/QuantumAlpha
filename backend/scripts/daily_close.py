@@ -60,11 +60,13 @@ from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider
 from app.services import exit_engine as ee
 from app.services import levels_engine as le
+from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.portfolio_risk_service import PositionRisk, get_portfolio_positions_risk
 from app.services.ticker_analysis_service import MIN_BARS_REQUIRED
+from app.services.trade_geometry import geometry_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +99,18 @@ def build_ticker_daily_state(
     obv_div = ta.obv_divergence(close, volume)
     fast_pair_veto = ta.detect_fast_pair_bearish_veto(close)
 
+    # Parte 7 (later pass): the same real EMA21/55 read
+    # `ticker_analysis_service.compute_core_signals` already passes to
+    # `evaluate_gate` for "Analizar activo"/`/risk` - cheap off the same
+    # `close` series already in memory here, no new network call. Without
+    # these two, `gate.entry_geometry` comes back `None` (see that
+    # function's own docstring) and this job would keep persisting nothing
+    # for Parte 7's real design, same gap CLAUDE.md used to flag.
+    ema21_raw = ta.ema(close, mtf.FAST_MA_PERIOD).iloc[-1] if len(close) else None
+    ema55_raw = ta.ema(close, mtf.SLOW_MA_PERIOD).iloc[-1] if len(close) else None
+    ema21 = None if ema21_raw is None or pd.isna(ema21_raw) else float(ema21_raw)
+    ema55 = None if ema55_raw is None or pd.isna(ema55_raw) else float(ema55_raw)
+
     gate = le.evaluate_gate(
         price=snapshot.price,
         trend=snapshot.trend,
@@ -111,6 +125,8 @@ def build_ticker_daily_state(
         nearest_resistance=nearest_resistance,
         obv_divergence=obv_div,
         fast_pair_bearish_signal=fast_pair_veto,
+        ema21=ema21,
+        ema55=ema55,
     )
     trigger = gate.entry_trigger
     stop_target = gate.stop_and_target
@@ -139,6 +155,7 @@ def build_ticker_daily_state(
         take_profit=stop_target.take_profit,
         take_profit_method=stop_target.take_profit_method,
         risk_reward=stop_target.risk_reward,
+        entry_geometry=geometry_to_dict(gate.entry_geometry) if gate.entry_geometry is not None else None,
     )
 
 

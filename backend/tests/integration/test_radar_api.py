@@ -5,11 +5,33 @@ docstring."""
 
 from datetime import UTC, date, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.core.trading_params import RISK_PER_TRADE_PCT
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
+
+_VIABLE_GEOMETRY = {
+    "entry_price": 50.0,
+    "stop_price": 45.0,
+    "stop_basis": "bajo el soporte en 45.00",
+    "entry_type": "pullback_support",
+    "risk_pct": 0.10,
+    "risk_atr": 2.5,
+    "risk_ceiling_pct": 0.07,
+    "target_price": 56.0,
+    "target_basis": "objetivo 2:1 sobre el riesgo",
+    "reward_pct": 0.12,
+    "risk_reward_gross": 2.0,
+    "risk_reward_net": 1.9,
+    "shares_for_risk_budget": None,
+    "position_value": None,
+    "pct_of_portfolio": None,
+    "viable": True,
+    "rejection_reason": None,
+}
 
 
 def _seed_state(db: Session, **overrides) -> TickerDailyState:
@@ -122,3 +144,81 @@ def test_radar_only_shows_the_latest_row_per_ticker(client: TestClient, db_sessi
     assert len(matches) == 1
     assert matches[0]["price"] == 150.0
     assert matches[0]["gate_passes"] is True
+
+
+def test_radar_row_with_no_entry_geometry_is_none_pre_migration_row(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_state(db_session)
+    aapl = client.get("/api/v1/market/radar?region=us").json()["items"][0]
+    assert aapl["entry_geometry"] is None
+
+
+def test_radar_exposes_the_unsized_entry_geometry_without_a_portfolio(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_state(db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY)
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    geometry = nvda["entry_geometry"]
+    assert geometry is not None
+    assert geometry["viable"] is True
+    assert geometry["entry_type"] == "pullback_support"
+    assert geometry["stop_price"] == 45.0
+    # Parte 7: never sized without a specific portfolio's capital in view.
+    assert geometry["shares_for_risk_budget"] is None
+    assert geometry["position_value"] is None
+
+
+def test_radar_sizes_the_entry_geometry_against_a_portfolios_capital(
+    client: TestClient, db_session: Session
+) -> None:
+    # `cash_balance` only ever reflects deposits/sale proceeds (see
+    # `Portfolio.cash_balance`'s own docstring) - a buy alone never reduces
+    # it, so `total_portfolio_value` here is simply the market value of what
+    # was bought: 100 shares at the fake provider's fixed 150.0 AAPL quote.
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 100, "price": 100},
+    )
+    capital_total = 100 * 150.0
+    _seed_state(db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY)
+
+    body = client.get(f"/api/v1/market/radar?region=us&portfolio_id={portfolio_id}").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    geometry = nvda["entry_geometry"]
+    # _VIABLE_GEOMETRY's 10% risk_pct (entry 50, stop 45) keeps the fixed-risk
+    # position comfortably under MAX_POSITION_PCT (0.01/0.10 = 10% < 15%), so
+    # this exercises the plain `capital * RISK_PER_TRADE_PCT / risk_per_share`
+    # formula, not the position-value cap.
+    expected_shares = (capital_total * RISK_PER_TRADE_PCT) / (50.0 - 45.0)
+    assert geometry["shares_for_risk_budget"] == pytest.approx(expected_shares)
+    assert geometry["position_value"] == pytest.approx(expected_shares * 50.0)
+    assert geometry["pct_of_portfolio"] == pytest.approx(geometry["position_value"] / capital_total)
+    # Stop/target/entry_type themselves are untouched by sizing.
+    assert geometry["stop_price"] == 45.0
+    assert geometry["entry_type"] == "pullback_support"
+
+
+def test_radar_with_portfolio_id_leaves_a_non_viable_geometry_unsized(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    rejected = dict(_VIABLE_GEOMETRY, viable=False, rejection_reason="riesgo demasiado alto")
+    _seed_state(db_session, ticker="NVDA", entry_geometry=rejected)
+
+    body = client.get(f"/api/v1/market/radar?region=us&portfolio_id={portfolio_id}").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    assert nvda["entry_geometry"]["viable"] is False
+    assert nvda["entry_geometry"]["shares_for_risk_budget"] is None
+
+
+def test_radar_with_unknown_portfolio_id_returns_404(client: TestClient, db_session: Session) -> None:
+    _seed_state(db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY)
+    response = client.get("/api/v1/market/radar?region=us&portfolio_id=999")
+    assert response.status_code == 404

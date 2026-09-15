@@ -509,3 +509,34 @@ def compute_trade_geometry(
     being acted on."""
     geometry = compute_entry_geometry(price, atr14, nearest_support, nearest_resistance, ema21, ema55, trend)
     return size_position(geometry, capital_total, atr_percentile_252)
+
+
+_GEOMETRY_FIELDS = (
+    "entry_price", "stop_price", "stop_basis", "risk_pct", "risk_atr", "risk_ceiling_pct",
+    "target_price", "target_basis", "reward_pct", "risk_reward_gross", "risk_reward_net",
+    "shares_for_risk_budget", "position_value", "pct_of_portfolio", "viable", "rejection_reason",
+)
+
+
+def geometry_to_dict(geometry: TradeGeometry) -> dict:
+    """Plain JSON-safe read of a `TradeGeometry` - same choice
+    `TickerDailyState.gate_conditions` already made for `GateCondition`, used
+    here so `scripts/daily_close.py` can persist the ticker-only half of
+    Parte 7 (`compute_entry_geometry`, never `size_position` - no portfolio
+    in scope in that job) on `TickerDailyState.entry_geometry` without a
+    schema-specific mapper. `entry_type` becomes its plain string value
+    (`None` stays `None`) - the only field that isn't already JSON-safe."""
+    data = {field: getattr(geometry, field) for field in _GEOMETRY_FIELDS}
+    data["entry_type"] = geometry.entry_type.value if geometry.entry_type is not None else None
+    return data
+
+
+def geometry_from_dict(data: dict) -> TradeGeometry:
+    """Inverse of `geometry_to_dict` - reconstructs a real `TradeGeometry` (not
+    just a display shape) so a caller with a specific portfolio's capital in
+    view (e.g. `GET /market/radar?portfolio_id=`) can run the persisted,
+    unsized geometry through `size_position` without recomputing the stop
+    cascade from scratch."""
+    fields = {field: data[field] for field in _GEOMETRY_FIELDS}
+    entry_type = data["entry_type"]
+    return TradeGeometry(entry_type=EntryType(entry_type) if entry_type is not None else None, **fields)

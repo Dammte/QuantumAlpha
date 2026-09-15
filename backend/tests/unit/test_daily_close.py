@@ -156,6 +156,29 @@ def test_build_ticker_daily_state_stage_none_serializes_to_none():
     assert state.stage is None
 
 
+def test_build_ticker_daily_state_persists_entry_geometry_when_ema_reads_are_available():
+    # Parte 7 (later pass): a long enough, steadily rising series clears the
+    # EMA55 warm-up this needs (`multi_timeframe.SLOW_MA_PERIOD`) - the same
+    # bar `ticker_analysis_service.compute_core_signals` clears for
+    # "Analizar activo"/`/risk`'s own `entry_geometry`, so this job's own copy
+    # must come back non-None too, not silently stay the pre-migration `None`.
+    close = 100 + np.arange(300) * 0.15
+    df = _ohlc(close)
+    # `price` must agree with the series' own last close - `_snapshot()`'s
+    # fixed default (120.0) sits *below* this series' real EMA21/55, which
+    # would fail every cascade rung for a reason that has nothing to do with
+    # what this test is actually checking.
+    state = dc.build_ticker_daily_state(
+        _snapshot(price=float(close[-1])), "us", df, date(2026, 9, 10), datetime.now(UTC)
+    )
+    assert state.entry_geometry is not None
+    assert state.entry_geometry["viable"] is True
+    assert isinstance(state.entry_geometry["entry_type"], str)
+    # Never sized in this job - no portfolio in scope (see the module's own
+    # docstring and `trade_geometry.size_position`'s).
+    assert state.entry_geometry["shares_for_risk_budget"] is None
+
+
 # --- ticker_trigger_events -----------------------------------------------------
 
 

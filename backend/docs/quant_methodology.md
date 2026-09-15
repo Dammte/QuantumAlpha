@@ -1882,13 +1882,18 @@ EMA21/55) - el gate y el screener siguen leyendo la versión SMA50 sin cambios.
 
 ### 26.7 Qué queda abierto, honestamente
 
-`scripts/daily_close.py` no persiste `entry_geometry`/`size_position` - necesita una migración de
-esquema en `TickerDailyState` que esta pasada no hizo, deliberadamente, para no mezclar una migración
-de base de datos con la construcción y verificación del cálculo en sí. `size_position` no se llama
-desde ningún camino de producción todavía. Ninguna de las dos cosas es una afirmación de que estén
-"casi listas" - son, con toda honestidad, trabajo de ingeniería real que sigue pendiente, registrado
-aquí y en `CLAUDE.md` para que la próxima pasada (de este reconstructor o de otro) no tenga que
-volver a descubrirlo con grep.
+~~`scripts/daily_close.py` no persiste `entry_geometry`/`size_position`... `size_position` no se
+llama desde ningún camino de producción todavía.~~ Resuelto en la sección 26.12 - dejado tachado,
+no borrado, para que quede constancia de que esto sí fue una deuda real y no una afirmación vacía
+de "casi listo".
+
+Sigue abierto, honestamente: `GET /market/screener` sigue calculando en vivo por request
+(`MarketScreenerService.get_universe_snapshot`) en vez de leer `ticker_daily_state` como describen
+la Parte 4/10.2 - un endpoint nuevo filtrable por SQL más un rediseño de frontend no trivial
+(presets guardables, columnas ordenables, exportación CSV), deliberadamente fuera del alcance de
+una pasada incremental. `trade_plan_service.py` tampoco llama a `size_position` ni lo llamará -
+una posición reconstruida ya tiene una cantidad real y fija (ver 26.12), dimensionarla no es una
+pregunta coherente.
 
 ### 26.8 Test explícito de degradación total sin `GEMINI_API_KEY` (criterio de aceptación de la Parte 17)
 
@@ -1978,3 +1983,55 @@ nuevos en `test_trigger_performance_service.py` (`taken`/`_was_taken`) + 1 de in
 actualizada para verificar `ema21`/`ema55` en `price_history`. Suite completa verde en cada commit
 (`pytest -q`, unit + integración, ejecutada en domingo sin fallos - la propia Parte 17 exige verde
 cualquier día de la semana).
+
+### 26.12 `daily_close.py` persiste `entry_geometry` y `GET /market/radar` lo dimensiona por cartera (Parte 7, cierre)
+
+La sección 26.7 dejaba dos deudas explícitas, ambas con la misma raíz: `size_position` no se podía
+conectar en ningún sitio real sin antes resolver la persistencia de `entry_geometry`, porque sus
+dos candidatos naturales (la propia `trade_geometry.py` los nombraba) resultan, al mirarlos de
+cerca, el mismo problema. `trade_plan_service.py` "al abrir una posición" no aplica: para cuando
+`ensure_trade_plan` corre, la compra ya ocurrió con una cantidad real y fija - dimensionar algo que
+ya no se puede cambiar no es una sugerencia, es ruido. "El Radar renderizado para una cartera" sí
+aplica, pero `GET /portfolios/{id}/today` (donde el Radar ya se cruza con una cartera concreta, vía
+`opportunity_cost`) es, por diseño propio (su docstring lo dice explícitamente), una lectura pura
+sobre tablas precomputadas - nunca recomputa nada en vivo. Calcular `entry_geometry` ahí exigiría
+recalcular ATR/soportes/resistencias/EMA21/55 por cada candidato del Radar en cada request,
+exactamente la llamada en caliente por ticker que CLAUDE.md prohíbe. La única salida honesta era
+la migración de esquema que la sección 26.7 había pospuesto a propósito.
+
+**Persistencia (`daily_close.py`, `TickerDailyState`, migración `d3f7a2b8c1e4`)**: `build_ticker_daily_state`
+ahora calcula `ema21`/`ema55` con `ta.ema(close, mtf.FAST_MA_PERIOD/SLOW_MA_PERIOD)` sobre el mismo
+`close` que ya tenía en memoria para ATR/niveles/OBV - sin llamada de red nueva, mismo criterio que
+el resto de esta función - y se los pasa a `evaluate_gate`, que ya sabía construir `entry_geometry`
+cuando recibe ambos (sección 26.5) pero nunca los había recibido desde este job.
+`TickerDailyState.entry_geometry: dict | None` (columna `JSON` nullable, mismo patrón que
+`gate_conditions`) persiste el resultado vía `trade_geometry.geometry_to_dict` - siempre la mitad
+*sin dimensionar* (`compute_entry_geometry`, nunca `size_position`): un ticker del universo no
+pertenece a ninguna cartera, no hay capital que darle todavía. `geometry_to_dict`/`geometry_from_dict`
+(nuevas en `trade_geometry.py`) son el par de serialización - `entry_type` (el único campo no
+JSON-safe, un `EntryType`) se guarda como su `.value` y se reconstruye con `EntryType(...)`; todo lo
+demás ya era JSON-safe. `None` para cada fila calculada antes de esta migración o cuando
+`evaluate_gate` no recibió `ema21`/`ema55` reales - nunca una aproximación silenciosa.
+
+**Lectura y dimensionado (`GET /market/radar`)**: `RadarItemResponse.entry_geometry` expone la
+geometría sin dimensionar tal cual está persistida - ya es información nueva y útil por sí sola
+("a qué precio exacto dispararía esta entrada, con qué stop, con qué riesgo:beneficio neto") para
+cada candidato del Radar, no solo el `stop_and_target` más simple que ya existía. El parámetro
+opcional `portfolio_id` es la conexión de `size_position` que la sección 26.7 dejaba pendiente:
+cuando se da, el endpoint lee `total_portfolio_value` de esa cartera (mismo campo, mismo patrón de
+lectura en vivo puntual que `GET /portfolios/{id}/construction` ya usa para la suya - una llamada
+de red por *request*, no por ticker) y llama a `size_position` sobre cada geometría viable ya en
+memoria - una función pura, sin coste añadido por candidato. Omitir `portfolio_id` mantiene el
+endpoint exactamente como era: cero red, pura lectura de `ticker_daily_states`. Una geometría con
+`viable=False` se deja tal cual (`size_position` ya es un no-op sobre una geometría rechazada, ver
+sección 26.5) - dimensionar un setup que nunca estuvo sobre la mesa fabricaría un número sin
+sentido.
+
+**Tests**: 2 nuevos en `test_trade_geometry.py` (`geometry_to_dict`/`geometry_from_dict`, round-trip
+con `entry_type` presente y `None`); 1 nuevo en `test_daily_close.py`
+(`build_ticker_daily_state` persiste `entry_geometry` viable, nunca dimensionado); 2 nuevos en
+`test_precompute_repositories.py` (round-trip por la columna JSON real, y `None` por defecto); 5
+nuevos en `test_radar_api.py` (geometría ausente antes de la migración, expuesta sin dimensionar
+sin `portfolio_id`, dimensionada correctamente con `portfolio_id` contra el capital real de una
+cartera con una posición real, una geometría no viable que `portfolio_id` deja intacta, y 404 con
+un `portfolio_id` inexistente). Suite completa verde (`pytest -q`, unit + integración).

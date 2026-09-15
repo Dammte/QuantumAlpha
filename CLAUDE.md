@@ -164,22 +164,26 @@ de ATR (`RISK_CEILING_*` de `trading_params.py`, verificado contra los ejemplos 
 una sola: `compute_entry_geometry` (stop/objetivo/techo de riesgo, sin capital) es lo que
 `evaluate_gate` llama - el gate de un ticker no pertenece a ninguna cartera en particular, no hay
 capital que darle; `size_position` (acciones/valor de posición/% de cartera) solo tiene sentido
-una vez se conoce el capital de una cartera *específica* y sigue sin llamarse desde ningún sitio
-en producción todavía (el Radar renderizado para una cartera, o `trade_plan_service.py` al abrir
-una posición de verdad, son los candidatos naturales). `compute_trade_geometry` es un envoltorio
-de conveniencia sobre ambas, para quien ya tiene los dos contextos de antemano (los tests, un
-cálculo puntual bajo demanda).
+una vez se conoce el capital de una cartera *específica*. **Resuelto (septiembre 2026)**: conectado
+en `GET /market/radar?portfolio_id=` (ver más abajo) - el candidato natural que este mismo párrafo
+señalaba. `compute_trade_geometry` es un envoltorio de conveniencia sobre ambas, para quien ya
+tiene los dos contextos de antemano (los tests, un cálculo puntual bajo demanda).
 
 **Ya conectado**: `evaluate_gate` acepta `ema21`/`ema55` opcionales y, cuando se le dan, rellena
 `GateResult.entry_geometry` (`None` si no) - `ticker_analysis_service.compute_core_signals` ya
 calcula y pasa el EMA21/55 real, así que tanto "Analizar activo" como el `/risk` de cartera (que
 reutiliza `compute_core_signals`) devuelven la geometría real de Parte 7 hoy mismo
-(`GateResultResponse.entry_geometry` en la API). **Todavía no conectado**: `scripts/daily_close.py`
-(`build_ticker_daily_state`) sigue llamando a `evaluate_gate` sin `ema21`/`ema55` - `entry_geometry`
-sale `None` ahí a propósito, porque `TickerDailyState` no tiene columnas para persistirlo (sería
-una migración de esquema aparte, no un efecto secundario de esta conexión) y `compute_stop_and_target`
-(el original) sigue siendo lo único que ese job persiste. `trade_plan_service.py` tampoco cambia -
-llama a `compute_stop_and_target` directamente, nunca a `evaluate_gate`.
+(`GateResultResponse.entry_geometry` en la API). **Resuelto (septiembre 2026)**: `scripts/daily_close.py`
+(`build_ticker_daily_state`) ahora calcula su propio EMA21/55 (mismo `close` ya en memoria, sin
+llamada de red nueva) y se lo pasa a `evaluate_gate`; `TickerDailyState.entry_geometry` (columna
+JSON nueva, migración `d3f7a2b8c1e4`) persiste el resultado sin sizing
+(`trade_geometry.geometry_to_dict`) para cada ticker del universo. `GET /market/radar` lo expone
+sin dimensionar por defecto y, con `?portfolio_id=`, lo dimensiona contra el capital real de esa
+cartera (`trade_geometry.size_position`/`geometry_from_dict`) - la lectura del Radar para una
+cartera que `trade_geometry.py` señalaba como el candidato natural para `size_position`, ahora sí
+conectado. `trade_plan_service.py` sigue sin cambiar - llama a `compute_stop_and_target`
+directamente, nunca a `evaluate_gate`: una posición reconstruida ya tiene una cantidad real y
+fija, dimensionarla no tendría sentido (ver ese módulo, "Deliberadamente lazy").
 
 **Resuelto (septiembre 2026)**: la extensión parabólica de `exit_engine.py` (REDUCE) se mide
 ahora sobre `technical_analysis.atr_multiple_from_ema` (EMA21, `EXTENDED_ATR_MULTIPLE=3.0`, Parte

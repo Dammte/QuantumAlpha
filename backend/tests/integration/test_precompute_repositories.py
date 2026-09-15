@@ -112,6 +112,32 @@ def test_ticker_daily_state_upsert_then_get_round_trips(db_session: Session):
     assert saved.id == fetched.id
 
 
+def test_ticker_daily_state_entry_geometry_round_trips_through_the_json_column(db_session: Session):
+    # Parte 7 (later pass): `daily_close.py` persists `entry_geometry` as a
+    # plain JSON dict (`trade_geometry.geometry_to_dict`) - this must survive
+    # a real DB round trip byte-for-byte, `None` included for its sizing
+    # fields (never computed by this job, see that function's own docstring).
+    geometry = {
+        "entry_price": 100.0, "stop_price": 95.0, "stop_basis": "bajo el soporte en 95.00",
+        "entry_type": "pullback_support", "risk_pct": 0.05, "risk_atr": 1.25, "risk_ceiling_pct": 0.07,
+        "target_price": 110.0, "target_basis": "objetivo 2:1 sobre el riesgo", "reward_pct": 0.10,
+        "risk_reward_gross": 2.0, "risk_reward_net": 1.9,
+        "shares_for_risk_budget": None, "position_value": None, "pct_of_portfolio": None,
+        "viable": True, "rejection_reason": None,
+    }
+    repo = TickerDailyStateRepository(db_session)
+    repo.upsert(_daily_state("AAPL", date(2026, 9, 10), entry_geometry=geometry))
+    fetched = repo.get("us", "AAPL", date(2026, 9, 10))
+    assert fetched.entry_geometry == geometry
+
+
+def test_ticker_daily_state_entry_geometry_defaults_to_none(db_session: Session):
+    repo = TickerDailyStateRepository(db_session)
+    repo.upsert(_daily_state("MSFT", date(2026, 9, 10)))
+    fetched = repo.get("us", "MSFT", date(2026, 9, 10))
+    assert fetched.entry_geometry is None
+
+
 def test_ticker_daily_state_upsert_overwrites_same_day_not_duplicates(db_session: Session):
     repo = TickerDailyStateRepository(db_session)
     repo.upsert(_daily_state("AAPL", date(2026, 9, 10), price=100.0))
