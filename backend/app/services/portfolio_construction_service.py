@@ -22,17 +22,19 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from app.core.trading_params import HIGH_CORRELATION_THRESHOLD, MAX_AGGREGATE_RISK_PCT
+
 CORRELATION_WINDOW = 60  # trading days
 TRADING_DAYS_PER_YEAR = 252
 
-# First-pass thresholds, not ablation-calibrated yet - same status
-# BUY_THRESHOLD/AVOID_THRESHOLD started at in recommendation_engine.py before
-# their own audit, and MAX_POSITION_RISK_PCT/CHANDELIER_MULTIPLIER_BY_REGIME
-# in trade_manager.py.
-HIGH_CORRELATION_THRESHOLD = 0.8
+# HIGH_CORRELATION_THRESHOLD/MAX_AGGREGATE_RISK_PCT: see app.core.trading_params
+# (Parte 19) - re-exported here so existing call sites/tests keep resolving
+# `pcs.HIGH_CORRELATION_THRESHOLD` unchanged. The two below are first-pass
+# thresholds specific to this module, not ablation-calibrated yet - same
+# status BUY_THRESHOLD/AVOID_THRESHOLD started at in recommendation_engine.py
+# before their own audit.
 MAX_SECTOR_CONCENTRATION_PCT = 0.30
 PORTFOLIO_VOLATILITY_TARGET = 0.15  # 15% annualized
-MAX_AGGREGATE_RISK_PCT = 0.06  # 6% of capital at risk at once, across every stop (1%/position in trade_manager.py)
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.core import trading_params as tp
 from app.domain.models.trigger_event import TriggerEvent
 from app.infrastructure.db.repositories.trigger_event_repository import TriggerEventRepository
 
@@ -64,3 +65,25 @@ def test_signal_performance_reflects_a_trigger_event(client: TestClient, db_sess
     assert response.status_code == 200
     body = response.json()
     assert isinstance(body["trigger_outcomes"], list)
+
+
+def test_trading_params_mirrors_the_core_module_exactly(client: TestClient) -> None:
+    """Parte 19: a pure read, no DB/network involved - every field matches
+    `app.core.trading_params`'s own constant value, so the UI never has a
+    second, driftable copy of these numbers to keep in sync by hand."""
+    response = client.get("/api/v1/system/params")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["risk_per_trade_pct"] == tp.RISK_PER_TRADE_PCT
+    assert body["max_position_pct"] == tp.MAX_POSITION_PCT
+    assert body["max_aggregate_risk_pct"] == tp.MAX_AGGREGATE_RISK_PCT
+    assert body["max_open_positions"] == tp.MAX_OPEN_POSITIONS
+    assert body["min_position_usd"] == tp.MIN_POSITION_USD
+    assert body["min_position_for_scaling"] == tp.MIN_POSITION_FOR_SCALING
+    assert body["transaction_cost_pct"] == tp.TRANSACTION_COST_PCT
+    assert body["stop_atr_ceiling"] == tp.STOP_ATR_CEILING
+    assert body["chandelier_window"] == tp.CHANDELIER_WINDOW
+    assert body["chandelier_mult_by_vol"] == tp.CHANDELIER_MULT_BY_VOL
+    assert body["chandelier_profit_lock_r"] == tp.CHANDELIER_PROFIT_LOCK_R
+    assert body["high_correlation_threshold"] == tp.HIGH_CORRELATION_THRESHOLD

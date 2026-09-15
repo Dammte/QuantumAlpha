@@ -112,17 +112,21 @@ def test_label_triple_barrier_trailing_stop_locks_in_profit_a_fixed_stop_would_m
 
     assert trailing is not None and trailing.exit_reason == "stop"
     assert trailing.exit_index == 5
-    assert trailing.exit_price == pytest.approx(135.0)
-    assert trailing.return_pct == pytest.approx(0.35)  # locked in well before the round trip
+    # CHANDELIER_MULT_BY_VOL["normal"] = 2.0 (Parte 3.2/19 recalibration, was
+    # 3.0): 111-2*2=107 -> 121-2*2=117 -> 131-2*2=127 -> 141-2*2=137 -> still
+    # 141-2*2=137 -> bar 5's low (129) touches 137.
+    assert trailing.exit_price == pytest.approx(137.0)
+    assert trailing.return_pct == pytest.approx(0.37)  # locked in well before the round trip
 
 
 def test_label_triple_barrier_trailing_uses_the_profit_lock_multiplier_once_up_2r():
-    # Entry at 100, stop at 90 -> risk (R) = 10. The rally clears +2R at the
-    # bar where close=120 (r_multiple recomputed from the *original* stop_loss,
-    # never the already-trailing current_stop) - trade_manager's profit-lock
-    # multiplier (2.0, tighter than "normal"'s 3.0) should apply from there on.
-    # Before this fix, chandelier_multiplier was always called with
-    # r_multiple=None, so the trail only ever used the looser 3.0 multiplier.
+    # Entry at 100, stop at 90 -> risk (R) = 10. The rally clears
+    # CHANDELIER_PROFIT_LOCK_R (1.5, Parte 3.2/19 recalibration, was 2.0) at
+    # the bar where close=115 (r_multiple recomputed from the *original*
+    # stop_loss, never the already-trailing current_stop) - trade_manager's
+    # profit-lock multiplier (1.5, tighter than "normal"'s 2.0) should apply
+    # from there on. Before this fix, chandelier_multiplier was always called
+    # with r_multiple=None, so the trail only ever used the looser multiplier.
     close = pd.Series([100.0, 105.0, 110.0, 115.0, 120.0, 125.0, 120.0, 115.0, 110.0])
     high, low = close + 1.0, close - 1.0
     atr14 = pd.Series([2.0] * len(close))
@@ -135,10 +139,11 @@ def test_label_triple_barrier_trailing_uses_the_profit_lock_multiplier_once_up_2
     assert label is not None
     assert label.exit_reason == "stop"
     assert label.exit_index == 6
-    # Trail: 106-3*2=100 -> 111-3*2=105 -> 116-3*2=110 -> (r=2.0>=2R, mult=2.0)
-    # 121-2*2=117 -> (r=2.5) 126-2*2=122 -> bar 6's low (119) touches 122.
-    assert label.exit_price == pytest.approx(122.0)
-    assert label.return_pct == pytest.approx(0.22)
+    # Trail: 106-2*2=102 -> 111-2*2=107 -> (r=1.5>=lock threshold, mult=1.5)
+    # 116-1.5*2=113 -> (r=2.0) 121-1.5*2=118 -> (r=2.5) 126-1.5*2=123 ->
+    # (r=2.0) still 126-1.5*2=123 -> bar 6's low (119) touches 123.
+    assert label.exit_price == pytest.approx(123.0)
+    assert label.return_pct == pytest.approx(0.23)
 
 
 def test_label_triple_barrier_gap_through_stop_fills_at_the_worse_open_price():

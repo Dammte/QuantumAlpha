@@ -354,6 +354,8 @@ def assess_position_risk(
                 quantity_held=held_quantity,
                 initial_quantity=plan.initial_quantity,
                 entry_price=plan.entry_price,
+                initial_stop=plan.initial_stop,
+                bars_held=bars_held,
             )
 
             # Trailing-stop update (trade_manager.py, Chandelier Exit) -

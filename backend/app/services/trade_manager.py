@@ -16,46 +16,48 @@ from enum import Enum
 
 import pandas as pd
 
-# Chuck LeBeau's canonical Chandelier Exit parameters - the standard,
-# widely-cited starting point for this indicator (highest high over N bars,
-# minus a multiple of ATR(N)).
-CHANDELIER_WINDOW = 22
+from app.core.trading_params import (
+    CHANDELIER_MULT_BY_VOL,
+    CHANDELIER_PROFIT_LOCK_MULT,
+    CHANDELIER_PROFIT_LOCK_R,
+    CHANDELIER_WINDOW,
+    LAST_TRANCHE_TIME_STOP_BARS,
+    MIN_POSITION_FOR_SCALING,
+    RISK_PER_TRADE_PCT,
+    SCALE_OUT_1R_FRACTION,
+    SCALE_OUT_2R_FRACTION,
+    TRANSACTION_COST_PCT,
+)
 
-# Base multiplier per volatility regime (a string label - "baja" | "normal" |
-# "elevada" | "alta" - see technical_analysis.volatility_regime_from_atr_percentile,
-# fed by an ATR percentile rather than a per-ticker GARCH fit since 2026-09),
-# not a single fixed constant: the literature is consistent that an ATR
-# trailing stop should give a trending, genuinely volatile tape more room
-# (avoid a noise-driven stopout) and a calm tape less (a calm tape's own
-# smaller moves are already meaningful, so protect them more precisely).
-# First-pass values, not ablation-calibrated yet - same status
-# BUY_THRESHOLD/AVOID_THRESHOLD started at before their own audit.
-CHANDELIER_MULTIPLIER_BY_REGIME: dict[str, float] = {
-    "baja": 2.5,
-    "normal": 3.0,
-    "elevada": 3.25,
-    "alta": 3.5,
-}
-CHANDELIER_MULTIPLIER_DEFAULT = 3.0  # unknown/missing regime
-# Once a position is already up >2R, protecting the locked-in gain outranks
-# giving the trade room to breathe - a tighter multiplier regardless of
-# volatility regime.
-CHANDELIER_MULTIPLIER_PROFIT_LOCK = 2.0
-CHANDELIER_PROFIT_LOCK_R = 2.0
+# Re-exported so existing call sites/tests (`tm.CHANDELIER_WINDOW`, etc.) keep
+# resolving unchanged - `app.core.trading_params` is the single source of
+# truth for the values themselves (Parte 19 of the reconstruction brief).
+# Chuck LeBeau's canonical Chandelier Exit shape (highest high over N bars,
+# minus a multiple of ATR(N)) still applies; only the window/multipliers were
+# recalibrated (Parte 3.2/20 - tighter across the board for a 2-10 session
+# holding period, not the multi-week swing the original 22-bar/2.5-3.5 ATR
+# values were tuned for) - not yet run through
+# `scripts/chandelier_calibration_study.py` against a real trigger-based
+# sample (Fase 8), same "coherent but unmeasured" status Parte 20 flags.
+CHANDELIER_MULTIPLIER_BY_REGIME = CHANDELIER_MULT_BY_VOL
+CHANDELIER_MULTIPLIER_DEFAULT = CHANDELIER_MULT_BY_VOL["normal"]  # unknown/missing regime
+# Once a position is already up beyond CHANDELIER_PROFIT_LOCK_R, protecting
+# the locked-in gain outranks giving the trade room to breathe - a tighter
+# multiplier regardless of volatility regime.
+CHANDELIER_MULTIPLIER_PROFIT_LOCK = CHANDELIER_PROFIT_LOCK_MULT
 
 # Per-position risk cap: no single stop should be allowed to risk more than
 # this fraction of the portfolio's own capital. The aggregate cap across all
 # open positions at once (6% in the brief) needs cross-position awareness
-# this module doesn't have - that's portfolio_construction_service.py's job
-# in a later phase; this is only ever the per-position guard.
-MAX_POSITION_RISK_PCT = 0.01
+# this module doesn't have - that's portfolio_construction_service.py's job;
+# this is only ever the per-position guard.
+MAX_POSITION_RISK_PCT = RISK_PER_TRADE_PCT
 
-# Scaled-exit milestones: sell a third of the *original* position at +1R
-# (and move the stop to break-even - a suggestion, not something this module
-# does automatically), another third at +2R, and let the remainder ride the
-# Chandelier trail. A small tolerance (not an exact 1/3, 2/3 split) absorbs
-# rounding from whole-share quantities.
-SCALE_OUT_FRACTION = 1 / 3
+# Scaled-exit milestones (Parte 8): sell ~a third of the *original* position
+# at +1R (and move the stop to break-even, cost-inclusive - a suggestion,
+# never something this module executes automatically), another ~third at
+# +2R, and let the remainder ride the Chandelier trail. A small tolerance
+# (not an exact 1/3, 2/3 split) absorbs rounding from whole-share quantities.
 SCALE_OUT_TOLERANCE = 0.05
 
 
@@ -179,6 +181,10 @@ class ScaleOutAction(str, Enum):
     NONE = "none"  # no milestone reached yet, or every milestone already handled
     SELL_AT_1R = "sell_at_1r"
     SELL_AT_2R = "sell_at_2r"
+    # Parte 8: the last tranche (after both scale-outs) hasn't reached +3R
+    # within LAST_TRANCHE_TIME_STOP_BARS - close what's left outright rather
+    # than let the Chandelier trail run on it indefinitely.
+    CLOSE_LAST_TRANCHE = "close_last_tranche"
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,15 +196,53 @@ class ScaledExitPlan:
     description: str  # human-readable Spanish, with concrete quantities - see module docstring
 
 
+def _break_even_with_costs(entry_price: float) -> float:
+    """Parte 8: break-even INCLUDES the round-trip transaction cost, not the
+    bare entry price - a stop at exactly `entry_price` still nets a small
+    loss once both legs' costs are counted."""
+    return entry_price * (1 + 2 * TRANSACTION_COST_PCT)
+
+
+def _price_at_r_multiple(entry_price: float, initial_stop: float | None, r: float) -> float | None:
+    """The price `r` R-multiples above entry, using the position's own
+    *initial* risk-per-share (entry - initial_stop) as the R unit - the same
+    denominator `r_multiple` itself is computed against elsewhere, so a
+    stop suggested here is directly comparable to it. `None` when
+    `initial_stop` is unknown or invalid (at/above entry) - the caller
+    degrades gracefully rather than fabricating a stop from nothing."""
+    if initial_stop is None or initial_stop >= entry_price:
+        return None
+    risk_per_share = entry_price - initial_stop
+    return entry_price + r * risk_per_share
+
+
 def compute_scaled_exit_plan(
-    r_multiple: float | None, quantity_held: float, initial_quantity: float, entry_price: float
+    r_multiple: float | None,
+    quantity_held: float,
+    initial_quantity: float,
+    entry_price: float,
+    initial_stop: float | None = None,
+    bars_held: int | None = None,
 ) -> ScaledExitPlan:
     """Whether a +1R or +2R scaled exit is due right now, read directly off
     how much of the *original* position is still held (`quantity_held` vs
     `initial_quantity`) rather than a separately-persisted "already
     suggested" flag - the position's own size is the ground truth of what's
     actually been sold, so this can't drift out of sync with reality the way
-    a flag could (e.g. if a sell happened outside this app's suggestion)."""
+    a flag could (e.g. if a sell happened outside this app's suggestion).
+
+    Parte 8 in full: +1R sells `SCALE_OUT_1R_FRACTION` and raises the stop to
+    break-even *including* round-trip costs (`_break_even_with_costs`); +2R
+    sells `SCALE_OUT_2R_FRACTION` more and raises the stop to the +1R price
+    level (not just "the Chandelier trail governs from here" - a concrete
+    floor beneath it); a position under `MIN_POSITION_FOR_SCALING` at open
+    never scales at all (a third of a $120 position is $40, commission eats
+    the profit) - it exits whole at +2R instead; and once fully scaled down
+    to the last tranche, `bars_held` beyond `LAST_TRANCHE_TIME_STOP_BARS`
+    without reaching +3R closes what's left outright rather than letting the
+    trail run on it indefinitely. `initial_stop`/`bars_held` are optional
+    (`None` skips the behavior that needs them) so a caller that doesn't
+    have one yet still gets the rest of this function's behavior."""
     no_action = ScaledExitPlan(
         action=ScaleOutAction.NONE,
         shares_to_sell=0.0,
@@ -210,34 +254,71 @@ def compute_scaled_exit_plan(
         return no_action
 
     fraction_remaining = quantity_held / initial_quantity
-    already_scaled_once = fraction_remaining <= (1 - SCALE_OUT_FRACTION) + SCALE_OUT_TOLERANCE
-    already_scaled_twice = fraction_remaining <= (1 - 2 * SCALE_OUT_FRACTION) + SCALE_OUT_TOLERANCE
+    already_scaled_once = fraction_remaining <= (1 - SCALE_OUT_1R_FRACTION) + SCALE_OUT_TOLERANCE
+    already_scaled_twice = (
+        fraction_remaining <= (1 - SCALE_OUT_1R_FRACTION - SCALE_OUT_2R_FRACTION) + SCALE_OUT_TOLERANCE
+    )
+
+    if (
+        already_scaled_twice
+        and bars_held is not None
+        and bars_held > LAST_TRANCHE_TIME_STOP_BARS
+        and r_multiple < 3.0
+    ):
+        return ScaledExitPlan(
+            action=ScaleOutAction.CLOSE_LAST_TRANCHE,
+            shares_to_sell=quantity_held,
+            shares_remaining_after=0.0,
+            suggested_new_stop=None,
+            description=(
+                f"Último tercio sin alcanzar +3R tras {bars_held} sesiones: cerrar las {quantity_held:g} "
+                "acciones restantes a mercado (stop temporal del último tercio, Parte 8)."
+            ),
+        )
+
+    small_position = (initial_quantity * entry_price) < MIN_POSITION_FOR_SCALING
+    if small_position:
+        if r_multiple >= 2.0 and not already_scaled_once:
+            return ScaledExitPlan(
+                action=ScaleOutAction.SELL_AT_2R,
+                shares_to_sell=quantity_held,
+                shares_remaining_after=0.0,
+                suggested_new_stop=None,
+                description=(
+                    f"Posición pequeña (menos de {MIN_POSITION_FOR_SCALING:g}$ al abrir): sin escalado - "
+                    f"objetivo de +2R alcanzado, vender las {quantity_held:g} acciones a mercado."
+                ),
+            )
+        return no_action
 
     if r_multiple >= 2.0 and already_scaled_once and not already_scaled_twice:
-        shares_to_sell = min(initial_quantity * SCALE_OUT_FRACTION, quantity_held)
+        shares_to_sell = min(initial_quantity * SCALE_OUT_2R_FRACTION, quantity_held)
         remaining = quantity_held - shares_to_sell
+        one_r_price = _price_at_r_multiple(entry_price, initial_stop, 1.0)
+        stop_clause = f" y subir el stop a {one_r_price:.2f} (+1R)" if one_r_price is not None else ""
         return ScaledExitPlan(
             action=ScaleOutAction.SELL_AT_2R,
             shares_to_sell=shares_to_sell,
             shares_remaining_after=remaining,
-            suggested_new_stop=None,  # the Chandelier trail already governs from here
+            suggested_new_stop=one_r_price,
             description=(
-                f"Objetivo de +2R alcanzado: vender {shares_to_sell:g} de {quantity_held:g} acciones a "
-                f"mercado y dejar correr el resto ({remaining:g}) con el stop dinámico."
+                f"Objetivo de +2R alcanzado: vender {shares_to_sell:g} de {quantity_held:g} acciones a mercado"
+                f"{stop_clause} en el resto ({remaining:g})."
             ),
         )
 
     if r_multiple >= 1.0 and not already_scaled_once:
-        shares_to_sell = min(initial_quantity * SCALE_OUT_FRACTION, quantity_held)
+        shares_to_sell = min(initial_quantity * SCALE_OUT_1R_FRACTION, quantity_held)
         remaining = quantity_held - shares_to_sell
+        break_even = _break_even_with_costs(entry_price)
         return ScaledExitPlan(
             action=ScaleOutAction.SELL_AT_1R,
             shares_to_sell=shares_to_sell,
             shares_remaining_after=remaining,
-            suggested_new_stop=entry_price,  # break-even
+            suggested_new_stop=break_even,
             description=(
                 f"Objetivo de +1R alcanzado: vender {shares_to_sell:g} de {quantity_held:g} acciones a "
-                f"mercado y subir el stop a {entry_price:.2f} (break-even) en el resto."
+                f"mercado y subir el stop a {break_even:.2f} (break-even + costes) en el resto."
             ),
         )
 

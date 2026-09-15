@@ -303,28 +303,30 @@ def test_no_reduce_extended_beyond_4_atr_when_not_in_profit():
 
 
 def test_reduce_when_position_has_stalled_without_progress():
-    # r_multiple below +1R after 20+ sessions, still above its stop (hasn't
-    # stopped out, just isn't going anywhere).
+    # r_multiple below +1R after STALL_MIN_BARS+ sessions (10, within the
+    # Parte 3.2/19 5-15 window), still above its stop (hasn't stopped out,
+    # just isn't going anywhere).
     result = _evaluate(
-        price=101.0, position=_position(current_stop=95.0, r_multiple=0.2, bars_held=25)
+        price=101.0, position=_position(current_stop=95.0, r_multiple=0.2, bars_held=10)
     )
     assert result.urgency == ee.ExitUrgency.REDUCE
-    assert any("sin progreso tras 25 sesiones" in r for r in result.reasons)
+    assert any("sin progreso tras 10 sesiones" in r for r in result.reasons)
 
 
-def test_no_stalled_reduce_before_max_bars_without_progress():
-    result = _evaluate(price=101.0, position=_position(current_stop=95.0, r_multiple=0.2, bars_held=10))
+def test_no_stalled_reduce_before_min_bars_without_progress():
+    # Below STALL_MIN_BARS (5) - too early to call it stalled yet.
+    result = _evaluate(price=101.0, position=_position(current_stop=95.0, r_multiple=0.2, bars_held=3))
     assert not any("sin progreso" in r for r in result.reasons)
 
 
 def test_no_stalled_reduce_once_plus_1r_is_reached():
-    result = _evaluate(price=101.0, position=_position(current_stop=95.0, r_multiple=1.2, bars_held=25))
+    result = _evaluate(price=101.0, position=_position(current_stop=95.0, r_multiple=1.2, bars_held=10))
     assert not any("sin progreso" in r for r in result.reasons)
 
 
 def test_no_stalled_reduce_without_a_resolvable_r_multiple():
     # No initial_stop -> no r_multiple denominator -> nothing to call "stalled".
-    result = _evaluate(price=101.0, position=_position(current_stop=None, r_multiple=None, bars_held=25))
+    result = _evaluate(price=101.0, position=_position(current_stop=None, r_multiple=None, bars_held=10))
     assert not any("sin progreso" in r for r in result.reasons)
 
 

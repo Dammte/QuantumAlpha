@@ -10,10 +10,11 @@ from app.api.deps import (
     get_recommendation_snapshot_repository,
     get_trigger_event_repository,
 )
+from app.core import trading_params as tp
 from app.infrastructure.db.repositories.position_signal_snapshot_repository import PositionSignalSnapshotRepository
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
 from app.infrastructure.db.repositories.trigger_event_repository import TriggerEventRepository
-from app.schemas.system import SignalPerformanceResponse
+from app.schemas.system import SignalPerformanceResponse, TradingParamsResponse
 from app.services import signal_performance_service as sps
 from app.services import trigger_performance_service as tps
 from app.services.market_data_service import MarketDataService
@@ -69,4 +70,39 @@ def get_signal_performance(
         false_negatives=[asdict(f) for f in report.false_negatives],
         trigger_outcomes=[asdict(o) for o in trigger_report.outcomes],
         as_of=report.as_of,
+    )
+
+
+@router.get("/params", response_model=TradingParamsResponse)
+def get_trading_params() -> TradingParamsResponse:
+    """Reconstruction (2026-09), Parte 19: read-only mirror of
+    `app.core.trading_params` - no computation, no DB, so it can never be
+    slow or stale. Lets the UI show which config produced a given gate/
+    geometry/exit decision without hardcoding a second copy of these
+    numbers anywhere in the frontend."""
+    return TradingParamsResponse(
+        risk_per_trade_pct=tp.RISK_PER_TRADE_PCT,
+        max_position_pct=tp.MAX_POSITION_PCT,
+        max_aggregate_risk_pct=tp.MAX_AGGREGATE_RISK_PCT,
+        max_open_positions=tp.MAX_OPEN_POSITIONS,
+        min_position_usd=tp.MIN_POSITION_USD,
+        min_position_for_scaling=tp.MIN_POSITION_FOR_SCALING,
+        transaction_cost_pct=tp.TRANSACTION_COST_PCT,
+        stop_atr_ceiling=tp.STOP_ATR_CEILING,
+        risk_ceiling_atr_multiple=tp.RISK_CEILING_ATR_MULTIPLE,
+        risk_ceiling_min_pct=tp.RISK_CEILING_MIN_PCT,
+        risk_ceiling_max_pct=tp.RISK_CEILING_MAX_PCT,
+        min_risk_reward_net=tp.MIN_RISK_REWARD_NET,
+        scale_out_1r_fraction=tp.SCALE_OUT_1R_FRACTION,
+        scale_out_2r_fraction=tp.SCALE_OUT_2R_FRACTION,
+        last_tranche_time_stop_bars=tp.LAST_TRANCHE_TIME_STOP_BARS,
+        chandelier_window=tp.CHANDELIER_WINDOW,
+        chandelier_mult_by_vol=tp.CHANDELIER_MULT_BY_VOL,
+        chandelier_profit_lock_r=tp.CHANDELIER_PROFIT_LOCK_R,
+        chandelier_profit_lock_mult=tp.CHANDELIER_PROFIT_LOCK_MULT,
+        trigger_max_distance_atr=tp.TRIGGER_MAX_DISTANCE_ATR,
+        breakout_min_rel_volume=tp.BREAKOUT_MIN_REL_VOLUME,
+        stall_min_bars=tp.STALL_MIN_BARS,
+        stall_max_bars=tp.STALL_MAX_BARS,
+        high_correlation_threshold=tp.HIGH_CORRELATION_THRESHOLD,
     )

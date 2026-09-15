@@ -30,13 +30,18 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
+from app.core.trading_params import STALL_MAX_BARS, STALL_MIN_BARS
 from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 
 # Same 3% "close enough to matter" bar portfolio_risk_service.py already uses
 # for support/resistance proximity - kept as this module's own constant
-# rather than importing it, so this file has zero dependency on anything
-# outside technical_analysis.py/multi_timeframe.py (see module docstring).
+# rather than importing it, so this file has zero dependency on any other
+# *service* (see module docstring - the only import that's actually banned,
+# checked via AST, is `recommendation_engine.py`). `app.core.trading_params`
+# is a plain config module, not a service - importing STALL_MIN_BARS/
+# STALL_MAX_BARS from it (Parte 19) carries none of the buy-side-factor
+# coupling that ban exists to prevent.
 RESISTANCE_PROXIMITY = 0.03
 
 # First-pass thresholds, explicitly not ablation-calibrated yet (same status
@@ -52,22 +57,22 @@ EXTENDED_ATR_MULTIPLE = 4.0
 PROFIT_TIGHTEN_R = 1.5
 # A position that's gone this many closed daily bars without reaching +1R
 # (and hasn't already stopped out) is tying up capital that isn't working -
-# a real, if easy-to-miss, cost (Fase 3's "stop temporal"). 20 sessions is
-# ~1 trading month, matched to a portfolio managed on a scale of weeks, not
-# months.
-MAX_BARS_WITHOUT_PROGRESS = 20
+# a real, if easy-to-miss, cost (Fase 3's "stop temporal"). Parte 3.2/19
+# recalibration: 5-15 sessions (was 20-60) - matched to this portfolio's
+# actual 2-10 session holding period, not the ~1 trading month the original
+# window was tuned for.
+MAX_BARS_WITHOUT_PROGRESS = STALL_MIN_BARS
 STALLED_PROGRESS_R = 1.0
-# Upper bound on the stalled-position rule: without one, a holding of years
-# that never quite reaches +1R (and never quite hits its stop either) fires
-# REDUCE forever, every single evaluation - "stop temporal" was meant to
-# flag capital tied up in a stalled *short*-term trade (matched to a
-# portfolio managed on a scale of weeks), not to permanently recommend
-# trimming a multi-year position that happens to sit near breakeven. Past
-# this many bars, a position that's neither worked out nor stopped out is a
-# different situation entirely - one the propietario has already had ample
-# opportunity to review by hand, not something this rule should keep
-# repeating an answer about.
-STALLED_CEILING_BARS = 60
+# Upper bound on the stalled-position rule: without one, a holding that never
+# quite reaches +1R (and never quite hits its stop either) fires REDUCE
+# forever, every single evaluation - "stop temporal" was meant to flag
+# capital tied up in a stalled *short*-term trade, not to permanently
+# recommend trimming a much older position that happens to sit near
+# breakeven. Past this many bars, a position that's neither worked out nor
+# stopped out is a different situation entirely - one the propietario has
+# already had ample opportunity to review by hand, not something this rule
+# should keep repeating an answer about.
+STALLED_CEILING_BARS = STALL_MAX_BARS
 
 
 class ExitUrgency(str, Enum):
