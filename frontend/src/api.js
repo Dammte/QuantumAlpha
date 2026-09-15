@@ -110,7 +110,8 @@ export const api = {
   // Reconstruction (2026-09), Fase 5: pure reads over daily_close.py's own
   // precomputed tables - never a live universe scan/recompute like every
   // request above this one.
-  getRadar: ({ region } = {}) => request(`/api/v1/market/radar${toQueryString({ region })}`),
+  getRadar: ({ region, portfolioId } = {}) =>
+    request(`/api/v1/market/radar${toQueryString({ region, portfolio_id: portfolioId })}`),
 
   getPortfolioToday: (portfolioId) => request(`/api/v1/portfolios/${portfolioId}/today`),
 }

@@ -71,7 +71,7 @@ function RadarRow({ item, onNavigateToTicker }) {
   )
 }
 
-function RadarView({ onNavigateToTicker, region }) {
+function RadarView({ onNavigateToTicker, region, portfolioId }) {
   const [items, setItems] = useState([])
   const [computedAt, setComputedAt] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -81,7 +81,7 @@ function RadarView({ onNavigateToTicker, region }) {
     async function load() {
       setLoading(true)
       try {
-        const body = await api.getRadar({ region })
+        const body = await api.getRadar({ region, portfolioId })
         setItems(body.items)
         setComputedAt(body.computed_at)
         setError(null)
@@ -92,7 +92,7 @@ function RadarView({ onNavigateToTicker, region }) {
       }
     }
     load()
-  }, [region])
+  }, [region, portfolioId])
 
   const relative = formatRelativeTime(computedAt)
   const passing = [...items].filter((i) => i.gate_passes).sort((a, b) => a.ticker.localeCompare(b.ticker))

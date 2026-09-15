@@ -234,7 +234,7 @@ function App() {
         onSelectSistema={() => setView('sistema')}
       />
       <div className="app-content">
-        {view === 'hoy' && portfolios.length > 0 && (
+        {(view === 'hoy' || view === 'radar') && portfolios.length > 0 && (
           <div className="app-content__toolbar">
             <PortfolioSelect
               portfolios={portfolios}
@@ -261,6 +261,7 @@ function App() {
             presetTicker={presetTicker}
             onNavigateToTicker={navigateToAnalysis}
             region={region}
+            portfolioId={selectedId}
           />
         ) : view === 'activo' ? (
           <SectionedView

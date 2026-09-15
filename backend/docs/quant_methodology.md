@@ -2154,3 +2154,25 @@ del umbral) - a diferencia de una lista de porcentajes que ya tenía un patrón 
 el mismo panel para copiar, una matriz completa es una decisión de diseño propia (disposición,
 mapa de color, qué hacer con carteras grandes) que no correspondía inventar sin más contexto -
 queda como hueco conocido, no como omisión silenciosa.
+
+### 26.15 `GET /market/radar?portfolio_id=` era real y probado, pero inalcanzable desde la interfaz
+
+Revisión propia del cierre de la sección 26.13: el parámetro `portfolio_id` existía, probado
+end-to-end contra el backend, pero `frontend/src/api.js`'s `getRadar` nunca lo aceptaba - ninguna
+pantalla del producto podía pedirlo jamás, solo Swagger o una llamada manual. El mismo patrón de
+"el dato/la ruta ya está lista, nadie la usa" que las secciones 26.11/complemento-26.12/26.14 ya
+encontraron para lecturas, ahora en un parámetro.
+
+`App.jsx` ya llevaba un `selectedId` (la cartera activa) a nivel de toda la app, usado hasta ahora
+solo por la pestaña "Hoy" - reutilizado aquí, no duplicado: el selector de cartera
+(`PortfolioSelect`) ahora también aparece en la pestaña "Radar", y `SectionedView` (el envoltorio
+genérico que monta cualquier sub-sección de "Radar"/"Activo") gana un prop `portfolioId` más que
+reenvía sin condición - inofensivo para las sub-secciones que no lo usan (el screener, movers,
+tendencia, soportes/resistencias, "Analizar activo"), real para `RadarView.jsx`, que ahora lo pasa
+a `api.getRadar` como `portfolio_id`. Sin cartera seleccionada (`portfolios.length === 0`, la app
+recién instalada), el parámetro simplemente no se envía - `toQueryString` ya omite valores
+`null`/`undefined` - y el Radar se comporta exactamente igual que antes de esta sección.
+
+**Tests**: sin infraestructura de tests de componentes en este frontend - verificado por revisión
+de código y `npm run lint`/`npm run build` limpios; el propio parámetro ya estaba probado
+end-to-end en `test_radar_api.py` desde la sección 26.13.
