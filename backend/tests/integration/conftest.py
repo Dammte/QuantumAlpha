@@ -1,29 +1,47 @@
-import random
-from collections.abc import Generator
-from datetime import date, timedelta
+import os
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+# Must be the very first thing this module does, before any other import:
+# `app.infrastructure.db.session` (imported below, and reached transitively
+# through `app.api.deps` too) calls the `lru_cache`d `get_settings()` at ITS
+# OWN module scope - `Settings.gemini_api_key` reads `backend/.env` via
+# pydantic-settings' own `env_file` support, independent of anything a
+# fixture could patch afterwards. A developer's real local key (needed to
+# actually try Gemini outside tests, see GeminiNarrator's docstring) would
+# otherwise get cached into `get_settings()` the moment the first import in
+# this file resolves it transitively - long before a fixture, or even a
+# later line in this same file, could intervene - silently leaking into
+# every integration test in this process and defeating
+# `test_gemini_degradation.py`'s entire "no key configured" premise.
+os.environ["GEMINI_API_KEY"] = ""
 
-from app.api.deps import (
+import random  # noqa: E402
+from collections.abc import Generator  # noqa: E402
+from datetime import date, timedelta  # noqa: E402
+
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from app.api.deps import (  # noqa: E402
     get_asset_repository,
     get_market_data_provider,
     get_portfolio_repository,
     get_recommendation_snapshot_repository,
 )
-from app.domain.interfaces.market_data_provider import MarketDataProvider
-from app.domain.models.price_bar import PriceBar
-from app.domain.models.price_quote import PriceQuote
-from app.domain.models.ticker_info import NewsArticle, TickerInfo
-from app.infrastructure.db import models  # noqa: F401 - registers ORM tables on Base.metadata
-from app.infrastructure.db.repositories.asset_repository import AssetRepository
-from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository
-from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
-from app.infrastructure.db.session import Base, get_db
-from app.main import app
+from app.domain.interfaces.market_data_provider import MarketDataProvider  # noqa: E402
+from app.domain.models.price_bar import PriceBar  # noqa: E402
+from app.domain.models.price_quote import PriceQuote  # noqa: E402
+from app.domain.models.ticker_info import NewsArticle, TickerInfo  # noqa: E402
+from app.infrastructure.db import models  # noqa: E402,F401 - registers ORM tables on Base.metadata
+from app.infrastructure.db.repositories.asset_repository import AssetRepository  # noqa: E402
+from app.infrastructure.db.repositories.portfolio_repository import PortfolioRepository  # noqa: E402
+from app.infrastructure.db.repositories.recommendation_snapshot_repository import (  # noqa: E402
+    RecommendationSnapshotRepository,
+)
+from app.infrastructure.db.session import Base, get_db  # noqa: E402
+from app.main import app  # noqa: E402
 
 
 class FakeMarketDataProvider(MarketDataProvider):

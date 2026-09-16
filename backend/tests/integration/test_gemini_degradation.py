@@ -1,12 +1,15 @@
 """Parte 12/17 acceptance criterion, made explicit and auditable as its own
 test rather than left implicit in "every integration test happens to run
 without a key": boots the app with no `GEMINI_API_KEY` (the actual test
-default - `.env.example` ships it commented out, `conftest.py` never sets
-one) and confirms a representative spread of endpoints - including the two
-that actually run `GeminiNarrator.explain_gate` under the hood
-(`compute_core_signals`, shared by "Analizar activo" and portfolio risk) -
-all respond normally. Parte 12's own hard rule: Gemini's absence must never
-break anything, and there must be a test that verifies exactly that."""
+default - `tests/integration/conftest.py` forces the env var empty before
+`app.main` is ever imported, specifically so a developer's own real local
+key in `backend/.env` - needed to actually try Gemini outside tests - can
+never leak into this suite) and confirms a representative spread of
+endpoints - including the two that actually run `GeminiNarrator.explain_gate`
+under the hood (`compute_core_signals`, shared by "Analizar activo" and
+portfolio risk) - all respond normally. Parte 12's own hard rule: Gemini's
+absence must never break anything, and there must be a test that verifies
+exactly that."""
 
 from fastapi.testclient import TestClient
 
@@ -17,7 +20,11 @@ def test_gemini_api_key_is_unset_in_the_test_environment() -> None:
     # The premise every other test in this file depends on - if this ever
     # stops being true (a real key configured in the test environment), the
     # rest of this file would silently stop testing the "no key" path at all.
-    assert get_settings().gemini_api_key is None
+    # Falsy, not `is None`: conftest.py forces the env var to `""` (an empty
+    # env var, not an absent one) - `GeminiNarrator` already treats both the
+    # same way (`if api_key: ...`), and this is what actually happens after
+    # pydantic-settings reads an empty `GEMINI_API_KEY`, never `None` itself.
+    assert not get_settings().gemini_api_key
 
 
 def _create_portfolio_with_a_position(client: TestClient) -> int:
