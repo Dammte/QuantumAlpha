@@ -179,6 +179,40 @@ def test_build_ticker_daily_state_persists_entry_geometry_when_ema_reads_are_ava
     assert state.entry_geometry["shares_for_risk_budget"] is None
 
 
+def test_build_ticker_daily_state_persists_grade_when_geometry_is_viable():
+    """Parte 5.3 (later pass): `compute_grade`'s real precondition is a
+    genuine `entry_trigger` *and* a viable `entry_geometry` together (the
+    exact same check `ticker_analysis_service.compute_core_signals` uses for
+    "Analizar activo") - a bare monotonic rise (the sibling entry_geometry
+    test above) clears the geometry cascade but never sits near a support/
+    resistance level, so it never gets a `compute_entry_trigger` and grade
+    correctly stays `None` there. A pullback to a nearby swing low (same
+    fixture `test_add_candidate_when_uptrend_pulls_back_to_support` in
+    test_portfolio_risk_service.py uses) gives both at once."""
+    rise = 100 + np.arange(700) * 0.4
+    dip = rise[-1] - np.array([0.0, 1.0, 1.8, 1.3, 0.6])
+    bounce = dip[-1] + np.arange(1, 4) * 0.4
+    close = np.concatenate([rise, dip, bounce])
+    df = _ohlc(close)
+    state = dc.build_ticker_daily_state(
+        _snapshot(price=float(close[-1])), "us", df, date(2026, 9, 10), datetime.now(UTC)
+    )
+    assert state.entry_geometry is not None and state.entry_geometry["viable"] is True  # this test's precondition
+    assert state.grade is not None
+    assert state.grade["grade"] in {"A", "B", "C"}
+    assert isinstance(state.grade["reasons"], list)
+
+
+def test_build_ticker_daily_state_grade_none_without_a_viable_geometry():
+    # A flat, directionless series never produces a real entry trigger -
+    # `entry_geometry` stays `None` (see the sibling entry_geometry test
+    # above), and `grade` must follow it into `None` rather than fabricate a
+    # grade for a trade that was never emitted in the first place.
+    df = _ohlc(np.array([100.0] * 300))
+    state = dc.build_ticker_daily_state(_snapshot(price=100.0), "us", df, date(2026, 9, 10), datetime.now(UTC))
+    assert state.grade is None
+
+
 # --- ticker_trigger_events -----------------------------------------------------
 
 

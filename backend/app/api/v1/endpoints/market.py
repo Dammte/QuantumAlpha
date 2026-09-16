@@ -19,6 +19,7 @@ from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRe
 from app.schemas.market import (
     EntryTriggerResponse,
     GateConditionResponse,
+    GradeResponse,
     IndexSnapshotResponse,
     IndustryUniverseResponse,
     MarketContextResponse,
@@ -197,6 +198,10 @@ def _geometry_dict_to_response(data: dict | None) -> TradeGeometryResponse | Non
     return TradeGeometryResponse(**data) if data is not None else None
 
 
+def _grade_dict_to_response(data: dict | None) -> GradeResponse | None:
+    return GradeResponse(**data) if data is not None else None
+
+
 def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
     return RadarItemResponse(
         ticker=state.ticker,
@@ -234,6 +239,7 @@ def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
             else None
         ),
         entry_geometry=_geometry_dict_to_response(state.entry_geometry),
+        grade=_grade_dict_to_response(state.grade),
     )
 
 

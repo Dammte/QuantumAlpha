@@ -173,6 +173,28 @@ def test_radar_exposes_the_unsized_entry_geometry_without_a_portfolio(
     assert geometry["position_value"] is None
 
 
+def test_radar_row_with_no_grade_is_none_pre_migration_row(client: TestClient, db_session: Session) -> None:
+    _seed_state(db_session)
+    aapl = client.get("/api/v1/market/radar?region=us").json()["items"][0]
+    assert aapl["grade"] is None
+
+
+def test_radar_exposes_the_persisted_grade(client: TestClient, db_session: Session) -> None:
+    # Parte 5.3 (later pass): `daily_close.py` persists `levels_engine.GradeResult`
+    # as a plain dict - the Radar just reads it back, no recomputation.
+    _seed_state(
+        db_session,
+        ticker="NVDA",
+        entry_geometry=_VIABLE_GEOMETRY,
+        grade={"grade": "A", "reasons": ["Cerca del nivel del disparador", "Semanal alcista"]},
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    assert nvda["grade"] == {"grade": "A", "reasons": ["Cerca del nivel del disparador", "Semanal alcista"]}
+
+
 def test_radar_sizes_the_entry_geometry_against_a_portfolios_capital(
     client: TestClient, db_session: Session
 ) -> None:

@@ -52,3 +52,11 @@ class TickerDailyState:
     # any one portfolio; a caller with a specific portfolio's capital sizes it
     # via `trade_geometry.size_position`/`geometry_from_dict` at read time.
     entry_geometry: dict | None = None
+    # Parte 5.3 (2026-09, later pass): `levels_engine.GradeResult` as a plain
+    # JSON-safe dict (`{"grade": "A"|"B"|"C"|None, "reasons": [str, ...]}`) -
+    # same choice `gate_conditions` above already made, and for the same
+    # reason `entry_geometry` never needs a `_from_dict` counterpart: nothing
+    # downstream recomputes or resizes a grade at read time, it's a terminal
+    # display value. `None` for rows computed before this column existed, or
+    # when there was no viable entry geometry to grade in the first place.
+    grade: dict | None = None

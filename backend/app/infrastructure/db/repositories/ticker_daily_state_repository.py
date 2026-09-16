@@ -34,6 +34,7 @@ def _to_domain(orm: TickerDailyStateORM) -> TickerDailyState:
         take_profit_method=orm.take_profit_method,
         risk_reward=float(orm.risk_reward) if orm.risk_reward is not None else None,
         entry_geometry=orm.entry_geometry,
+        grade=orm.grade,
     )
 
 
@@ -73,6 +74,7 @@ class TickerDailyStateRepository(TickerDailyStateRepositoryPort):
             take_profit_method=state.take_profit_method,
             risk_reward=state.risk_reward,
             entry_geometry=state.entry_geometry,
+            grade=state.grade,
         )
         self.db.add(orm)
         self.db.commit()

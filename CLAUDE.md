@@ -210,3 +210,12 @@ deliberadamente separados de `atr_multiple_from_sma`/`CoreTickerSignals.atr_mult
 `levels_engine.evaluate_gate`'s "sin extensión parabólica" y `market_screener_service.py` siguen
 usando sin cambios, a propósito - no era el mismo campo con dos consumidores, era un umbral nuevo
 que necesitaba su propia base, no la del gate.
+
+**Resuelto (septiembre 2026)**: el grado A/B/C (Parte 5.3, `levels_engine.compute_grade`) ya
+llega a las tres superficies que comparten `compute_core_signals`/el gate - "Analizar activo"
+(`TickerAnalysisResponse.grade`), `/risk` de cartera (`CoreSignalsResponse.grade`, con
+`sector_rs_percentile` ya enhebrado desde el `universe_snapshot` igual que `rs_rating`) y el Radar
+(`RadarItemResponse.grade`, persistido por `daily_close.py` en la nueva columna `TickerDailyState.grade`,
+migración `4f7f279777aa` - mismo patrón que `entry_geometry`). Los modificadores de cartera
+(`apply_portfolio_grade_modifiers`: correlación con posición abierta, tope de posiciones) siguen
+sin consumidor - ver `docs/quant_methodology.md` §27.8-§27.10.

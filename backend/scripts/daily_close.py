@@ -153,6 +153,32 @@ def build_ticker_daily_state(
     trigger = gate.entry_trigger
     stop_target = gate.stop_and_target
 
+    # Parte 5.3 (later pass): the exact same "is there even a viable
+    # geometry to grade" precondition `ticker_analysis_service.compute_core_signals`
+    # uses for "Analizar activo" - see levels_engine.compute_grade's own
+    # docstring for why `grade=None` (never a fabricated grade on top of a
+    # non-viable trade). `snapshot.relative_volume`/`sma200`/`rs_rating`/
+    # `sector_rs_percentile` are already computed by the screener for this
+    # exact ticker - no re-derivation, no new network call.
+    grade_dict: dict | None = None
+    if gate.entry_trigger is not None and gate.entry_geometry is not None and gate.entry_geometry.viable:
+        weekly_bullish = mtf.timeframe_bias(multi_timeframe.weekly) == "bullish"
+        grade_result = le.compute_grade(
+            price=snapshot.price,
+            atr14=atr14,
+            entry_trigger=gate.entry_trigger,
+            geometry=gate.entry_geometry,
+            weekly_bullish=weekly_bullish,
+            relative_volume=snapshot.relative_volume,
+            rs_percentile=snapshot.rs_rating,
+            sma200=snapshot.sma200,
+            sector_rs_percentile=snapshot.sector_rs_percentile,
+        )
+        grade_dict = {
+            "grade": grade_result.grade.value if grade_result.grade is not None else None,
+            "reasons": grade_result.reasons,
+        }
+
     return TickerDailyState(
         id=None,
         region=region,
@@ -178,6 +204,7 @@ def build_ticker_daily_state(
         take_profit_method=stop_target.take_profit_method,
         risk_reward=stop_target.risk_reward,
         entry_geometry=geometry_to_dict(gate.entry_geometry) if gate.entry_geometry is not None else None,
+        grade=grade_dict,
     )
 
 

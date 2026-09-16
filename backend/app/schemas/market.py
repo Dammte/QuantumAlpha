@@ -7,6 +7,7 @@ from app.schemas.quant_analysis import (
     CoreSignalsResponse,
     EntryTriggerResponse,
     GateConditionResponse,
+    GradeResponse,
     ImminentCrossResponse,
     MultiTimeframeResponse,
     StopAndTargetResponse,
@@ -300,6 +301,10 @@ class RadarItemResponse(BaseModel):
     # (see `TradeGeometryResponse`'s own docstring) - pass `portfolio_id` to
     # size every viable one against that portfolio's capital instead.
     entry_geometry: TradeGeometryResponse | None = None
+    # Parte 5.3 (later pass): `levels_engine.GradeResult`, persisted by
+    # `daily_close.py` as a plain dict - `None` for rows computed before this
+    # column existed, or when there was no viable entry geometry to grade.
+    grade: GradeResponse | None = None
 
 
 class RadarResponse(BaseModel):

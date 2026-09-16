@@ -2577,3 +2577,46 @@ nuevo del Radar todavía no. Queda como el próximo sub-paso natural, no una omi
 que el grado termine siendo A/B/C de verdad - eso ya lo prueba 27.7), y `get_portfolio_positions_risk`
 lo busca en el `universe_snapshot` correcto por ticker (incluido el caso `None` para un ticker sin
 el dato). Suite completa verde, ruff limpio.
+
+### 27.10 El grado llega al Radar - persistido por `daily_close.py`, migración `4f7f279777aa`
+
+Cierra el círculo de 27.8/27.9: las tres superficies que comparten `compute_core_signals`/el gate
+("Analizar activo", `/risk` de cartera, y ahora el Radar) exponen el grado A/B/C. El Radar es
+distinto de las otras dos - nunca calcula nada en caliente (regla no negociable de CLAUDE.md, ver
+`ticker_daily_state.py`), así que el grado tiene que persistirse en `ticker_daily_states` por el
+job nocturno, exactamente el mismo patrón que `entry_geometry` (migración `d3f7a2b8c1e4`, Parte 7)
+ya estableció.
+
+**Migración `4f7f279777aa`** (`down_revision=d3f7a2b8c1e4`): columna `grade` JSON, nullable, en
+`ticker_daily_states` - `TickerDailyStateORM.grade`, `TickerDailyState.grade: dict | None`.
+Deliberadamente sin una función `grade_from_dict` gemela de `geometry_from_dict`: nada relee un
+grado para recalcularlo o dimensionarlo en el momento de la lectura (a diferencia de
+`entry_geometry`, que `GET /market/radar?portfolio_id=` sí reconstruye para pasarlo por
+`size_position`) - es un valor terminal, de solo mostrar, así que un dict plano
+`{"grade": "A"|"B"|"C"|None, "reasons": [...]}` basta, mismo criterio que ya usa `gate_conditions`.
+
+**`daily_close.py` (`build_ticker_daily_state`)**: calcula el grado con la misma precondición
+exacta que "Analizar activo" - `gate.entry_trigger is not None and gate.entry_geometry is not None
+and gate.entry_geometry.viable` (dos disparadores distintos que deben coincidir a la vez:
+`entry_trigger`, el más simple, basado en soporte/resistencia; `entry_geometry`, el real de la
+cascada de stop de Parte 7 - un ticker puede tener geometría viable sin sentarse cerca de un
+soporte/resistencia clásico, y viceversa; solo cuando ambos coinciden hay algo que gradar). Todos
+los insumos ya estaban en memoria en este job: `snapshot.relative_volume`/`sma200`/`rs_rating`/
+`sector_rs_percentile` (ya calculados por el screener para este ticker) y
+`mtf.timeframe_bias(multi_timeframe.weekly)` (el semanal real, ya leído unas líneas antes para
+`weekly_stage`) - cero llamadas nuevas.
+
+**`GET /market/radar`**: `RadarItemResponse.grade: GradeResponse | None`, leído tal cual desde
+`TickerDailyState.grade` (`_grade_dict_to_response`, mismo patrón que `_geometry_dict_to_response`)
+- nunca resized ni modificado por `?portfolio_id=` (eso solo afecta `entry_geometry`/`size_position`;
+los modificadores de cartera del grado, `apply_portfolio_grade_modifiers`, siguen sin consumidor -
+ver 27.7).
+
+**Tests**: 2 nuevos en `test_daily_close.py` (grado presente con geometría viable + trigger real
+usando el mismo fixture de pullback-a-soporte que `test_portfolio_risk_service.py` ya usa para
+"add candidate"; `None` cuando una subida monótona sin soporte/resistencia cercano nunca produce un
+`entry_trigger` aunque la geometría EMA sí sea viable - el caso que demuestra por qué la
+precondición necesita *ambos* disparadores, no solo uno); 2 nuevos en `test_radar_api.py` (`grade`
+viaja tal cual desde una fila sembrada; `None` en una fila pre-migración). Suite completa verde,
+ruff limpio (fuera de `alembic/versions/`, que nunca ha estado bajo `ruff check app tests` - mismo
+estilo que toda migración autogenerada existente).
