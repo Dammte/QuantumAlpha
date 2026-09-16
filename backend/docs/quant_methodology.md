@@ -2546,3 +2546,34 @@ explícitamente pendientes, no como omisiones descubiertas después.
 en la respuesta real y, cuando no es `None`, tiene la forma esperada (`grade` en
 `{"A", "B", "C"}`, `reasons` una lista). Suite completa verde (742 unitarios + integración), ruff
 limpio.
+
+### 27.9 `sector_rs_percentile` y el grado también llegan a `portfolio_risk_service.py`
+
+Mismo sub-paso que 27.8, un consumidor más: `assess_position_risk`/`get_portfolio_positions_risk`/
+`PortfolioRiskService.get_positions_risk` reutilizan `compute_core_signals` (documentado desde
+hace tiempo como "una señal, un solo sitio donde se calcula"), pero hasta ahora solo le pasaban
+`rs_rating` del `universe_snapshot` - `sector_rs_percentile` se quedaba en su default `None`, así
+que una posición abierta nunca podía recibir el modificador de sector del grado aunque estuviera
+en un ticker del universo dinámico con el dato disponible.
+
+**Cableado**: mismo patrón que `rs_by_ticker = {s.ticker: s.rs_rating for s in universe_snapshot}`,
+una línea más: `sector_rs_by_ticker = {s.ticker: s.sector_rs_percentile for s in universe_snapshot}`,
+en los tres sitios que ya construían el primer diccionario (`get_portfolio_positions_risk`,
+`PortfolioRiskService.get_positions_risk`). `assess_position_risk` gana el parámetro
+`sector_rs_percentile: int | None = None` y lo reenvía a `compute_core_signals` sin tocarlo -
+la única lógica que lo consume sigue siendo `compute_grade`'s modificador de sector, ya probado en
+27.7. `CoreSignalsResponse` (usado por `PositionRiskResponse` en `schemas/market.py`, el DTO real
+de `GET /portfolios/{id}/risk`) gana su propio `grade: GradeResponse | None` - `_core_signals_to_response`
+en `api/v1/endpoints/portfolios.py` no necesitó cambios: ya construye la respuesta vía
+`CoreSignalsResponse(**asdict(signals))`, así que el nuevo campo de `CoreTickerSignals` viaja solo.
+
+**Qué sigue sin cambiar**: `daily_close.py`/`TickerDailyState` (el precompute nocturno que alimenta
+el Radar y "Hoy") no calcula ni persiste `grade` todavía - una posición abierta ya lo tiene vía
+`/risk` (cómputo en caliente, aceptado para ese endpoint desde su propio diseño), pero un candidato
+nuevo del Radar todavía no. Queda como el próximo sub-paso natural, no una omisión de este.
+
+**Tests**: 2 nuevos en `test_portfolio_risk_service.py` - `sector_rs_percentile` llega intacto de
+`assess_position_risk` a `compute_core_signals` (monkeypatch capturando el kwarg, sin depender de
+que el grado termine siendo A/B/C de verdad - eso ya lo prueba 27.7), y `get_portfolio_positions_risk`
+lo busca en el `universe_snapshot` correcto por ticker (incluido el caso `None` para un ticker sin
+el dato). Suite completa verde, ruff limpio.

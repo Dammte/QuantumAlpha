@@ -501,6 +501,66 @@ def test_get_portfolio_positions_risk_isolates_a_ticker_whose_compute_raises(mon
     assert [r.ticker for r in results] == ["GOOD"]
 
 
+def test_assess_position_risk_passes_sector_rs_percentile_to_compute_core_signals(monkeypatch):
+    """Parte 2.5/5.3: `sector_rs_percentile` only feeds `compute_grade`'s
+    sector modifier - `assess_position_risk` itself never branches on it, so
+    the only thing worth locking in here is that it actually reaches
+    `compute_core_signals` unchanged, not silently dropped along the way."""
+    captured = {}
+
+    def fake_compute_core_signals(*args, **kwargs):
+        captured["sector_rs_percentile"] = kwargs.get("sector_rs_percentile")
+        return None
+
+    monkeypatch.setattr(prs, "compute_core_signals", fake_compute_core_signals)
+
+    prs.assess_position_risk("XYZ", _ohlc(np.array([100.0] * 5)), sector_rs_percentile=82)
+
+    assert captured["sector_rs_percentile"] == 82
+
+
+def test_get_portfolio_positions_risk_threads_sector_rs_percentile_from_universe_snapshot(monkeypatch):
+    """Same wiring as `rs_by_ticker` a few lines above it in the real module -
+    a ticker present in the universe snapshot should have its
+    `sector_rs_percentile` looked up and forwarded, not left `None` just
+    because the caller only plumbed `rs_rating` through historically."""
+
+    class _StubMarketData:
+        def get_bulk_ohlcv(self, tickers, start, end):
+            close = 100 + np.arange(260) * 0.4
+            return {t: _ohlc(close) for t in tickers}
+
+    captured = {}
+
+    def fake_assess(ticker, df, benchmark_close=None, rs_rating=None, vix_close=None, **kwargs):
+        captured[ticker] = kwargs.get("sector_rs_percentile")
+        return prs.PositionRisk(
+            ticker=ticker,
+            currency="USD",
+            price=100.0,
+            trend="uptrend",
+            stage=None,
+            ma_cross=None,
+            rs_rating=None,
+            nearest_support=None,
+            nearest_resistance=None,
+            signal=prs.HOLD,
+            score=0,
+            reasons=["ok"],
+            signals=None,
+        )
+
+    monkeypatch.setattr(prs, "assess_position_risk", fake_assess)
+
+    snapshot = [
+        SimpleNamespace(ticker="AAPL", rs_rating=85, sector_rs_percentile=90),
+        SimpleNamespace(ticker="MSFT", rs_rating=40, sector_rs_percentile=None),
+    ]
+    prs.get_portfolio_positions_risk(["AAPL", "MSFT"], _StubMarketData(), universe_snapshot=snapshot)
+
+    assert captured == {"AAPL": 90, "MSFT": None}
+
+
 class _CountingMarketData:
     """Stub that counts get_bulk_ohlcv calls and how many tickers were asked
     for across all calls, so tests can assert the cache actually avoids

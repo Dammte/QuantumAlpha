@@ -239,3 +239,4 @@ class CoreSignalsResponse(BaseModel):
     vix_regime: str | None
     is_intraday_snapshot: bool
     gate: GateResultResponse
+    grade: GradeResponse | None

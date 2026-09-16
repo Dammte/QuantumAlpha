@@ -140,6 +140,7 @@ def assess_position_risk(
     transactions: list[Transaction] | None = None,
     trade_plan_repo: TradePlanRepositoryPort | None = None,
     position_signal_snapshot_repo: PositionSignalSnapshotRepositoryPort | None = None,
+    sector_rs_percentile: int | None = None,
 ) -> PositionRisk | None:
     """2026-09 (reconstruction, Fase 4) - one deliberate behavior change from
     the pre-gate version: `signal` can no longer become `EXIT_WARNING` from
@@ -165,6 +166,7 @@ def assess_position_risk(
         rs_rating,
         vix_close=vix_close,
         ticker=ticker,
+        sector_rs_percentile=sector_rs_percentile,
     )
     if signals is None:
         return None
@@ -483,6 +485,7 @@ def _safe_assess_position_risk(
     transactions: list[Transaction] | None = None,
     trade_plan_repo: TradePlanRepositoryPort | None = None,
     position_signal_snapshot_repo: PositionSignalSnapshotRepositoryPort | None = None,
+    sector_rs_percentile: int | None = None,
 ) -> PositionRisk | None:
     """`assess_position_risk`, isolated: one holding's GARCH optimizer failing
     to converge, a backtest edge case, or any other numerical hiccup must
@@ -500,6 +503,7 @@ def _safe_assess_position_risk(
             transactions=transactions,
             trade_plan_repo=trade_plan_repo,
             position_signal_snapshot_repo=position_signal_snapshot_repo,
+            sector_rs_percentile=sector_rs_percentile,
         )
     except Exception:
         logger.exception("Portfolio risk: skipping %s after a compute failure", ticker)
@@ -528,6 +532,9 @@ def get_portfolio_positions_risk(
         return []
 
     rs_by_ticker = {s.ticker: s.rs_rating for s in universe_snapshot} if universe_snapshot else {}
+    sector_rs_by_ticker = (
+        {s.ticker: s.sector_rs_percentile for s in universe_snapshot} if universe_snapshot else {}
+    )
 
     end = date.today()
     start = end - timedelta(days=365 * HISTORY_YEARS)
@@ -556,6 +563,7 @@ def get_portfolio_positions_risk(
             transactions=transactions,
             trade_plan_repo=trade_plan_repo,
             position_signal_snapshot_repo=position_signal_snapshot_repo,
+            sector_rs_percentile=sector_rs_by_ticker.get(ticker),
         )
         if risk is not None:
             results.append(risk)
@@ -604,6 +612,9 @@ class PortfolioRiskService:
 
         if to_compute:
             rs_by_ticker = {s.ticker: s.rs_rating for s in universe_snapshot} if universe_snapshot else {}
+            sector_rs_by_ticker = (
+                {s.ticker: s.sector_rs_percentile for s in universe_snapshot} if universe_snapshot else {}
+            )
             end = date.today()
             start = end - timedelta(days=365 * HISTORY_YEARS)
             benchmark_by_ticker = {ticker: benchmark_for_ticker(ticker) for ticker in to_compute}
@@ -628,6 +639,7 @@ class PortfolioRiskService:
                     transactions=transactions,
                     trade_plan_repo=trade_plan_repo,
                     position_signal_snapshot_repo=position_signal_snapshot_repo,
+                    sector_rs_percentile=sector_rs_by_ticker.get(ticker),
                 )
                 if risk is not None:
                     fresh_by_ticker[ticker] = risk
