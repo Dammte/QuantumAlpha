@@ -21,7 +21,9 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
 
     gate = body["gate"]
     assert isinstance(gate["passes"], bool)
-    assert len(gate["conditions"]) == 6
+    # Sexta auditoría (Parte 6.2, texto literal): 5 criterios eliminatorios,
+    # no 6 - ver levels_engine.py.
+    assert len(gate["conditions"]) == 5
     assert {"label", "passed"} <= gate["conditions"][0].keys()
 
     # Parte 7: AAPL's fake OHLCV history comfortably clears the EMA55 warm-up,
@@ -115,7 +117,9 @@ def test_ticker_analysis_persists_a_recommendation_snapshot(client: TestClient) 
     assert latest["verdict"] in {"comprar", "esperar"}
     assert latest["horizon"] == "3m"
     assert latest["engine_version"]
-    assert len(latest["factors"]) == 6
+    # Sexta auditoría (Parte 6.2, texto literal): 5 criterios eliminatorios,
+    # no 6.
+    assert len(latest["factors"]) == 5
     assert {"label", "points", "triggered"} <= latest["factors"][0].keys()
 
 

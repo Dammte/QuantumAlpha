@@ -62,6 +62,7 @@ from app.services.backtest_engine import (
     TripleBarrierBacktestResult,
     run_triple_barrier_backtest,
 )
+from app.services.dynamic_universe_service import passes_liquidity_floor
 from app.services.levels_engine import GateResult, evaluate_gate
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
@@ -195,7 +196,9 @@ def _nearest_level(levels: list[ta.PriceLevel], kind: str) -> ta.PriceLevel | No
 
 def _confirmed_gate(
     daily_df: pd.DataFrame,
-    obv_div: str | None,
+    weekly_stage: ta.Stage | None,
+    liquidity_ok: bool,
+    next_earnings_date: date | None,
     cutoff: time | None = None,
 ) -> GateResult | None:
     """Re-derives the gate from `technical_analysis.closed_bars` instead of
@@ -204,6 +207,15 @@ def _confirmed_gate(
     bars. `None` when there aren't enough closed bars left to say anything
     (a data-thin ticker whose last closed bar is also its only usable one).
     `cutoff` - see `market_universe.closed_bar_cutoff_for_ticker`.
+
+    `weekly_stage`/`liquidity_ok`/`next_earnings_date` are reused from the
+    live read's own already-computed values, not rederived here: the weekly
+    Stage already comes from *closed* weekly bars regardless of whether
+    today's daily bar has settled (see `multi_timeframe.py`), and liquidity/
+    earnings don't depend on whether today's bar is confirmed either - only
+    `trend`/`atr14`/the nearest levels/the fast-pair veto genuinely differ
+    between "as of the live price" and "as of the last confirmed close",
+    which is the whole reason this function exists.
 
     2026-09 (reconstruction, Fase 4): no longer takes `rs_rating` - RS Rating
     was never wired into the gate as a hard condition (see
@@ -218,33 +230,23 @@ def _confirmed_gate(
     price = float(close.iloc[-1])
 
     sma20_s, sma50_s = ta.sma(close, 20), ta.sma(close, 50)
-    sma150_s, sma200_s = ta.sma(close, 150), ta.sma(close, 200)
+    sma200_s = ta.sma(close, 200)
     sma20, sma50, sma200 = _last(sma20_s), _last(sma50_s), _last(sma200_s)
     trend = ta.classify_trend(price, sma20, sma50, sma200)
 
-    stage = ta.classify_stage(price, sma150_s) if len(close) >= 200 else None
-
-    adx_s = ta.adx(high, low, close)
-    plus_di_s, minus_di_s = ta.dmi(high, low, close)
     atr_s = ta.atr(high, low, close)
-    atr_multiple = ta.atr_multiple_from_sma(close, high, low)
-
     levels = ta.support_resistance_levels(high, low, close)
 
     return evaluate_gate(
         price=price,
         trend=trend,
-        stage=stage,
-        rsi14=_last(ta.rsi(close)),
-        adx14=_last(adx_s),
-        plus_di=_last(plus_di_s),
-        minus_di=_last(minus_di_s),
         atr14=_last(atr_s),
-        atr_multiple=atr_multiple,
         nearest_support=_nearest_level(levels, "support"),
         nearest_resistance=_nearest_level(levels, "resistance"),
-        obv_divergence=obv_div,
+        weekly_stage=weekly_stage,
+        liquidity_ok=liquidity_ok,
         fast_pair_bearish_signal=ta.detect_fast_pair_bearish_veto(close),
+        next_earnings_date=next_earnings_date,
     )
 
 
@@ -260,6 +262,7 @@ def compute_core_signals(
     vix_close: pd.Series | None = None,
     ticker: str | None = None,
     include_triple_barrier_backtest: bool = False,
+    next_earnings_date: date | None = None,
 ) -> CoreTickerSignals | None:
     """`ticker`, when given, picks a region-aware settlement cutoff for
     `multi_timeframe`/`confirmed_gate` (`market_universe.closed_bar_cutoff_for_ticker`
@@ -267,6 +270,14 @@ def compute_core_signals(
     (not every caller has traced a ticker string this far down, and every
     other field here is computable without one) - `None` just means "assume
     US settlement hours".
+
+    `next_earnings_date` (Parte 6.2's `no_event_risk` gate criterion) is
+    optional and defaults to `None` (interpreted by `evaluate_gate` as "no
+    known upcoming event", not "couldn't check" - see that function's own
+    docstring) - not every caller has already paid for a per-ticker
+    `get_next_earnings_date` network call (`TickerAnalysisService.analyze()`
+    has; the universe-wide screener path deliberately hasn't, per-ticker
+    network calls there being exactly what CLAUDE.md forbids in a hot path).
 
     `include_triple_barrier_backtest` defaults to `False`: measured at
     ~3x this function's own cost (a bar-by-bar Python simulation over the
@@ -375,27 +386,39 @@ def compute_core_signals(
     ema21 = _last(ta.ema(close, mtf.FAST_MA_PERIOD))
     ema55 = _last(ta.ema(close, mtf.SLOW_MA_PERIOD))
 
+    # Parte 6.2: `weekly_not_stage4` reads the *weekly* Stage `multi_timeframe`
+    # already computed above (real MA30 semanal, Parte 5.5) - never the
+    # daily-bar `stage` above (that one stays a plain informational field on
+    # `CoreTickerSignals`, shown in the UI, no longer a gate input at all).
+    weekly_stage = multi_timeframe.weekly.stage if multi_timeframe.weekly is not None else None
+    # Divisa nativa, sin conversión a USD (a diferencia de daily_close.py/
+    # market_screener_service.py, que sí manejan fx_rate para el universo
+    # completo) - una simplificación deliberada para "Analizar activo": el
+    # usuario ya eligió mirar este ticker en concreto, así que el suelo de
+    # liquidez importa menos aquí que como filtro de qué aparece en el
+    # universo/Radar, donde sí se convierte a USD.
+    dollar_volume_20d = float((close.iloc[-20:] * volume.iloc[-20:]).mean()) if len(close) >= 20 else None
+    liquidity_ok = passes_liquidity_floor(price, dollar_volume_20d)
+
     gate = evaluate_gate(
         price=price,
         trend=trend,
-        stage=stage,
-        rsi14=_last(rsi_s),
-        adx14=_last(adx_s),
-        plus_di=_last(plus_di_s),
-        minus_di=_last(minus_di_s),
         atr14=atr14,
-        atr_multiple=atr_multiple,
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
-        obv_divergence=obv_div,
+        weekly_stage=weekly_stage,
+        liquidity_ok=liquidity_ok,
         fast_pair_bearish_signal=fast_pair_veto,
+        next_earnings_date=next_earnings_date,
         ema21=ema21,
         ema55=ema55,
     )
 
     confirmed_gate = None
     if is_intraday_snapshot:
-        confirmed_gate = _confirmed_gate(daily_df, obv_div, cutoff=closed_bar_cutoff)
+        confirmed_gate = _confirmed_gate(
+            daily_df, weekly_stage, liquidity_ok, next_earnings_date, cutoff=closed_bar_cutoff
+        )
 
     return CoreTickerSignals(
         price=price,
@@ -553,6 +576,7 @@ class TickerAnalysisService:
             vix_close=vix_close,
             ticker=ticker,
             include_triple_barrier_backtest=True,
+            next_earnings_date=next_earnings,
         )
         if core is None:
             raise ValueError(f"No hay suficientes datos de precio para {ticker}")

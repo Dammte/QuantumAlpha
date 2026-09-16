@@ -4,7 +4,7 @@ import pandas as pd
 from app.domain.interfaces.llm_narrator import LLMNarrator
 from app.services import ticker_analysis_service as tas
 from app.services import trade_geometry as tg
-from app.services.levels_engine import GateCondition, GateResult
+from app.services.levels_engine import Eligibility, GateCondition, GateResult
 
 _SeriesQuintet = tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]
 
@@ -164,9 +164,16 @@ def _gate(
 ) -> GateResult:
     return GateResult(
         passes=passes,
-        conditions=[GateCondition(label="Tendencia alcista o Fase 2 de Weinstein", passed=passes)],
+        conditions=[GateCondition(label="Semanal no en Fase 4 de Weinstein", passed=passes)],
         entry_trigger=entry_trigger,
         stop_and_target=stop_and_target,
+        eligibility=Eligibility(
+            liquidity_ok=True,
+            data_quality_ok=True,
+            weekly_not_stage4=passes,
+            no_fast_bearish_cross=True,
+            no_event_risk=True,
+        ),
     )
 
 
@@ -194,7 +201,7 @@ def test_explain_gate_passes_primitive_facts_through_to_the_narrator():
     call = narrator.calls[0]
     assert call["ticker"] == "AAPL"
     assert call["gate_passes"] is True
-    assert call["conditions"] == [("Tendencia alcista o Fase 2 de Weinstein", True)]
+    assert call["conditions"] == [("Semanal no en Fase 4 de Weinstein", True)]
     assert call["trend_label"] == "uptrend"
     assert call["stage_label"] == "stage2"
     assert call["entry_trigger_summary"] == "ruptura en 125.40 (ya disparado)"

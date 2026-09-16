@@ -274,6 +274,20 @@ def usd_price_and_dollar_volume(
     return last_price_usd, dollar_volume_20d_usd
 
 
+def passes_liquidity_floor(price_usd: float | None, dollar_volume_20d_usd: float | None) -> bool:
+    """Parte 6.2: el criterio `liquidity_ok` del gate - volumen-dólar 20d >=
+    `MIN_DOLLAR_VOLUME_20D` y precio >= `MIN_PRICE`, los mismos números que ya
+    filtran qué entra al universo dinámico mensual (Job C), evaluados aquí a
+    diario por ticker (un nombre puede entrar al universo con buena liquidez
+    y quedarse temporalmente ilíquido después). `None` en cualquiera de los
+    dos (no se pudo calcular) cuenta como no cumplido - la misma regla del
+    propio criterio de riesgo de evento: sin el dato, no se puede afirmar que
+    la liquidez es suficiente."""
+    return price_usd is not None and dollar_volume_20d_usd is not None and (
+        price_usd >= MIN_PRICE and dollar_volume_20d_usd >= MIN_DOLLAR_VOLUME_20D
+    )
+
+
 def apply_liquidity_filter(
     constituents: list[RawConstituent], market_data: MarketDataService
 ) -> list[RawConstituent]:

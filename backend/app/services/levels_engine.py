@@ -1,60 +1,67 @@
-"""Reconstruction (2026-09), Fase 3: the boolean gate that replaces
-`recommendation_engine.py`'s weighted checklist for the question "is this
-specific entry good" (Parte 0, pregunta 3 of the reconstruction brief). See
-`trade_geometry.py`'s docstring for the "at what price" half of the same
-Fase, and for the provenance note (author's best-effort reconstruction,
-2026-09-11 owner sign-off) that applies equally to this file.
+"""Reconstruction (2026-09), Fase 3, reescrito en la Sexta auditoría (texto
+literal completo, ver docs/quant_methodology.md §27.6): el gate booleano de
+elegibilidad de la Parte 6.2 - "is this specific entry good" (Parte 0,
+pregunta 3). See `trade_geometry.py`'s docstring for the "at what price"
+half of the same Fase.
 
-Why a gate instead of a score: a weighted sum can pass with a strong RS
-Rating compensating for an ugly, overextended entry, or fail by one point on
-an otherwise clean setup - exactly the "no veo por qué" opacity the checklist
-approach was retired for. Every condition below is a hard AND instead: all
-must hold or the gate simply doesn't pass, and which one(s) failed is always
-visible (never collapsed to a bare yes/no) - the same transparency principle
-`recommendation_engine.RecommendationFactor` and
-`exit_engine.ExitAssessment.reasons` already established, just without a
-point value attached to any single condition.
+Por qué un gate y no un score: una suma ponderada puede aprobar con una
+fuerza relativa alta compensando una entrada fea y sobreextendida, o
+suspender por un punto un setup por lo demás limpio - exactamente la opacidad
+"no veo por qué" que el checklist retirado tenía. Cada condición de abajo es
+un AND estricto: todas deben cumplirse o el gate simplemente no aprueba, y
+cuál falló es siempre visible.
 
-**Which conditions made the cut, and why - deliberately narrow, not a
-re-scoring of the retired checklist's every factor as a gate:**
-- Trend/stage (uptrend or Stage 2) - the same underlying "is this actually in
-  an advance" fact `recommendation_engine.py` used to score from three
-  separate angles (trend, stage, RS Rating); here it's one structural gate,
-  not three separate votes for the same thing.
-- Not parabolic (ATR multiple) and not overbought outside a confirmed strong
-  trend - both were *risk* factors in the old checklist (protect capital
-  first - CLAUDE.md). Kept as hard gates rather than points on purpose: a
-  genuinely overextended entry shouldn't be rescued by an unrelated strength
-  reading elsewhere.
-- No bearish OBV divergence - was already the checklist's only
-  volume-based (participation, not price) factor; promoted to a hard gate
-  here for the same "don't buy a move real buying isn't backing" reasoning,
-  now applied at entry instead of only as a scored penalty.
-- No bearish fast-pair (EMA21/55) veto - already a hard override in the old
-  checklist (never just a point value), unchanged here.
-- A minimum reward:risk on the computed stop/target - new: the old checklist
-  gated on a buy/wait/avoid verdict but never separately on trade *quality*
-  once a stop/target existed. A technically clean setup with a poor
-  reward:risk is still a bad trade to actually take.
+**Los 5 criterios eliminatorios son literalmente los de la Parte 6.2 - ya no
+los 6 de la reconstrucción anterior a esta auditoría (tendencia/parabólico/
+sobrecompra/OBV/par rápido/R:R), que eran una aproximación razonada escrita
+sin el texto literal en contexto:**
+- `liquidity_ok`: volumen-dólar 20d >= $20M y precio >= $5 - el mismo suelo
+  que ya filtra el universo dinámico mensual (`dynamic_universe_service.
+  passes_liquidity_floor`), evaluado aquí a diario por ticker.
+- `data_quality_ok`: >= 250 barras (`MIN_BARS_REQUIRED`, Parte 3.2) - el
+  propio llamador ya garantiza esto antes de construir cualquier lectura, así
+  que en la práctica es casi siempre `True`; se mantiene como criterio
+  explícito y persistido, no implícito, tal como pide la Parte 6.2.
+- `weekly_not_stage4`: Weinstein semanal (la MA30 semanal real de
+  `multi_timeframe.py`, no una proxy diaria) no en Fase 4 - `unknown` (menos
+  de ~3,85 años de historial semanal) tampoco pasa, literal.
+- `no_fast_bearish_cross`: sin veto bajista del par rápido EMA21/55
+  (`technical_analysis.detect_fast_pair_bearish_veto`), sin cambios respecto
+  a la reconstrucción anterior - éste sí coincidía con el literal.
+- `no_event_risk`: sin resultados conocidos en los próximos 10 días
+  naturales (aproximación a "10 sesiones" - ver `EVENT_RISK_WINDOW_DAYS`).
 
-RS Rating and Minervini's 8/8 - the old checklist's two most heavily-weighted
-"is this a leader" factors - are deliberately NOT hard gates here: a
-genuinely good setup on a name that hasn't yet earned a high RS Rating (a
-fresh breakout, an early Stage 2) is exactly the kind of entry this rebuild
-is supposed to still catch, not exclude by construction. Both stay visible
-as context on the ticker's own precomputed state (Fase 2's
-`TickerDailyState`) without gating the trigger itself.
+**Qué se retira del gate, y por qué no es una pérdida silenciosa:** el
+"parabólico"/"sobrecompra extrema"/"tendencia alcista o Fase 2" del gate
+anterior no tienen respaldo en el texto literal como criterios de
+*elegibilidad* - la extensión parabólica ya vive en `exit_engine.py` (REDUCE,
+Parte 9) para posiciones abiertas, y la dirección de la tendencia la exige
+la propia cascada de la geometría (`trade_geometry._stop_cascade`, Parte 7:
+los peldaños de retroceso a EMA21/continuación sobre EMA55 sólo aplican en
+`TrendState.UPTREND`) - un ticker sin tendencia alcista simplemente no
+produce un disparador viable, sin necesidad de un criterio de gate aparte.
+"Sin divergencia bajista de volumen (OBV)" no aparece en ninguna de las 20
+partes como criterio de entrada - `technical_analysis.obv_divergence` queda
+sin llamador tras este cambio, marcado para revisión de código muerto en un
+sub-paso posterior, no borrado en el mismo commit que reescribe el gate. El
+R:R mínimo (antes parte del gate, sobre `compute_stop_and_target`) se separa
+hacia la *viabilidad del disparador* (Parte 5.2/7.4) - ya vive ahí, en
+`trade_geometry.compute_entry_geometry`'s propio chequeo de
+`MIN_RISK_REWARD_NET`, no se duplica aquí.
 
-This split is a first-pass judgment call, not a measured one -
-`GATE_VERSION` follows the same versioning discipline
-`recommendation_engine.ENGINE_VERSION` established (stamped wherever a gate
-result is persisted, so a past verdict is always traceable to the exact
-logic that produced it), and Fase 8 retargets `scripts/factor_ablation_study.py`
-at trigger outcomes precisely so this split can be revisited with evidence
-instead of intuition.
+RS Rating y Minervini's 8/8 siguen sin ser gates duros, por la misma razón
+que antes: un setup genuinamente bueno en un nombre que todavía no se ha
+ganado una fuerza relativa alta es justo el tipo de entrada que esta
+reconstrucción no quiere excluir por construcción.
+
+`GATE_VERSION` sigue la misma disciplina de versionado que
+`recommendation_engine.ENGINE_VERSION` (se graba en cada resultado
+persistido, para poder atribuir un veredicto pasado a la lógica exacta que
+lo produjo).
 """
 
 from dataclasses import dataclass
+from datetime import date
 
 import pandas as pd
 
@@ -65,7 +72,6 @@ from app.services.technical_analysis import (
     classify_stage,
     classify_trend,
     detect_fast_pair_bearish_veto,
-    obv_divergence,
 )
 from app.services.trade_geometry import (
     EntryTrigger,
@@ -79,18 +85,57 @@ from app.services.trade_geometry import (
 # Bumped whenever a gate condition or threshold changes materially - same
 # discipline as recommendation_engine.ENGINE_VERSION, its own separate
 # version string (see that module's docstring for why this isn't the same
-# constant).
-GATE_VERSION = "2026-09-levels-v1"
+# constant). v2 marks the Sexta auditoría's switch to the 5 literal
+# eligibility criteria (Parte 6.2), replacing v1's 6-condition approximation.
+GATE_VERSION = "2026-09-levels-v2"
 
-# Same bar recommendation_engine.py's own "parabolic" risk factor used.
-EXTENDED_ATR_MULTIPLE = 4.0
-MIN_REWARD_RISK = 1.5
+# Parte 6.2: "en las próximas 10 sesiones" - aproximado en días naturales
+# (~2 semanas de calendario para 10 sesiones de trading), mismo criterio que
+# `trigger_performance_service.TAKEN_WINDOW_DAYS` ya usa para "10 días" sin
+# un calendario de mercado exacto disponible en este nivel.
+EVENT_RISK_WINDOW_DAYS = 14
 
 
 @dataclass(frozen=True, slots=True)
 class GateCondition:
     label: str
     passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Eligibility:
+    """Los 5 criterios eliminatorios literales de la Parte 6.2 - si uno
+    falla, no hay disparador, sin importar cuán buena se vea la geometría.
+    Cada uno se persiste individualmente (vía `GateResult.conditions`) para
+    poder medir después cuál filtra y si filtra bien - el mismo motivo por
+    el que el texto pide guardarlos en `eligibility` JSONB."""
+
+    liquidity_ok: bool
+    data_quality_ok: bool
+    weekly_not_stage4: bool
+    no_fast_bearish_cross: bool
+    no_event_risk: bool
+
+    @property
+    def passes(self) -> bool:
+        return (
+            self.liquidity_ok
+            and self.data_quality_ok
+            and self.weekly_not_stage4
+            and self.no_fast_bearish_cross
+            and self.no_event_risk
+        )
+
+    @property
+    def failing(self) -> list[str]:
+        labels = {
+            "liquidity_ok": "Liquidez insuficiente (volumen-dólar 20d < $20M o precio < $5)",
+            "data_quality_ok": "Datos insuficientes (menos de 250 barras)",
+            "weekly_not_stage4": "Semanal en Fase 4 de Weinstein (o desconocida)",
+            "no_fast_bearish_cross": "Cruce bajista del par rápido EMA21/55 confirmado o proyectado",
+            "no_event_risk": "Riesgo de evento (resultados conocidos) en los próximos 10 días",
+        }
+        return [label for field, label in labels.items() if not getattr(self, field)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,29 +157,49 @@ class GateResult:
     are always `None` here) - a ticker's own gate isn't scoped to any one
     portfolio's capital; call `trade_geometry.size_position` separately once
     a specific portfolio is in view. `stop_and_target` (the original, simpler
-    read) is kept alongside, unchanged, for every existing consumer."""
+    read) is kept alongside, unchanged, for every existing consumer.
+    `eligibility` is the Parte 6.2 read the 5 `conditions` above summarize -
+    kept as its own typed object (not just the flattened list) so a caller
+    can check a single criterion by name without matching on label text."""
 
     passes: bool
     conditions: list[GateCondition]
     entry_trigger: EntryTrigger | None
     stop_and_target: StopAndTarget | None
+    eligibility: Eligibility
     entry_geometry: TradeGeometry | None = None
+
+
+def _no_event_risk(
+    next_earnings_date: date | None, as_of: date, window_days: int = EVENT_RISK_WINDOW_DAYS
+) -> bool:
+    """`None` significa "no se conoce ninguna fecha de resultados próxima" -
+    una comprobación que tuvo éxito y no encontró nada, no una comprobación
+    fallida - así que cuenta como sin riesgo, no como "no se pudo
+    comprobar" (que sí cuenta como no cumplido, según la Parte 12.3: "si no
+    se puede comprobar, cuenta como no cumplido" se refiere a que la propia
+    llamada falle, no al resultado normal de "no hay nada programado
+    todavía", que es el caso la mayoría de los días del año para la mayoría
+    de los tickers). Una fecha ya pasada (calendario desactualizado) tampoco
+    es riesgo - solo lo es una fecha futura dentro de la ventana."""
+    if next_earnings_date is None:
+        return True
+    days_until = (next_earnings_date - as_of).days
+    return not (0 <= days_until <= window_days)
 
 
 def evaluate_gate(
     price: float,
     trend: TrendState,
-    stage: Stage | None,
-    rsi14: float | None,
-    adx14: float | None,
-    plus_di: float | None,
-    minus_di: float | None,
     atr14: float | None,
-    atr_multiple: float | None,
     nearest_support: PriceLevel | None,
     nearest_resistance: PriceLevel | None,
-    obv_divergence: str | None = None,
+    weekly_stage: Stage | None,
+    liquidity_ok: bool,
+    data_quality_ok: bool = True,
     fast_pair_bearish_signal: str | None = None,
+    next_earnings_date: date | None = None,
+    as_of: date | None = None,
     ema21: float | None = None,
     ema55: float | None = None,
 ) -> GateResult:
@@ -143,31 +208,25 @@ def evaluate_gate(
     def add(label: str, passed: bool) -> None:
         conditions.append(GateCondition(label=label, passed=passed))
 
-    strong_trend = (
-        adx14 is not None and adx14 >= 25 and plus_di is not None and minus_di is not None and plus_di > minus_di
+    weekly_not_stage4 = weekly_stage is not None and weekly_stage != Stage.STAGE_4
+    no_fast_bearish_cross = fast_pair_bearish_signal is None
+    no_event_risk = _no_event_risk(next_earnings_date, as_of if as_of is not None else date.today())
+
+    eligibility = Eligibility(
+        liquidity_ok=liquidity_ok,
+        data_quality_ok=data_quality_ok,
+        weekly_not_stage4=weekly_not_stage4,
+        no_fast_bearish_cross=no_fast_bearish_cross,
+        no_event_risk=no_event_risk,
     )
 
-    add("Tendencia alcista o Fase 2 de Weinstein", trend == TrendState.UPTREND or stage == Stage.STAGE_2)
-
-    parabolic = atr_multiple is not None and atr_multiple > EXTENDED_ATR_MULTIPLE
-    add("Sin extensión parabólica (ATR múltiplo <= 4)", not parabolic)
-
-    overbought_outside_strong_trend = (
-        rsi14 is not None and rsi14 >= 80 and not (trend == TrendState.UPTREND and strong_trend)
-    )
-    add(
-        "Sin sobrecompra extrema (RSI >= 80) fuera de tendencia fuerte confirmada",
-        not overbought_outside_strong_trend,
-    )
-
-    add("Sin divergencia bajista de volumen (OBV)", obv_divergence != "bearish")
-
-    add("Sin veto bajista del par rápido (EMA21/55)", fast_pair_bearish_signal is None)
+    add("Liquidez suficiente (volumen-dólar 20d >= $20M y precio >= $5)", liquidity_ok)
+    add("Datos suficientes (>= 250 barras)", data_quality_ok)
+    add("Semanal no en Fase 4 de Weinstein", weekly_not_stage4)
+    add("Sin cruce bajista del par rápido (EMA21/55)", no_fast_bearish_cross)
+    add("Sin riesgo de evento en los próximos 10 días", no_event_risk)
 
     stop_and_target = compute_stop_and_target(price, atr14, nearest_support, nearest_resistance)
-    reward_risk_ok = stop_and_target.risk_reward is not None and stop_and_target.risk_reward >= MIN_REWARD_RISK
-    add(f"Relación beneficio:riesgo >= {MIN_REWARD_RISK:.1f}", reward_risk_ok)
-
     entry_trigger = compute_entry_trigger(price, nearest_support, nearest_resistance)
 
     # Parte 7: only computed when the caller has real EMA21/55 reads to give
@@ -181,10 +240,11 @@ def evaluate_gate(
         )
 
     return GateResult(
-        passes=all(c.passed for c in conditions),
+        passes=eligibility.passes,
         conditions=conditions,
         entry_trigger=entry_trigger,
         stop_and_target=stop_and_target,
+        eligibility=eligibility,
         entry_geometry=entry_geometry,
     )
 
@@ -203,18 +263,18 @@ def replay_gate_at(
     atr14: pd.Series,
     volume: pd.Series | None = None,
 ) -> GateResult | None:
-    """Reconstruction (2026-09), Fase 4: point-in-time replay of `evaluate_gate`
-    at historical bar `i`, using only values knowable at that bar - either a
-    scalar reading at `i`, or (for the functions that need a lookback
-    window - `classify_stage`, `obv_divergence`, `detect_fast_pair_bearish_veto`)
-    a slice `[:i+1]`, still using no information beyond bar `i`.
+    """Reconstruction (2026-09), Fase 4, actualizado en la Sexta auditoría
+    para los 5 criterios literales de la Parte 6.2: point-in-time replay of
+    `evaluate_gate` at historical bar `i`, using only values knowable at that
+    bar - either a scalar reading at `i`, or (for the functions that need a
+    lookback window - `classify_stage`, `detect_fast_pair_bearish_veto`) a
+    slice `[:i+1]`, still using no information beyond bar `i`.
 
     Replaces `walk_forward_backtest.replay_recommendation_at` (retired -
     see docs/quant_methodology.md) as `backtest_engine.find_triple_barrier_entries`'s
     "what would the system have proposed here" replay, now against the gate
-    instead of the old weighted checklist. Same two point-in-time
-    simplifications that function documented, carried over unchanged and for
-    the same reasons:
+    instead of the old weighted checklist. Point-in-time simplifications,
+    documented and accepted rather than silently approximated:
 
     - **RS Rating**: needs a cross-sectional universe snapshot unavailable at
       arbitrary past dates. Actually moot here, not just worked around - RS
@@ -228,6 +288,22 @@ def replay_gate_at(
       ATR-ceiling stop and the fixed 2:1 target - the same graceful
       degradation the live gate already relies on for a ticker with no
       nearby level at all, not a special case invented for this replay.
+    - **`weekly_not_stage4`**: a real weekly-bar Stage read
+      (`multi_timeframe.py`, MA30 semanal genuina) would need re-resampling
+      to weekly at every single historical bar - the same "prohibitively
+      expensive per bar" problem as the pivot scan above, at an even worse
+      multiplier (a full weekly resample, not a single pivot pass).
+      `classify_stage`'s own daily-bar proxy (SMA150) stands in here - the
+      same "proxy when weekly bars aren't available" role its own docstring
+      already documents, just applied for cost instead of unavailability.
+      Precomputing a real point-in-time weekly-Stage series once per ticker
+      (Parte 8, reorienting the backtest properly) is future work, not a
+      silent approximation - this paragraph is that disclosure.
+    - **`liquidity_ok`/`no_event_risk`**: no historical dollar-volume-in-USD
+      series or historical earnings-calendar data is threaded through this
+      replay - both default to "pass" here (`True`), since a backtest that
+      can't know either honestly should not fabricate a rejection for them.
+      Only `weekly_not_stage4`/`no_fast_bearish_cross` are replayed for real.
 
     Returns `None` when there isn't yet enough history for the trend read
     itself (mirrors the retired function's own `None` case)."""
@@ -238,25 +314,19 @@ def replay_gate_at(
 
     trend = classify_trend(price, s20, s50, s200)
     s150 = sma150.iloc[i]
-    stage = classify_stage(price, sma150.iloc[: i + 1]) if not pd.isna(s150) else None
-    obv_div = obv_divergence(close.iloc[: i + 1], volume.iloc[: i + 1]) if volume is not None else None
+    daily_stage_proxy = classify_stage(price, sma150.iloc[: i + 1]) if not pd.isna(s150) else None
 
     atr_t = atr14.iloc[i]
     has_atr = not pd.isna(atr_t) and atr_t != 0
-    atr_multiple = float((price - s50) / atr_t) if has_atr else None
 
     return evaluate_gate(
         price=float(price),
         trend=trend,
-        stage=stage,
-        rsi14=None if pd.isna(rsi14.iloc[i]) else float(rsi14.iloc[i]),
-        adx14=None if pd.isna(adx14.iloc[i]) else float(adx14.iloc[i]),
-        plus_di=None if pd.isna(plus_di.iloc[i]) else float(plus_di.iloc[i]),
-        minus_di=None if pd.isna(minus_di.iloc[i]) else float(minus_di.iloc[i]),
         atr14=float(atr_t) if has_atr else None,
-        atr_multiple=atr_multiple,
         nearest_support=None,
         nearest_resistance=None,
-        obv_divergence=obv_div,
+        weekly_stage=daily_stage_proxy,
+        liquidity_ok=True,
         fast_pair_bearish_signal=detect_fast_pair_bearish_veto(close.iloc[: i + 1]),
+        next_earnings_date=None,
     )

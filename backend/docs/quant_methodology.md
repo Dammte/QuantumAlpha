@@ -2339,3 +2339,113 @@ rango/52 semanas/día anterior presentes, `WEEKLY_MA30` ausente/presente según 
 semanal, el propio test del sesgo de filtrado corregido, y que `strength`/`slope_pct_20d` solo se
 rellenan donde corresponde). Suite completa verde (715 unit, 133 integración), ruff limpio - sin
 tocar ningún consumidor existente todavía.
+
+### 27.6 El gate real: los 5 criterios eliminatorios de la Parte 6.2, no los 6 de la aproximación anterior
+
+El cambio de mayor alcance de esta auditoría. `levels_engine.evaluate_gate` se reescribe con los 5
+criterios eliminatorios literales - `liquidity_ok`, `data_quality_ok`, `weekly_not_stage4`,
+`no_fast_bearish_cross`, `no_event_risk` (`Eligibility`, nuevo dataclass) - sustituyendo por
+completo los 6 de la reconstrucción anterior (tendencia/Fase2, no parabólico, no sobrecompra, no
+divergencia OBV, no veto del par rápido, R:R≥1.5), que eran una aproximación razonada, nunca lo que
+pedía el texto. `GATE_VERSION` sube a `"2026-09-levels-v2"`.
+
+**Qué se retira, y por qué no es una pérdida silenciosa** (ver el propio docstring de
+`levels_engine.py`, ahora reescrito con el razonamiento completo):
+- "Tendencia alcista o Fase 2" ya no es un criterio del gate - la dirección de la tendencia la
+  exige la propia cascada de la geometría (`trade_geometry._stop_cascade`: los peldaños de
+  retroceso a EMA21/continuación sobre EMA55 solo aplican en `TrendState.UPTREND`), no un criterio
+  de elegibilidad aparte. Un ticker en tendencia lateral o incluso bajista puede, en teoría, pasar
+  el gate ahora - simplemente no producirá un disparador viable casi nunca, sin necesidad de un
+  segundo candado.
+- "No parabólico"/"no sobrecompra extrema" no tienen respaldo literal como criterios de
+  *elegibilidad* - la extensión parabólica ya vive en `exit_engine.py` (REDUCE, Parte 9, sobre
+  posiciones abiertas) desde la sección 26.6.
+- "Sin divergencia bajista de volumen (OBV)" nunca apareció en ninguna de las 20 partes como
+  criterio de entrada - pura invención de la reconstrucción anterior. `technical_analysis.
+  obv_divergence` queda sin llamador en el gate (sigue usándose donde antes, como campo
+  informativo en `CoreTickerSignals`) - marcado para revisión de código muerto en un sub-paso
+  posterior, no borrado en el mismo commit que reescribe el gate.
+- El R:R mínimo (antes criterio nº6 del gate, sobre `compute_stop_and_target`) se separa hacia la
+  *viabilidad del disparador* (Parte 5.2/7.4) - ya vivía ahí, en
+  `trade_geometry.compute_entry_geometry`'s propio chequeo de `MIN_RISK_REWARD_NET`, sin
+  duplicarse en el gate. Un ticker puede aprobar el gate de elegibilidad sin tener hoy una entrada
+  geométricamente viable - son preguntas distintas en el texto literal, fusionadas por error en la
+  reconstrucción anterior.
+
+**Los 5 criterios nuevos, con sus piezas ya existentes reutilizadas, no reconstruidas desde cero:**
+- `liquidity_ok`: nueva `dynamic_universe_service.passes_liquidity_floor` reutiliza
+  `MIN_DOLLAR_VOLUME_20D`/`MIN_PRICE`, las mismas constantes que ya filtran el universo dinámico
+  mensual (Job C) - evaluado aquí a diario por ticker. En divisa nativa, sin conversión a USD, en
+  los dos sitios que lo calculan bajo demanda (`ticker_analysis_service.py`,
+  `scripts/daily_close.py`) - una simplificación deliberada y documentada, distinta de cómo
+  `market_screener_service.py` sí convierte a USD para su propio filtro de universo.
+- `data_quality_ok`: en la práctica, casi siempre `True` - el propio llamador ya garantiza
+  `MIN_BARS_REQUIRED` (250, sección 27.3) antes de construir cualquier lectura. Se mantiene como
+  criterio explícito y persistido, no implícito, tal como pide la Parte 6.2 ("todos los criterios
+  se persisten individualmente").
+- `weekly_not_stage4`: lee `multi_timeframe.py`'s Stage *semanal* real (MA30 sobre barras
+  semanales genuinas vía `resample_ohlcv`) - un hallazgo grato de esta pasada: `multi_timeframe.py`
+  YA calculaba esto correctamente desde antes (Parte 5.5 ya estaba resuelta ahí); el hueco real era
+  que el gate seguía leyendo `classify_stage` sobre una SMA150 *diaria* (la proxy documentada para
+  cuando no hay barras semanales, aplicada aquí por costumbre, no por necesidad). `unknown`
+  (menos de ~60 semanas, `MIN_WEEKLY_BARS_FOR_STAGE`) tampoco pasa, literal.
+- `no_fast_bearish_cross`: sin cambios - ya reutilizaba `detect_fast_pair_bearish_veto`
+  correctamente desde antes de esta auditoría.
+- `no_event_risk`: nuevo `_no_event_risk(next_earnings_date, as_of)`, ventana de 14 días naturales
+  (aproximación a "10 sesiones", mismo criterio que `TAKEN_WINDOW_DAYS` ya usa en otro sitio sin
+  calendario de mercado exacto disponible). `None` (sin fecha de resultados conocida) cuenta como
+  *sin* riesgo, no como "no se pudo comprobar" - una decisión propia, documentada: la literal "si
+  no se puede comprobar, cuenta como no cumplido" se interpreta sobre un fallo real de la propia
+  comprobación (la llamada de red falla, o no hay proveedor), no sobre el resultado normal de "hoy
+  no hay nada programado", que es el caso la mayoría de los días del año para la mayoría de los
+  tickers - la lectura estrictamente literal bloquearía el gate casi siempre, incluso en
+  producción. `get_next_earnings_date` ya existía en el `MarketDataProvider` desde antes; solo
+  faltaba llegar hasta el gate.
+
+**Dónde vive cada pieza tras el cambio** - los 3 llamadores reales de `evaluate_gate`
+(`ticker_analysis_service.compute_core_signals`/`_confirmed_gate`, `scripts/daily_close.py`) y
+`replay_gate_at` (el replay punto-en-el-tiempo del backtest):
+- "Analizar activo"/`/risk`: `liquidity_ok` sobre precio/volumen nativos (sin FX);
+  `next_earnings_date` reutiliza la llamada que `TickerAnalysisService.analyze()` ya hacía para
+  mostrar "días para resultados" en la ficha - antes nunca llegaba al gate.
+- `daily_close.py`: mismo `liquidity_ok` nativo; `next_earnings_date` es una llamada de red nueva
+  *por ticker del universo*, aceptada explícitamente aquí (no en ningún endpoint) porque este job
+  corre una vez por noche, fuera del camino de una petición - la distinción exacta que la propia
+  regla de CLAUDE.md ("no llamadas de red por ticker en los caminos calientes") traza entre un job
+  y un endpoint.
+- `replay_gate_at` (backtest histórico): ni el volumen-dólar en USD ni un calendario de resultados
+  históricos están disponibles barato por barra - `liquidity_ok=True`/`next_earnings_date=None`
+  siempre, documentado como limitación aceptada (mismo patrón que ya usaba para
+  `nearest_support`/`nearest_resistance`). `weekly_not_stage4` usa la proxy diaria (SMA150) en vez
+  del semanal real, por el mismo motivo de coste (remuestrear a semanal en cada barra de un
+  backtest sería prohibitivo) - una real, reconocida excepción a "el gate real, no una
+  aproximación", documentada en el propio docstring de la función, no oculta.
+
+**`scripts/factor_ablation_study.py`** se actualiza en consecuencia: de los 5 criterios, solo 2
+varían genuinamente dentro de un replay histórico (`gate_weekly_not_stage4`,
+`gate_no_fast_bearish_cross`) - los otros 3 son constantes `True` en `replay_gate_at` por las
+razones de arriba, así que exponerlos como factores del estudio de ablación produciría columnas de
+varianza cero, colineales con el propio intercepto de la regresión (el mismo problema que el R:R
+del gate viejo ya tenía, y por el que nunca se expuso). `CURRENT_POINTS` y el desempaquetado de
+`compute_triggers_at` se actualizan a los 2 nombres nuevos.
+
+**Tests**: `test_levels_engine.py` reescrito por completo (18 tests: cada uno de los 5 criterios en
+aislamiento, sus combinaciones, `Eligibility.passes`/`failing`, y que un R:R pobre ya no falla el
+gate por sí solo); `test_golden_gate_scenarios.py` reescrito por completo (10 escenarios: pase
+limpio, Fase 4 semanal confirmada contra un fixture verificado directamente contra
+`multi_timeframe.py` antes de escribirlo, semanal desconocida por poco historial, veto del par
+rápido, liquidez insuficiente, riesgo de evento dentro/fuera de ventana, y que una tendencia bajista
+diaria ya no descalifica por sí sola); `test_levels_engine_replay.py` (1 test actualizado: OBV ya
+no cambia el resultado del replay); `test_daily_close.py`/`test_ticker_analysis_service.py`
+(versión del gate, forma de `GateResult`); `test_portfolio_risk_service.py` (3 fixtures extendidos
+a 700 barras para que el Stage semanal sea conocible, no solo el umbral de 250 de
+`MIN_BARS_REQUIRED`); `test_factor_ablation_study.py` (9 tests actualizados a los 2 factores
+reales del replay). Suite completa verde (855 passed, unit+integración), ruff limpio.
+
+**Un bug real encontrado por los propios tests, no cosmético**: la primera versión de
+`_level_state_and_duration` (sección 27.5) comparaba solo la última barra contra la penúltima para
+decidir si hubo un cruce de lado - fallaba exactamente en "2 cierres consecutivos confirman la
+ruptura" (con ambas últimas barras ya al nuevo lado, esa comparación nunca detectaba ningún cruce
+en absoluto). Corregido con la racha completa (`run_length`) antes de comitear nada de esta
+sección - un recordatorio de por qué esta auditoría escribe los tests antes de dar por buena la
+lógica, no después.

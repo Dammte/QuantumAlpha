@@ -151,7 +151,10 @@ def test_uptrend_never_flagged_as_exit_warning():
 
 
 def test_add_candidate_when_uptrend_pulls_back_to_support():
-    rise = 100 + np.arange(260) * 0.4  # steady climb; Parte 3.2 raised MIN_BARS_REQUIRED to 250
+    # 700 bars (~140 weeks), well past MIN_WEEKLY_BARS_FOR_STAGE (60) - Sexta
+    # auditoría: `weekly_not_stage4` needs a real weekly Stage read, "unknown"
+    # (too little weekly history) doesn't pass either.
+    rise = 100 + np.arange(700) * 0.4  # steady climb
     dip = rise[-1] - np.array([0.0, 1.0, 1.8, 1.3, 0.6])  # brief, shallow pullback forms a swing low
     bounce = dip[-1] + np.arange(1, 4) * 0.4  # starts recovering, still close to the swing low
     close = np.concatenate([rise, dip, bounce])
@@ -181,7 +184,9 @@ def test_strong_setup_near_resistance_is_add_candidate_not_watch():
     # regardless of any actual spike, which would defeat the point of this
     # fixture (a genuinely clean setup, not an extended one).
     rng = np.random.default_rng(11)
-    n = 260  # Parte 3.2: MIN_BARS_REQUIRED subió a 250 - antes 220 bastaba
+    # 700 bars (~140 weeks), well past MIN_WEEKLY_BARS_FOR_STAGE (60) - Sexta
+    # auditoría: `weekly_not_stage4` needs a real weekly Stage read.
+    n = 700
     trend = 100 + np.arange(n) * 0.4
     noise = rng.normal(0, 1.2, n).cumsum() * 0.15
     rise = trend + noise
@@ -201,17 +206,15 @@ def test_strong_setup_near_resistance_is_add_candidate_not_watch():
 
 
 def test_signal_matches_gate_pass_fail():
-    downtrend = _ohlc(200 - np.arange(260) * 0.3)
-    # A perfectly straight-line uptrend (no noise at all) is a pathological
-    # fixture for a real indicator set: RSI pins at exactly 100, and the
-    # ever-growing distance from a near-flat ATR trips the parabolic-extension
-    # gate condition right alongside the bullish trend one - the gate
-    # correctly treating an unrealistically smooth, already-extended move
-    # with caution, not a bug. Mild noise around the same slope keeps this a
-    # genuine, clean uptrend without that artifact.
+    # 700 bars (~140 weeks), well past MIN_WEEKLY_BARS_FOR_STAGE (60) - Sexta
+    # auditoría: `weekly_not_stage4` needs a real weekly Stage read; a
+    # sustained 700-bar decline settles the weekly Stage at Fase 4 for real,
+    # a sustained 700-bar rise at Fase 2.
+    n = 700
+    downtrend = _ohlc(200 - np.arange(n) * 0.15)
     rng = np.random.default_rng(7)
-    trend = 100 + np.arange(260) * 0.4
-    noise = rng.normal(0, 1.2, 260).cumsum() * 0.15
+    trend = 100 + np.arange(n) * 0.4
+    noise = rng.normal(0, 1.2, n).cumsum() * 0.15
     uptrend = _ohlc(trend + noise, wiggle=1.5)
 
     exit_result = prs.assess_position_risk("DOWN", downtrend)

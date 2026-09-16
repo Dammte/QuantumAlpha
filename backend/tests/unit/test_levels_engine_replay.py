@@ -102,19 +102,17 @@ def test_replay_gate_at_applies_the_fast_pair_veto(monkeypatch):
     assert veto_condition.passed is False
 
 
-def test_replay_gate_at_incorporates_obv_divergence_when_volume_given():
+def test_replay_gate_at_ignores_volume_since_obv_left_the_gate():
+    # Sexta auditoría (Parte 6.2, texto literal): OBV nunca fue uno de los 5
+    # criterios eliminatorios reales - `volume` se mantiene en la firma por
+    # compatibilidad con `find_triple_barrier_entries`'s otros llamadores,
+    # pero ya no cambia el resultado del replay en absoluto.
     close = _synthetic_regime_series(n=400)
     bundle = _indicator_bundle(close)
     flat_volume = pd.Series([1000.0] * len(close))
-    # Same price path, only volume differs - a real point-in-time OBV
-    # divergence read requires volume that actually diverges from price, not
-    # just "some volume series present".
     without_volume = le.replay_gate_at(300, **bundle, volume=None)
     with_flat_volume = le.replay_gate_at(300, **bundle, volume=flat_volume)
     assert without_volume is not None
     assert with_flat_volume is not None
-    # Flat volume has no divergence to find - both reads should agree on
-    # this specific condition regardless of whether volume was supplied.
-    obv_condition_without = next(c for c in without_volume.conditions if "OBV" in c.label)
-    obv_condition_with = next(c for c in with_flat_volume.conditions if "OBV" in c.label)
-    assert obv_condition_without.passed == obv_condition_with.passed is True
+    assert without_volume.passes == with_flat_volume.passes
+    assert {c.label for c in without_volume.conditions} == {c.label for c in with_flat_volume.conditions}

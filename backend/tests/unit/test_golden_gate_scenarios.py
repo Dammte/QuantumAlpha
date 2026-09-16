@@ -1,36 +1,25 @@
-"""Reconstruction (2026-09), Fase 9: golden-scenario coverage for the gate
-that actually decides live now (`levels_engine.evaluate_gate`) - the same
-methodology `test_golden_scenarios.py` established for the now-fully-retired
-checklist (`recommendation_engine.build_recommendation`, deleted outright in
-the Fase 1 cleanup once nothing live called it - see
-`recommendation_engine.py`'s own module docstring), reapplied to what IS
-live. `test_golden_scenarios.py` was deleted alongside the checklist it
-tested; this file is its full replacement, not a parallel suite.
+"""Reconstruction (2026-09), Fase 9, reescrito en la Sexta auditoría (texto
+literal completo, Parte 6.2): golden-scenario coverage for the gate that
+actually decides live now (`levels_engine.evaluate_gate`) - same "hand-built,
+textbook-shaped, human-verifiable" philosophy `test_golden_scenarios.py`
+established for the retired checklist, reapplied to the 5 literal
+eligibility criteria (liquidity_ok/data_quality_ok/weekly_not_stage4/
+no_fast_bearish_cross/no_event_risk) that replaced the previous 6-condition
+approximation (tendencia/parabólico/sobrecompra/OBV/par rápido/R:R).
 
-Same "hand-built, textbook-shaped, human-verifiable" philosophy: real
-indicator series run end to end through `evaluate_gate`, asserting
-`gate.passes` and *which* condition(s) failed - never internal scalar
-values a legitimate future recalibration could change without changing
-what a human would call the chart.
-
-**Known, documented limitation, same one `levels_engine.replay_gate_at`
-already discloses**: every scenario here passes `nearest_support=
-nearest_resistance=None` (no point-in-time support/resistance scan), so
-`compute_stop_and_target` always falls back to the fixed ATR-stop/2:1-target
-formula and the sixth gate condition (reward:risk >= 1.5) is always `True`
-here - not a scenario this file can exercise. Genuinely untested anywhere
-in this suite: an entry whose nearest resistance offers *some* reward but
-not enough (a resistance-based reward:risk between 1.0 and 1.5 - below that,
-`compute_stop_and_target` itself falls back to the fixed 2:1 target instead
-of using the resistance, which trivially clears 1.5 again). A real
-`support_resistance_levels` pivot fixture landing in that exact narrow
-window wasn't built for this pass - `test_portfolio_risk_service.py`'s own
-near-resistance fixture (`test_strong_setup_near_resistance_is_add_candidate_not_watch`)
-exercises the *passing* case, not this one."""
+Trend/parabolic/overbought/OBV scenarios from the previous version of this
+file are gone, not renamed - none of the four are gate *eligibility*
+criteria in the literal text (see `levels_engine.py`'s own module
+docstring): trend feeds the entry-geometry cascade instead
+(`trade_geometry._stop_cascade`), parabolic extension moved to
+`exit_engine.py`'s REDUCE trigger for open positions (Parte 9), and OBV
+divergence never had literal backing as a gate condition at all."""
 
 import numpy as np
 import pandas as pd
+import pytest
 
+from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 from app.services.levels_engine import GateResult, evaluate_gate
 
@@ -47,45 +36,44 @@ def _gate_from_series(
     high: pd.Series | None = None,
     low: pd.Series | None = None,
     volume: pd.Series | None = None,
+    liquidity_ok: bool = True,
+    next_earnings_date=None,
+    as_of=None,
 ) -> GateResult:
     """Reproduces the same indicator-derivation pipeline
     `ticker_analysis_service.compute_core_signals` uses before calling the
     real `evaluate_gate` - same role `test_golden_scenarios.py`'s own
-    `_recommendation_from_series` plays for the retired checklist."""
+    `_recommendation_from_series` played for the retired checklist.
+    `close` must carry a real `DatetimeIndex` (business days) - the weekly
+    Stage read resamples off it (`multi_timeframe.analyze_multi_timeframe`),
+    unlike the retired version of this file, which never needed one."""
+    if not isinstance(close.index, pd.DatetimeIndex):
+        close = close.set_axis(pd.bdate_range("2015-01-01", periods=len(close)))
     high = high if high is not None else close * 1.01
     low = low if low is not None else close * 0.99
     volume = volume if volume is not None else pd.Series([1_000_000.0] * len(close), index=close.index)
 
     price = float(close.iloc[-1])
-    sma20_s, sma50_s = ta.sma(close, 20), ta.sma(close, 50)
-    sma150_s, sma200_s = ta.sma(close, 150), ta.sma(close, 200)
-    sma20, sma50, sma200 = _last(sma20_s), _last(sma50_s), _last(sma200_s)
-    trend = ta.classify_trend(price, sma20, sma50, sma200)
-    stage = ta.classify_stage(price, sma150_s) if len(close) >= 200 else None
-
-    adx_s = ta.adx(high, low, close)
-    plus_di_s, minus_di_s = ta.dmi(high, low, close)
-    atr_s = ta.atr(high, low, close)
-    atr14 = _last(atr_s)
-    atr_multiple = (price - sma50) / atr14 if atr14 else None
-
-    obv_div = ta.obv_divergence(close, volume)
+    sma20_s = ta.sma(close, 20)
+    trend = ta.classify_trend(price, _last(sma20_s), _last(ta.sma(close, 50)), _last(ta.sma(close, 200)))
+    atr14 = _last(ta.atr(high, low, close))
     fast_pair_veto = ta.detect_fast_pair_bearish_veto(close)
+
+    daily_df = pd.DataFrame({"open": close, "high": high, "low": low, "close": close, "volume": volume})
+    multi_timeframe = mtf.analyze_multi_timeframe(daily_df)
+    weekly_stage = multi_timeframe.weekly.stage if multi_timeframe.weekly is not None else None
 
     return evaluate_gate(
         price=price,
         trend=trend,
-        stage=stage,
-        rsi14=_last(ta.rsi(close)),
-        adx14=_last(adx_s),
-        plus_di=_last(plus_di_s),
-        minus_di=_last(minus_di_s),
         atr14=atr14,
-        atr_multiple=atr_multiple,
         nearest_support=None,
         nearest_resistance=None,
-        obv_divergence=obv_div,
+        weekly_stage=weekly_stage,
+        liquidity_ok=liquidity_ok,
         fast_pair_bearish_signal=fast_pair_veto,
+        next_earnings_date=next_earnings_date,
+        as_of=as_of,
     )
 
 
@@ -93,126 +81,120 @@ def _condition(gate: GateResult, label_substring: str):
     return next(c for c in gate.conditions if label_substring in c.label)
 
 
-def test_golden_clean_stage2_breakout_with_volume_passes_the_gate():
-    # Same shape as test_golden_scenarios.py's own breakout fixture (a real
-    # multi-month base, not a straight line, then a clean breakout on rising
-    # volume) - mild noise on the breakout leg (rng.normal(...).cumsum()) so
-    # a smooth ramp doesn't read as "parabolic" purely from having a flat
-    # ATR under it (a real pitfall found while building this file: the
-    # original test's un-noised 0.6/day breakout leg tripped
-    # gate_not_parabolic even with zero actual spike).
-    rng = np.random.default_rng(3)
-    n_base = 150
-    base = 100 + np.sin(np.linspace(0, 6 * np.pi, n_base)) * 2
-    n_breakout = 150
-    breakout = base[-1] + np.arange(1, n_breakout + 1) * 0.4 + rng.normal(0, 1.0, n_breakout).cumsum() * 0.15
-    close = pd.Series(np.concatenate([base, breakout]))
-    volume = pd.Series([1_000_000.0] * n_base + [3_000_000.0] * n_breakout)
+def _clean_uptrend_close(n: int = 700, seed: int = 3) -> pd.Series:
+    """Un histórico largo y limpio (>= 60 semanas para un Stage semanal
+    confirmado, Parte 5.5) en subida sostenida - el caso base que debería
+    aprobar los 5 criterios sin ambigüedad."""
+    rng = np.random.default_rng(seed)
+    values = 100 + np.arange(n) * 0.3 + rng.normal(0, 1, n).cumsum() * 0.05
+    return pd.Series(values, index=pd.bdate_range("2015-01-01", periods=n))
 
-    gate = _gate_from_series(close, volume=volume)
 
+def test_golden_clean_uptrend_passes_every_criterion():
+    gate = _gate_from_series(_clean_uptrend_close())
     assert gate.passes
     assert all(c.passed for c in gate.conditions)
-    assert gate.stop_and_target.stop_loss < close.iloc[-1]
+    assert gate.eligibility.weekly_not_stage4 is True
+    assert gate.stop_and_target.stop_loss < gate.stop_and_target.take_profit
 
 
-def test_golden_confirmed_downtrend_fails_the_gate_on_trend():
-    # A long, unbroken decline - Stage 4, no ambiguity about direction.
-    close = pd.Series(200 - np.arange(300) * 0.3)
+def test_golden_sustained_weekly_decline_fails_on_stage4():
+    # Una subida larga seguida de un declive sostenido lo bastante largo como
+    # para que la MA30 *semanal* real (no una proxy diaria) ya lea Fase 4 -
+    # confirmado contra `multi_timeframe.py` directamente antes de escribir
+    # este fixture, no adivinado.
+    rng = np.random.default_rng(7)
+    n_up = 700
+    up = 100 + np.arange(n_up) * 0.3 + rng.normal(0, 1, n_up).cumsum() * 0.05
+    n_down = 150
+    down = up[-1] - np.arange(1, n_down + 1) * 0.6 + rng.normal(0, 1, n_down).cumsum() * 0.05
+    close = pd.Series(np.concatenate([up, down]), index=pd.bdate_range("2015-01-01", periods=n_up + n_down))
+
     gate = _gate_from_series(close)
-    assert not _condition(gate, "Tendencia").passed
+
+    assert gate.eligibility.weekly_not_stage4 is False
+    assert not _condition(gate, "Fase 4").passed
     assert not gate.passes
 
 
-def test_golden_sideways_chop_fails_the_gate_on_trend():
-    # Bounded oscillation, no net drift over the whole series - genuinely
-    # directionless, the case a human would call "nothing to do here yet".
-    close = pd.Series(100 + np.sin(np.linspace(0, 10 * np.pi, 300)) * 3)
+def test_golden_short_history_fails_on_unknown_weekly_stage():
+    # Parte 6.2, literal: "unknown NO pasa" - menos de ~60 semanas
+    # (`MIN_WEEKLY_BARS_FOR_STAGE`) de historial no puede confirmar ni
+    # descartar la Fase 4, así que el criterio falla igual que si estuviera
+    # confirmada - nunca se asume "probablemente no está en declive".
+    close = pd.Series(100 + np.arange(200) * 0.3, index=pd.bdate_range("2015-01-01", periods=200))
     gate = _gate_from_series(close)
-    assert not _condition(gate, "Tendencia").passed
+    assert gate.eligibility.weekly_not_stage4 is False
     assert not gate.passes
 
 
 def test_golden_fast_pair_veto_fails_the_gate_even_with_a_confirmed_uptrend():
-    # Same fixture as test_golden_scenarios.py's own veto scenario: a long,
-    # genuine uptrend that has just begun a smooth, sustained recent decline
-    # - still a confirmed uptrend by the slower trend/stage read, but the
-    # fast EMA21/55 pair is already projecting a bearish cross with clean
+    # A long, genuine uptrend that has just begun a smooth, sustained recent
+    # decline - still weekly Stage 2 by the slower read, but the fast
+    # EMA21/55 pair is already projecting a bearish cross with clean
     # confidence. Isolates cleanly: every other condition still passes.
-    up = 100 + np.arange(250) * 0.5
+    up = 100 + np.arange(700) * 0.3
     down = up[-1] - np.arange(1, 41) * 0.2
-    close = pd.Series(np.concatenate([up, down]))
+    close = pd.Series(np.concatenate([up, down]), index=pd.bdate_range("2015-01-01", periods=740))
 
     gate = _gate_from_series(close)
 
-    assert _condition(gate, "Tendencia").passed
+    assert gate.eligibility.weekly_not_stage4 is True
     assert not _condition(gate, "par rápido").passed
     assert not gate.passes
     other_conditions = [c for c in gate.conditions if "par rápido" not in c.label]
     assert all(c.passed for c in other_conditions)
 
 
-def test_golden_bearish_obv_divergence_fails_the_gate_even_within_an_uptrend():
-    # Wyckoff's "effort vs result": price still creeps to marginal new highs,
-    # but every third day is a real down-day on heavy volume - the advance
-    # is no longer backed by real net buying pressure. Isolates cleanly:
-    # every other condition still passes.
-    n = 240
-    close_base = 100 + np.arange(n) * 0.4
-    tail_changes = [-0.3 if i % 3 == 2 else 0.5 for i in range(22)]
-    tail_volume = [3_000_000.0 if i % 3 == 2 else 500_000.0 for i in range(22)]
-    tail_close = []
-    level = close_base[-1]
-    for change in tail_changes:
-        level += change
-        tail_close.append(level)
-    close = pd.Series(np.concatenate([close_base, tail_close]))
-    volume = pd.Series([1_000_000.0] * n + tail_volume)
-
-    gate = _gate_from_series(close, volume=volume)
-
-    assert _condition(gate, "Tendencia").passed
-    assert not _condition(gate, "OBV").passed
+def test_golden_illiquid_ticker_fails_on_liquidity_even_with_a_clean_uptrend():
+    gate = _gate_from_series(_clean_uptrend_close(), liquidity_ok=False)
+    assert not _condition(gate, "Liquidez").passed
     assert not gate.passes
-    other_conditions = [c for c in gate.conditions if "OBV" not in c.label]
+    other_conditions = [c for c in gate.conditions if "Liquidez" not in c.label]
     assert all(c.passed for c in other_conditions)
 
 
-def test_golden_parabolic_extension_fails_the_gate_even_with_a_confirmed_uptrend():
-    # A genuine, real spike (nearly doubling in the final 5 bars) far above
-    # the 50-day average relative to its own ATR - not a normal uptrend
-    # continuation. Isolates cleanly: trend/stage still reads a confirmed
-    # advance, only the parabolic condition fails.
-    base = 100 + np.arange(220) * 0.3
-    spike = base[-1] * np.array([1.05, 1.12, 1.22, 1.35, 1.5])
-    close = pd.Series(np.concatenate([base, spike]))
-
-    gate = _gate_from_series(close)
-
-    assert _condition(gate, "Tendencia").passed
-    assert not _condition(gate, "parabólica").passed
+def test_golden_earnings_next_week_fails_on_event_risk():
+    as_of = pd.Timestamp("2015-01-01") + pd.tseries.offsets.BDay(699)
+    close = _clean_uptrend_close()
+    gate = _gate_from_series(
+        close, next_earnings_date=as_of.date() + pd.Timedelta(days=5), as_of=as_of.date()
+    )
+    assert not _condition(gate, "riesgo de evento").passed
     assert not gate.passes
-    other_conditions = [c for c in gate.conditions if "parabólica" not in c.label]
+    other_conditions = [c for c in gate.conditions if "riesgo de evento" not in c.label]
     assert all(c.passed for c in other_conditions)
 
 
-def test_golden_overbought_spike_within_a_sideways_market_fails_the_gate():
-    # RSI pinned extreme (>90) from a sharp bounce, but the broader
-    # trend/stage read is still sideways (a longer decline, not yet
-    # reclassified as an uptrend by a handful of bars) - "overbought outside
-    # a confirmed strong trend" is exactly this case: a short-term thrust
-    # inside a market that hasn't actually turned. Not isolated the way the
-    # scenarios above are (the parabolic and trend conditions fail too, on
-    # this same real chart shape) - a strong-enough short-term thrust to
-    # spike RSI this much also spikes ADX and the ATR-multiple in the same
-    # 14-bar window, so those three conditions are naturally correlated,
-    # not independently triggerable on one fixture.
-    decline = 200 - np.arange(220) * 0.3
-    bounce = decline[-1] + np.arange(1, 11) * 2.5
-    close = pd.Series(np.concatenate([decline, bounce]))
+def test_golden_earnings_far_away_still_passes():
+    as_of = pd.Timestamp("2015-01-01") + pd.tseries.offsets.BDay(699)
+    close = _clean_uptrend_close()
+    gate = _gate_from_series(
+        close, next_earnings_date=as_of.date() + pd.Timedelta(days=60), as_of=as_of.date()
+    )
+    assert gate.eligibility.no_event_risk is True
+    assert gate.passes
 
+
+def test_golden_downtrend_no_longer_fails_the_gate_by_itself():
+    # Parte 6.2 (literal): la dirección de la tendencia diaria ya no es un
+    # criterio de elegibilidad - solo el estado *semanal* (Fase 4) lo es.
+    # Un declive diario reciente, corto, dentro de un historial semanal
+    # todavía no confirmado en Fase 4, no descalifica por sí solo (aunque en
+    # la práctica raramente producirá un disparador viable, ya que la
+    # cascada de la geometría exige tendencia alcista para sus peldaños de
+    # continuación - ver trade_geometry._stop_cascade).
+    close = pd.Series(200 - np.arange(300) * 0.05, index=pd.bdate_range("2015-01-01", periods=300))
     gate = _gate_from_series(close)
+    # Ni "Tendencia" ni "parabólica" ni "sobrecompra" existen ya como
+    # etiquetas del gate - solo los 5 criterios literales.
+    labels = {c.label for c in gate.conditions}
+    assert len(labels) == 5
+    assert not any("Tendencia" in label or "parabólica" in label or "sobrecompra" in label for label in labels)
 
-    assert _last(ta.rsi(close)) >= 80
-    assert not _condition(gate, "sobrecompra").passed
-    assert not gate.passes
+
+@pytest.mark.parametrize("liquidity_ok", [True, False])
+def test_golden_eligibility_object_matches_the_conditions_list(liquidity_ok):
+    gate = _gate_from_series(_clean_uptrend_close(), liquidity_ok=liquidity_ok)
+    assert gate.eligibility.liquidity_ok is liquidity_ok
+    assert gate.passes == gate.eligibility.passes == all(c.passed for c in gate.conditions)

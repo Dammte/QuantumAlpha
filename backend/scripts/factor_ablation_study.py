@@ -54,38 +54,35 @@ holding horizon), not 21 alone - 63/126 are still available via `--horizons`
 for anyone checking horizon sensitivity against the momentum literature
 (Jegadeesh & Titman 1993), same as before.
 
-**Fase 8 reorientation (reconstrucción, septiembre 2026) - measuring the new
-gate instead of the retired checklist:** `recommendation_engine.py`'s
-checklist no longer decides anything live (`levels_engine.evaluate_gate`
-does - docs/quant_methodology.md §25), so the factors worth measuring here
-changed too. `compute_triggers_at` now also calls
-`levels_engine.replay_gate_at` - the exact same point-in-time replay
-function the live "Analizar activo" backtest uses, not a second hand-rolled
-approximation of the gate - and exposes five of its six conditions as their
-own factors (`gate_trend_or_stage2`, `gate_not_parabolic`,
-`gate_not_overbought_outside_strong_trend`, `gate_no_obv_bearish_divergence`,
-`gate_no_fast_pair_veto`), plus the compound `gate_passes`. Three of the old
-checklist's factors were *removed*, not kept alongside their gate
-equivalent: `atr_parabolic`, `rsi_overbought_outside_strong_trend`, and
-`obv_bearish` are each the exact logical negation of a gate factor above
-(same predicate, opposite boolean) - keeping both would hand
-`run_multivariate_regression` two perfectly collinear columns, which is a
-real defect (a singular design matrix), not just redundant reporting. The
-sixth gate condition (reward:risk >= 1.5) is deliberately **not** exposed as
-a factor here: `replay_gate_at` has no point-in-time support/resistance
-(its own documented simplification), so `compute_stop_and_target` always
-falls back to the fixed ATR-stop/2:1-target formula, making that condition
-a constant `True` for every sample - a zero-variance column is collinear
-with the regression's own intercept, which would corrupt every other
-factor's coefficient in the same fit, not just that one's. That condition
-is instead measured properly, against real daily precomputed
-support/resistance, by `trigger_performance_service.py`
-(`GET /system/signal-performance`) - see that module's own docstring.
+**Fase 8 reorientation (reconstrucción, septiembre 2026), actualizado en la
+Sexta auditoría (texto literal completo, Parte 6.2) - measuring the new gate
+instead of the retired checklist:** `recommendation_engine.py`'s checklist no
+longer decides anything live (`levels_engine.evaluate_gate` does -
+docs/quant_methodology.md §25/§27), so the factors worth measuring here
+changed too. `compute_triggers_at` now also calls `levels_engine.replay_gate_at`
+- the exact same point-in-time replay function the live "Analizar activo"
+backtest uses, not a second hand-rolled approximation of the gate - and
+exposes 2 of its 5 literal eligibility criteria as their own factors
+(`gate_weekly_not_stage4`, `gate_no_fast_bearish_cross`), plus the compound
+`gate_passes`. The other 3 (`liquidity_ok`, `data_quality_ok`,
+`no_event_risk`) are deliberately **not** exposed as factors here, for the
+exact same reason the old 6-condition gate's reward:risk check wasn't:
+`replay_gate_at` itself documents that it can't replay a historical dollar-
+volume-in-USD series or an earnings calendar cheaply per bar, so it always
+passes `liquidity_ok=True`/`next_earnings_date=None`
+(`no_event_risk` always `True`) and `data_quality_ok` defaults to `True` too
+- three constant `True` columns for every single sample, which would be
+collinear with the regression's own intercept and corrupt every other
+factor's coefficient in the same fit, not just theirs. `atr_parabolic`,
+`rsi_overbought_outside_strong_trend`, and `obv_bearish` from the retired
+checklist era are gone outright, not merely unexposed - none of the three
+have any literal backing as a gate condition at all anymore (see
+`levels_engine.py`'s own module docstring for what got dropped and why).
 `golden_cross`/`death_cross`/`rsi_oversold_bounce`/`minervini_range_position`/
-`trend_down`/`stage4` are informational signals the live system still
-surfaces (imminent-cross badges, context) even though none of them gate
-anything - kept as-is, still worth knowing whether they correlate with
-anything real.
+`trend_down`/`stage4`/`trend_up`/`stage2` stay as informational signals the
+live system still surfaces (imminent-cross badges, context) even though none
+of them gate anything - kept as-is, still worth knowing whether they
+correlate with anything real.
 
 **What this script deliberately does NOT do**: it does not change any
 weight in `recommendation_engine.py`, and it does not implement D9's
@@ -244,11 +241,8 @@ CURRENT_POINTS = {
     "market_below_sma200": -2,  # not scored live (§6.1) - kept as a regime segmentation key, not a live factor
     "vix_stress": -2,  # same - regime segmentation key, not a live factor
     "gate_passes": 1,
-    "gate_trend_or_stage2": 1,
-    "gate_not_parabolic": 1,
-    "gate_not_overbought_outside_strong_trend": 1,
-    "gate_no_obv_bearish_divergence": 1,
-    "gate_no_fast_pair_veto": 1,
+    "gate_weekly_not_stage4": 1,
+    "gate_no_fast_bearish_cross": 1,
 }
 
 
@@ -345,18 +339,14 @@ def compute_triggers_at(
         i, close, sma20, sma50, sma150, sma200, rsi14, adx14, plus_di, minus_di, atr14, volume
     )
     assert gate is not None
-    # Positional, not by label - evaluate_gate()'s six `add(...)` calls are in
-    # a fixed, documented order (see that function). The sixth (reward:risk)
-    # is intentionally not unpacked into its own factor - see the module
-    # docstring.
-    (
-        gate_trend_or_stage2,
-        gate_not_parabolic,
-        gate_not_overbought_outside_strong_trend,
-        gate_no_obv_bearish_divergence,
-        gate_no_fast_pair_veto,
-        _gate_reward_risk_ok,
-    ) = (c.passed for c in gate.conditions)
+    # Named off `eligibility` directly, not positionally off `conditions` -
+    # unlike the retired 6-condition gate, `Eligibility` is itself a typed
+    # object with one named field per criterion (see `levels_engine.py`).
+    # `liquidity_ok`/`data_quality_ok`/`no_event_risk` are deliberately not
+    # read here - `replay_gate_at` always returns `True` for all three (see
+    # the module docstring's Fase 8 section), so they'd be constant columns.
+    gate_weekly_not_stage4 = gate.eligibility.weekly_not_stage4
+    gate_no_fast_bearish_cross = gate.eligibility.no_fast_bearish_cross
 
     return {
         "trend_up": trend == ta.TrendState.UPTREND,
@@ -372,11 +362,8 @@ def compute_triggers_at(
         "market_below_sma200": market_trend == ta.TrendState.DOWNTREND,
         "vix_stress": vix_regime_label in ("pánico", "crisis"),
         "gate_passes": gate.passes,
-        "gate_trend_or_stage2": gate_trend_or_stage2,
-        "gate_not_parabolic": gate_not_parabolic,
-        "gate_not_overbought_outside_strong_trend": gate_not_overbought_outside_strong_trend,
-        "gate_no_obv_bearish_divergence": gate_no_obv_bearish_divergence,
-        "gate_no_fast_pair_veto": gate_no_fast_pair_veto,
+        "gate_weekly_not_stage4": gate_weekly_not_stage4,
+        "gate_no_fast_bearish_cross": gate_no_fast_bearish_cross,
         "setup_oversold_bounce": setup_oversold_bounce,
         "setup_breakout_volume": setup_breakout_volume,
         "setup_trend_continuation": setup_trend_continuation,

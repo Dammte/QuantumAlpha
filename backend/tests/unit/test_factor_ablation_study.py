@@ -109,10 +109,7 @@ def test_compute_triggers_at_no_setup_matches_a_flat_boring_series():
 
 # --- compute_triggers_at: Fase 8 reorientation (gate factors) ---
 
-_GATE_FACTOR_KEYS = (
-    "gate_passes", "gate_trend_or_stage2", "gate_not_parabolic",
-    "gate_not_overbought_outside_strong_trend", "gate_no_obv_bearish_divergence", "gate_no_fast_pair_veto",
-)
+_GATE_FACTOR_KEYS = ("gate_passes", "gate_weekly_not_stage4", "gate_no_fast_bearish_cross")
 
 # The three old checklist factors each gate_* factor above replaced (exact
 # logical negations - see the module docstring's Fase 8 section for why
@@ -130,31 +127,28 @@ def test_compute_triggers_at_exposes_every_gate_factor_and_drops_its_superseded_
         assert isinstance(triggers[key], bool), key
     for key in _REMOVED_CHECKLIST_KEYS:
         assert key not in triggers, key
-    # The reward:risk gate condition is deliberately never exposed as its own
-    # factor here (constant True without point-in-time support/resistance -
-    # see the module docstring).
-    assert not any("reward_risk" in key for key in triggers)
+    # liquidity_ok/data_quality_ok/no_event_risk are deliberately never
+    # exposed as factors here - `replay_gate_at` always returns `True` for
+    # all three (see the module docstring), so they'd be constant columns.
+    assert "gate_liquidity_ok" not in triggers
+    assert "gate_data_quality_ok" not in triggers
+    assert "gate_no_event_risk" not in triggers
 
 
 def test_compute_triggers_at_gate_passes_is_the_and_of_its_own_sub_conditions():
-    # A clean, unbroken uptrend with no OBV divergence and no fast-pair
-    # veto - every gate condition this replay can actually vary should read
-    # True, and gate_passes should agree with their conjunction.
+    # A clean, unbroken uptrend with no fast-pair veto - both gate conditions
+    # this replay can actually vary should read True, and gate_passes should
+    # agree with their conjunction.
     close = pd.Series(100 + np.arange(280) * 0.3)
     high, low = close + 1, close - 1
     volume = pd.Series([1_000_000.0] * 280)
     triggers = _triggers_for_last_bar(close, high, low, volume)
 
-    sub_conditions = (
-        triggers["gate_trend_or_stage2"],
-        triggers["gate_not_parabolic"],
-        triggers["gate_not_overbought_outside_strong_trend"],
-        triggers["gate_no_obv_bearish_divergence"],
-        triggers["gate_no_fast_pair_veto"],
-    )
-    # gate_passes also requires reward:risk >= 1.5, which this point-in-time
-    # replay always satisfies (see the module docstring) - so it must equal
-    # the AND of the five conditions this test can actually vary.
+    sub_conditions = (triggers["gate_weekly_not_stage4"], triggers["gate_no_fast_bearish_cross"])
+    # gate_passes also requires liquidity_ok/data_quality_ok/no_event_risk,
+    # which this point-in-time replay always satisfies (see the module
+    # docstring) - so it must equal the AND of the two conditions this test
+    # can actually vary.
     assert triggers["gate_passes"] == all(sub_conditions)
 
 
@@ -164,8 +158,7 @@ def test_compute_triggers_at_gate_passes_is_the_and_of_its_own_sub_conditions():
 _ALL_TRIGGER_KEYS = (
     "trend_up", "trend_down", "stage2", "stage4", "golden_cross", "death_cross", "adx_strong_trend",
     "rsi_oversold_bounce", "obv_bullish", "minervini_range_position", "market_below_sma200", "vix_stress",
-    "gate_passes", "gate_trend_or_stage2", "gate_not_parabolic", "gate_not_overbought_outside_strong_trend",
-    "gate_no_obv_bearish_divergence", "gate_no_fast_pair_veto", *fas.SETUP_TRIGGER_KEYS,
+    "gate_passes", "gate_weekly_not_stage4", "gate_no_fast_bearish_cross", *fas.SETUP_TRIGGER_KEYS,
 )
 
 

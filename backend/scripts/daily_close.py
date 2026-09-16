@@ -58,6 +58,7 @@ from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRe
 from app.infrastructure.db.repositories.trigger_event_repository import TriggerEventRepository
 from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.market_data.yfinance_provider import YFinanceProvider
+from app.services import dynamic_universe_service as dus
 from app.services import exit_engine as ee
 from app.services import levels_engine as le
 from app.services import multi_timeframe as mtf
@@ -79,14 +80,25 @@ def _nearest_level(levels: list[ta.PriceLevel], kind: str) -> ta.PriceLevel | No
 
 
 def build_ticker_daily_state(
-    snapshot: TickerSnapshot, region: str, df: pd.DataFrame, trade_date: date, computed_at: datetime
+    snapshot: TickerSnapshot,
+    region: str,
+    df: pd.DataFrame,
+    trade_date: date,
+    computed_at: datetime,
+    next_earnings_date: date | None = None,
 ) -> TickerDailyState | None:
-    """Pure function: everything `levels_engine.evaluate_gate` needs beyond
-    what `TickerSnapshot` already carries (raw ATR, support/resistance, OBV
-    divergence, the fast-pair veto) is derived here from the same OHLCV frame
-    the screener already downloaded - no new network call, no re-fetch.
-    `None` when there isn't enough history to say anything (same bar
-    `ticker_analysis_service.compute_core_signals` uses)."""
+    """Pure function (`next_earnings_date` is the one exception - a value
+    the caller already paid the network cost for, never fetched here):
+    everything `levels_engine.evaluate_gate` needs beyond what `TickerSnapshot`
+    already carries (raw ATR, support/resistance, the fast-pair veto, the
+    weekly Weinstein Stage, the liquidity floor) is derived here from the
+    same OHLCV frame the screener already downloaded - no new network call,
+    no re-fetch. `None` when there isn't enough history to say anything (same
+    bar `ticker_analysis_service.compute_core_signals` uses).
+
+    Sexta auditoría (Parte 6.2, texto literal completo): the gate's 5
+    eligibility criteria replace the previous 6-condition approximation -
+    see `levels_engine.py`'s own module docstring for the full reasoning."""
     close, high, low, volume = df["close"], df["high"], df["low"], df["volume"]
     if len(close) < MIN_BARS_REQUIRED:
         return None
@@ -96,8 +108,21 @@ def build_ticker_daily_state(
     levels = ta.support_resistance_levels(high, low, close)
     nearest_support = _nearest_level(levels, "support")
     nearest_resistance = _nearest_level(levels, "resistance")
-    obv_div = ta.obv_divergence(close, volume)
     fast_pair_veto = ta.detect_fast_pair_bearish_veto(close)
+
+    # Parte 5.5: la MA30 semanal real (no la proxy diaria de `snapshot.stage`,
+    # que sigue siendo el Stage *diario* mostrado en el Radar/screener como
+    # contexto, sin cambios) - `weekly_not_stage4` del gate exige el
+    # semanal genuino.
+    multi_timeframe = mtf.analyze_multi_timeframe(df)
+    weekly_stage = multi_timeframe.weekly.stage if multi_timeframe.weekly is not None else None
+
+    # Divisa nativa, sin conversión a USD - misma simplificación documentada
+    # en `ticker_analysis_service.compute_core_signals` (el universo dinámico
+    # mensual, Job C, ya filtra por liquidez en USD real al entrar; esta es
+    # la comprobación diaria adicional del propio gate, Parte 6.2).
+    dollar_volume_20d = float((close.iloc[-20:] * volume.iloc[-20:]).mean()) if len(close) >= 20 else None
+    liquidity_ok = dus.passes_liquidity_floor(snapshot.price, dollar_volume_20d)
 
     # Parte 7 (later pass): the same real EMA21/55 read
     # `ticker_analysis_service.compute_core_signals` already passes to
@@ -114,17 +139,14 @@ def build_ticker_daily_state(
     gate = le.evaluate_gate(
         price=snapshot.price,
         trend=snapshot.trend,
-        stage=snapshot.stage,
-        rsi14=snapshot.rsi14,
-        adx14=snapshot.adx14,
-        plus_di=snapshot.plus_di,
-        minus_di=snapshot.minus_di,
         atr14=atr14,
-        atr_multiple=snapshot.atr_multiple,
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
-        obv_divergence=obv_div,
+        weekly_stage=weekly_stage,
+        liquidity_ok=liquidity_ok,
         fast_pair_bearish_signal=fast_pair_veto,
+        next_earnings_date=next_earnings_date,
+        as_of=trade_date,
         ema21=ema21,
         ema55=ema55,
     )
@@ -310,7 +332,14 @@ def run_daily_close(
                 df = ohlcv_by_ticker.get(ts.ticker)
                 if df is None:
                     continue
-                state = build_ticker_daily_state(ts, region, df, trade_date, now)
+                # Parte 6.2's `no_event_risk` - one network call per ticker,
+                # accepted here (unlike in any live request path) because
+                # this job runs once a night, off the request path entirely
+                # (Parte 4.1) - the exact distinction CLAUDE.md's "no
+                # llamadas de red por ticker en los caminos calientes" rule
+                # draws between a job and an endpoint.
+                next_earnings_date = market_data.get_next_earnings_date(ts.ticker)
+                state = build_ticker_daily_state(ts, region, df, trade_date, now, next_earnings_date)
                 if state is None:
                     continue
                 previous = ticker_repo.latest_for_ticker(ts.ticker)

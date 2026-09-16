@@ -138,6 +138,12 @@ concreto?", "¿está funcionando mi sistema?") con datos precomputados por jobs 
 cómputo en caliente por request. Ver `backend/docs/quant_methodology.md` §25 en adelante para el
 detalle completo, con su propio historial de qué está hecho y qué no.
 
+**El gate son 5 criterios eliminatorios literales** (`Eligibility`: `liquidity_ok`,
+`data_quality_ok`, `weekly_not_stage4`, `no_fast_bearish_cross`, `no_event_risk`,
+`GATE_VERSION="2026-09-levels-v2"`), no los 6 de una aproximación anterior (tendencia/parabólico/
+sobrecompra/OBV/par rápido/R:R) escrita sin el texto original en contexto - ver
+`docs/quant_methodology.md` §27.6 para el porqué completo de cada retiro y cada criterio nuevo.
+
 **Completo y en producción**: `levels_engine.evaluate_gate` como único camino de decisión de
 entrada (el checklist viejo, retirado); precompute diario (`scripts/daily_close.py`,
 `ticker_daily_state`/`position_daily_state`/`daily_brief`) y refresco intradía
