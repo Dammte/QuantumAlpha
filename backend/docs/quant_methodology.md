@@ -2620,3 +2620,38 @@ precondición necesita *ambos* disparadores, no solo uno); 2 nuevos en `test_rad
 viaja tal cual desde una fila sembrada; `None` en una fila pre-migración). Suite completa verde,
 ruff limpio (fuera de `alembic/versions/`, que nunca ha estado bajo `ruff check app tests` - mismo
 estilo que toda migración autogenerada existente).
+
+### 27.11 `Level`/`LevelKind`/`LevelState` conectado a "Analizar activo"/`/risk` de cartera
+
+Primer consumidor real del motor de niveles construido en 27.5 (`technical_analysis.detect_levels`,
+"añadido, todavía sin ningún llamador en producción"). `compute_core_signals` lo llama junto a
+`support_resistance_levels` (el sistema simple, sin tocar - 14+ consumidores siguen leyéndolo sin
+cambios), así que `CoreTickerSignals`/`TickerAnalysis` ganan un campo `levels: list[ta.Level]`
+puramente aditivo.
+
+**Cierra de paso el hueco documentado en 27.5**: `WEEKLY_MA30` estaba ausente porque nadie le pasaba
+un `weekly_close` real a `detect_levels`. `compute_core_signals` ya construye `daily_df` para
+`multi_timeframe.analyze_multi_timeframe` (que resamplea semanalmente por dentro, pero no expone la
+serie cruda) - un segundo `ta.resample_ohlcv(daily_df, mtf.WEEKLY_RULE)` (mismo `daily_df` ya en
+memoria, coste de CPU trivial, cero llamadas de red nuevas) obtiene el cierre semanal real que
+faltaba. `WEEKLY_MA30` aparece ahora en la lista siempre que haya al menos 2 semanas cerradas.
+
+**API**: `LevelResponse` nuevo en `schemas/common.py` (junto a `PriceLevelResponse`, mismo motivo de
+colocación: que `quant_analysis.py` y `market.py` lo puedan usar sin importarse entre sí).
+`CoreSignalsResponse.levels`/`TickerAnalysisResponse.levels` - ninguno de los dos endpoints
+(`_core_signals_to_response` en `portfolios.py`, `_to_response` en `ticker_analysis.py`) necesitó
+cambios propios: ambos ya construyen la respuesta vía `asdict(...)` genérico, así que el campo nuevo
+del dataclass de dominio viaja solo, mismo mecanismo que ya benefició a `grade` en 27.8.
+
+**Deliberadamente fuera de este sub-paso**: el Radar/`daily_close.py` no persisten `levels` todavía
+(a diferencia de `entry_geometry`/`grade`) - la lista completa de niveles es más pesada que un
+`grade` de dos campos, y el Radar no tiene todavía una vista de UI que la use; conectar los 14
+consumidores existentes de `support_resistance`/`nearest_support`/`nearest_resistance` al sistema
+nuevo tampoco - ambos quedan como trabajo futuro explícito, no como omisión.
+
+**Tests**: 1 nuevo en `test_ticker_analysis_service.py` (`levels` no vacío, un `LevelKind.EMA21`
+presente y sin racha reciente de cruce en una subida sostenida, `support_resistance` sigue
+poblado sin cambios); `test_ticker_analysis_returns_full_payload` (integración) extendido para
+comprobar `body["levels"]` en la respuesta real de la API, incluido `"weekly_ma30"` entre los
+`kind` presentes (los 10 años de histórico falso de AAPL superan de sobra el mínimo semanal).
+Suite completa verde, ruff limpio.

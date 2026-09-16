@@ -37,6 +37,25 @@ def test_returns_a_fully_populated_result_for_an_uptrend():
     assert signals.gate is not None
 
 
+def test_levels_are_populated_alongside_the_older_support_resistance_shape():
+    """Parte 5.1 (later pass): `detect_levels` (the richer Level/LevelKind/
+    LevelState engine) is now wired into `compute_core_signals` additively -
+    `support_resistance`/`nearest_support`/`nearest_resistance` (the older,
+    simpler shape 14+ consumers still read) must keep working unchanged."""
+    close, high, low, volume, open_ = _series(100 + np.arange(260) * 0.4)
+    signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=85)
+
+    assert signals.levels  # non-empty: at least EMA21/55/SMA50 clear warm-up at 260 bars
+    assert all(isinstance(lv.kind.value, str) for lv in signals.levels)
+    ema21_levels = [lv for lv in signals.levels if lv.kind == tas.ta.LevelKind.EMA21]
+    assert len(ema21_levels) == 1
+    # A steady, un-crossed uptrend never triggered a recent crossing of its
+    # own EMA21 - pure distance-based state, not a breaking/broken read.
+    not_recently_crossed = {tas.ta.LevelState.FAR, tas.ta.LevelState.APPROACHING, tas.ta.LevelState.TESTING}
+    assert ema21_levels[0].state in not_recently_crossed
+    assert signals.support_resistance is not None  # the older shape still populated too
+
+
 def test_rs_rating_passed_through_unchanged():
     close, high, low, volume, open_ = _series(100 + np.arange(260) * 0.4)
     signals = tas.compute_core_signals(close, high, low, volume, open_, None, rs_rating=42)

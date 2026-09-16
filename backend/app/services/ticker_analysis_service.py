@@ -137,6 +137,13 @@ class CoreTickerSignals:
     minervini_score: int
     minervini_pass: bool
     support_resistance: list[ta.PriceLevel]
+    # Parte 5.1 (later pass): the richer level engine (`technical_analysis.detect_levels`)
+    # alongside `support_resistance` above, not replacing it - 14 existing
+    # consumers still read the simpler `PriceLevel`/`nearest_support`/
+    # `nearest_resistance` shape below unchanged. `distance_atr`/`state`
+    # (FAR/APPROACHING/TESTING/BREAKING/BROKEN_CONFIRMED/LOST_CONFIRMED) are
+    # what this adds that the older shape can't express.
+    levels: list[ta.Level]
     nearest_support: ta.PriceLevel | None
     nearest_resistance: ta.PriceLevel | None
     obv_divergence: str | None
@@ -389,6 +396,14 @@ def compute_core_signals(
     nearest_support = _nearest_level(levels, "support")
     nearest_resistance = _nearest_level(levels, "resistance")
 
+    # Parte 5.1 (later pass): the real weekly close series (same in-memory
+    # resample `multi_timeframe` above already paid for internally, no new
+    # network call) lets `detect_levels` build a real WEEKLY_MA30 level
+    # instead of omitting it (Parte 5.5's own documented gap, closed here).
+    weekly_df_for_levels = ta.resample_ohlcv(daily_df, mtf.WEEKLY_RULE)
+    weekly_close_for_levels = weekly_df_for_levels["close"] if len(weekly_df_for_levels) >= 2 else None
+    detected_levels = ta.detect_levels(high, low, close, volume, weekly_close=weekly_close_for_levels)
+
     # Free (same OHLCV frame every caller already has) - computed for everyone,
     # unlike fundamentals below. See module docstring.
     obv_div = ta.obv_divergence(close, volume)
@@ -490,6 +505,7 @@ def compute_core_signals(
         minervini_score=minervini_score,
         minervini_pass=minervini_pass,
         support_resistance=levels,
+        levels=detected_levels,
         nearest_support=nearest_support,
         nearest_resistance=nearest_resistance,
         obv_divergence=obv_div,
@@ -704,6 +720,7 @@ class TickerAnalysisService:
             minervini_score=core.minervini_score,
             minervini_pass=core.minervini_pass,
             support_resistance=core.support_resistance,
+            levels=core.levels,
             obv_divergence=core.obv_divergence,
             market_trend=core.market_trend,
             vix_regime=core.vix_regime,

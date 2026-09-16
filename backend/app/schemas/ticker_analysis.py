@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel
 
-from app.schemas.common import PriceLevelResponse
+from app.schemas.common import LevelResponse, PriceLevelResponse
 from app.schemas.quant_analysis import (
     GateResultResponse,
     GradeResponse,
@@ -117,6 +117,7 @@ class TickerAnalysisResponse(BaseModel):
     minervini_score: int
     minervini_pass: bool
     support_resistance: list[PriceLevelResponse]
+    levels: list[LevelResponse]
     obv_divergence: str | None
     market_trend: str | None
     vix_regime: str | None

@@ -22,7 +22,7 @@ else needed to change when they were removed.
 
 from pydantic import BaseModel
 
-from app.schemas.common import PriceLevelResponse
+from app.schemas.common import LevelResponse, PriceLevelResponse
 
 
 class GateConditionResponse(BaseModel):
@@ -232,6 +232,7 @@ class CoreSignalsResponse(BaseModel):
     minervini_score: int
     minervini_pass: bool
     support_resistance: list[PriceLevelResponse]
+    levels: list[LevelResponse]
     nearest_support: PriceLevelResponse | None
     nearest_resistance: PriceLevelResponse | None
     obv_divergence: str | None

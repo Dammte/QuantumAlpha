@@ -45,6 +45,19 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
         assert grade["grade"] in {"A", "B", "C"}
         assert isinstance(grade["reasons"], list)
 
+    # Parte 5.1 (later pass): the richer Level/LevelKind/LevelState engine,
+    # additive alongside the older support_resistance shape checked below -
+    # AAPL's 10 years of fake daily history comfortably clears every
+    # warm-up, including the weekly resample WEEKLY_MA30 needs (Parte 5.5's
+    # own documented gap, closed once a real weekly close series was wired
+    # in here).
+    levels = body["levels"]
+    assert levels
+    kinds = {lv["kind"] for lv in levels}
+    assert "ema21" in kinds and "weekly_ma30" in kinds
+    assert all(lv["state"] in {"far", "approaching", "testing", "breaking", "broken_confirmed", "lost_confirmed"}
+               for lv in levels)
+
     assert body["fundamentals"]["name"] == "AAPL Inc."
     assert len(body["news"]) > 0
 

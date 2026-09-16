@@ -5,7 +5,7 @@ from app.domain.models.ticker_info import NewsArticle, TickerInfo
 from app.services.backtest_engine import TripleBarrierBacktestResult
 from app.services.levels_engine import GateResult, GradeResult
 from app.services.multi_timeframe import MultiTimeframeRead
-from app.services.technical_analysis import ImminentCross, PriceLevel, Stage, TrendState
+from app.services.technical_analysis import ImminentCross, Level, PriceLevel, Stage, TrendState
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +81,7 @@ class TickerAnalysis:
     minervini_score: int
     minervini_pass: bool
     support_resistance: list[PriceLevel]
+    levels: list[Level]  # Parte 5.1 - ver CoreTickerSignals.levels
     obv_divergence: str | None
     market_trend: TrendState | None  # informational only - see recommendation_engine.py docstring
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
