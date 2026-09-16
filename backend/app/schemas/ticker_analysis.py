@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from app.schemas.common import PriceLevelResponse
 from app.schemas.quant_analysis import (
     GateResultResponse,
+    GradeResponse,
     ImminentCrossResponse,
     MultiTimeframeResponse,
     TripleBarrierBacktestResponse,
@@ -126,6 +127,7 @@ class TickerAnalysisResponse(BaseModel):
     news: list[NewsArticleResponse]
     fundamentals: FundamentalsResponse | None
     gate: GateResultResponse
+    grade: GradeResponse | None
     triple_barrier_backtest: TripleBarrierBacktestResponse | None
     # Reconstruction (2026-09), Fase 7: `None` unless GEMINI_API_KEY is set -
     # see LLMNarrator's own docstring. Purely explanatory text over `gate`

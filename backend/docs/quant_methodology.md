@@ -2502,3 +2502,47 @@ grados (A/B/C limpios, `None` sin geometría viable, cada modificador de fuerza 
 sector en aislamiento, el tope de un solo escalón con dos razones de subida a la vez, y los tres
 casos de `apply_portfolio_grade_modifiers` - correlación alta, cartera llena, no-op sin grado).
 Suite completa verde, ruff limpio.
+
+### 27.8 Los grados A/B/C conectados a "Analizar activo" - dejan de estar inertes
+
+Sub-paso siguiente a 27.7, autorizado explícitamente por el propietario ("Vale, continúa") tras
+proponer esta conexión como el paso más visible: sin ella, el ejemplo central de la Parte 0
+("NVDA - Grado A") seguía sin poder ocurrir de verdad en ningún camino en vivo - el sistema de
+grados existía, tenía sus 16 tests, pero ningún endpoint lo llamaba.
+
+**Cableado**: `ticker_analysis_service.compute_core_signals` calcula `grade` justo después de
+`gate = evaluate_gate(...)`, y solo cuando hay algo que gradar de verdad -
+`gate.entry_trigger is not None and gate.entry_geometry is not None and gate.entry_geometry.viable`
+- exactamente el mismo criterio que `compute_grade` ya documentaba como su propio precondición
+("no hay nada que gradar" si la geometría de origen no es viable). El sesgo semanal alcista/bajista
+se lee de `mtf.timeframe_bias(multi_timeframe.weekly)`, ya calculado unas líneas antes para el
+propio `multi_timeframe` de la respuesta - ninguna llamada nueva.
+
+`sector_rs_percentile` necesitaba un segundo dato que "Analizar activo" no leía todavía: el
+`TickerSnapshot` completo del universo (antes solo se leía `.rs_rating` vía un método
+`_rs_rating_for`, ahora renombrado a `_universe_snapshot_for` y devolviendo el snapshot entero) -
+mismo lookup, un campo más aprovechado, cero llamadas nuevas. `compute_core_signals` gana un
+parámetro `sector_rs_percentile: int | None = None` explícitamente documentado como "ya
+precomputado por el screener, no se recalcula aquí" (mismo patrón que `next_earnings_date`, que
+`analyze()` ya pasaba desde antes).
+
+`CoreTickerSignals`/`TickerAnalysis` (dominio) ganan un campo `grade: GradeResult | None` junto a
+`gate`. En el límite de la API, `GradeResponse` (nuevo, en `schemas/quant_analysis.py`, junto a
+`GateResultResponse`) - `grade: str | None` + `reasons: list[str]`, deliberadamente sin los
+modificadores de cartera (`apply_portfolio_grade_modifiers` sigue sin consumidor: correlación con
+posición abierta y tope de posiciones solo tienen sentido dentro de una cartera concreta, no en una
+lectura de "Analizar activo" que no está scoped a ninguna). `TickerAnalysisResponse.grade` expone
+esto en `GET /api/v1/market/tickers/{ticker}/analysis`.
+
+**Qué no cambia todavía**: `portfolio_risk_service.py` reutiliza `compute_core_signals` pero no le
+pasa `sector_rs_percentile` (sigue con el default `None`) ni persiste `grade` en ninguna tabla -
+`scripts/daily_close.py`/`TickerDailyState` no lo calculan, así que el Radar y "Hoy" (que leen
+estado precomputado, no recalculan) todavía no muestran grado. Ambos quedan como sub-pasos
+explícitamente pendientes, no como omisiones descubiertas después.
+
+**Tests**: sin tests unitarios nuevos (el cálculo del grado en sí ya tiene sus 16 tests en
+`test_levels_engine.py` desde 27.7; este sub-paso es cableado, no lógica nueva) - se extendió
+`test_ticker_analysis_returns_full_payload` (integración) para comprobar que `body["grade"]` viaja
+en la respuesta real y, cuando no es `None`, tiene la forma esperada (`grade` en
+`{"A", "B", "C"}`, `reasons` una lista). Suite completa verde (742 unitarios + integración), ruff
+limpio.

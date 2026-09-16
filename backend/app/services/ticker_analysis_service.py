@@ -55,6 +55,7 @@ import pandas as pd
 
 from app.domain.interfaces.llm_narrator import LLMNarrator
 from app.domain.models.ticker_analysis import PricePoint, TickerAnalysis
+from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 from app.services.backtest_engine import (
@@ -63,7 +64,7 @@ from app.services.backtest_engine import (
     run_triple_barrier_backtest,
 )
 from app.services.dynamic_universe_service import passes_liquidity_floor
-from app.services.levels_engine import GateResult, evaluate_gate
+from app.services.levels_engine import GateResult, GradeResult, compute_grade, evaluate_gate
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, closed_bar_cutoff_for_ticker
@@ -143,6 +144,14 @@ class CoreTickerSignals:
     vix_regime: str | None  # informational only - see recommendation_engine.py docstring
     is_intraday_snapshot: bool
     gate: GateResult
+    # Parte 5.3: geometría, no probabilidad - `None` cuando `gate.entry_trigger`
+    # o `gate.entry_geometry` no existen, o la geometría no es viable (no hay
+    # ningún disparador real que gradar). Sin los modificadores de cartera
+    # (correlación/tope de posiciones, Parte 5.3) - ver
+    # `levels_engine.apply_portfolio_grade_modifiers`, que necesita una
+    # cartera específica y vive un nivel por encima de esta lectura, igual
+    # que `trade_geometry.size_position`.
+    grade: GradeResult | None
     # Segunda auditoría, Bloque 2: `gate` above (and every field on this
     # dataclass) is computed on the raw, possibly still-forming last bar -
     # live, real-time, but not repaint-proof (see D6/`closed_bars`'
@@ -263,6 +272,7 @@ def compute_core_signals(
     ticker: str | None = None,
     include_triple_barrier_backtest: bool = False,
     next_earnings_date: date | None = None,
+    sector_rs_percentile: int | None = None,
 ) -> CoreTickerSignals | None:
     """`ticker`, when given, picks a region-aware settlement cutoff for
     `multi_timeframe`/`confirmed_gate` (`market_universe.closed_bar_cutoff_for_ticker`
@@ -270,6 +280,12 @@ def compute_core_signals(
     (not every caller has traced a ticker string this far down, and every
     other field here is computable without one) - `None` just means "assume
     US settlement hours".
+
+    `sector_rs_percentile` (Parte 2.5/5.3) - percentil de fuerza relativa del
+    sector propio, ya calculado por `market_screener_service._sector_rs_percentiles`
+    para el universo; no recalculado aquí (esta función no tiene, ni necesita,
+    los ETFs de sector). Solo alimenta el grado A/B/C - `None` simplemente
+    omite ese modificador concreto, nunca bloquea el resto.
 
     `next_earnings_date` (Parte 6.2's `no_event_risk` gate criterion) is
     optional and defaults to `None` (interpreted by `evaluate_gate` as "no
@@ -420,6 +436,24 @@ def compute_core_signals(
             daily_df, weekly_stage, liquidity_ok, next_earnings_date, cutoff=closed_bar_cutoff
         )
 
+    # Parte 5.3: solo tiene sentido gradar un disparador real - una entrada
+    # geométricamente inviable, o un gate sin ningún nivel cerca todavía
+    # (`entry_trigger is None`), no tiene nada que gradar.
+    grade = None
+    if gate.entry_trigger is not None and gate.entry_geometry is not None and gate.entry_geometry.viable:
+        weekly_bullish = mtf.timeframe_bias(multi_timeframe.weekly) == "bullish"
+        grade = compute_grade(
+            price=price,
+            atr14=atr14,
+            entry_trigger=gate.entry_trigger,
+            geometry=gate.entry_geometry,
+            weekly_bullish=weekly_bullish,
+            relative_volume=ta.relative_volume(volume),
+            rs_percentile=rs_rating,
+            sma200=sma200,
+            sector_rs_percentile=sector_rs_percentile,
+        )
+
     return CoreTickerSignals(
         price=price,
         change_1d=ta.pct_change_over(close, 1),
@@ -463,6 +497,7 @@ def compute_core_signals(
         vix_regime=vix_regime_label,
         is_intraday_snapshot=is_intraday_snapshot,
         gate=gate,
+        grade=grade,
         multi_timeframe=multi_timeframe,
         confirmed_gate=confirmed_gate,
         triple_barrier_backtest=triple_barrier_backtest,
@@ -519,15 +554,15 @@ class TickerAnalysisService:
             stop_and_target_summary=_stop_and_target_summary(gate.stop_and_target),
         )
 
-    def _rs_rating_for(self, ticker: str) -> int | None:
+    def _universe_snapshot_for(self, ticker: str) -> TickerSnapshot | None:
         if self.screener is None:
             return None
         # A ticker searched directly could be in either curated universe (or
-        # neither, e.g. a ticker outside both - then RS Rating is simply None).
+        # neither, e.g. a ticker outside both).
         for region in ("us", "europe"):
             snapshot = next((s for s in self.screener.get_universe_snapshot(region) if s.ticker == ticker), None)
             if snapshot is not None:
-                return snapshot.rs_rating
+                return snapshot
         return None
 
     def analyze(self, ticker: str, horizon: str = DEFAULT_HORIZON) -> TickerAnalysis:
@@ -552,7 +587,9 @@ class TickerAnalysisService:
         vix_close = vix_df["close"] if vix_df is not None else None
 
         close, high, low, volume, open_ = df["close"], df["high"], df["low"], df["volume"], df["open"]
-        rs_rating = self._rs_rating_for(ticker)
+        universe_snapshot = self._universe_snapshot_for(ticker)
+        rs_rating = universe_snapshot.rs_rating if universe_snapshot is not None else None
+        sector_rs_percentile = universe_snapshot.sector_rs_percentile if universe_snapshot is not None else None
         # Used for the Fundamentals tab's plain informational display
         # (name/sector/industry/market cap/growth/margin/leverage) - no
         # longer feeds the recommendation score itself (see
@@ -577,6 +614,7 @@ class TickerAnalysisService:
             ticker=ticker,
             include_triple_barrier_backtest=True,
             next_earnings_date=next_earnings,
+            sector_rs_percentile=sector_rs_percentile,
         )
         if core is None:
             raise ValueError(f"No hay suficientes datos de precio para {ticker}")
@@ -676,6 +714,7 @@ class TickerAnalysisService:
             news=news,
             fundamentals=info,
             gate=core.gate,
+            grade=core.grade,
             triple_barrier_backtest=core.triple_barrier_backtest,
             llm_narrative=llm_narrative,
         )

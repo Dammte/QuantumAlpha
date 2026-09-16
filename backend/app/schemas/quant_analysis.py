@@ -83,6 +83,17 @@ class GateResultResponse(BaseModel):
     entry_geometry: TradeGeometryResponse | None = None
 
 
+class GradeResponse(BaseModel):
+    """Parte 5.3 - `levels_engine.GradeResult`. `grade=None` es el caso
+    literal "si no llega a C, el disparador no se emite" - preferible una
+    lista vacía a una lista de trades malos. Sin los modificadores de
+    cartera (correlación/tope de posiciones) - esta lectura no está scoped a
+    ninguna cartera en particular, ver `levels_engine.apply_portfolio_grade_modifiers`."""
+
+    grade: str | None  # "A" | "B" | "C" | None
+    reasons: list[str]
+
+
 class ImminentCrossResponse(BaseModel):
     """See `technical_analysis.detect_imminent_cross` - a projected, not yet
     confirmed, MA50/MA200 crossover."""

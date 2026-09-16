@@ -3,7 +3,7 @@ from datetime import date
 
 from app.domain.models.ticker_info import NewsArticle, TickerInfo
 from app.services.backtest_engine import TripleBarrierBacktestResult
-from app.services.levels_engine import GateResult
+from app.services.levels_engine import GateResult, GradeResult
 from app.services.multi_timeframe import MultiTimeframeRead
 from app.services.technical_analysis import ImminentCross, PriceLevel, Stage, TrendState
 
@@ -91,6 +91,7 @@ class TickerAnalysis:
     news: list[NewsArticle]
     fundamentals: TickerInfo | None
     gate: GateResult
+    grade: GradeResult | None  # Parte 5.3 - ver CoreTickerSignals.grade
     triple_barrier_backtest: TripleBarrierBacktestResult | None
     # Reconstruction (2026-09), Fase 7: `None` whenever the Gemini narrator
     # isn't configured (the default) or its call failed for any reason - see

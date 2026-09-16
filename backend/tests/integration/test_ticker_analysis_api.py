@@ -36,6 +36,15 @@ def test_ticker_analysis_returns_full_payload(client: TestClient) -> None:
     assert geometry["position_value"] is None
     assert isinstance(geometry["viable"], bool)
 
+    # Parte 5.3: el grado A/B/C ya viaja en la respuesta de "Analizar activo" -
+    # `None` es el resultado válido "no llega a C" (ver GradeResponse), no un
+    # campo roto - por eso solo comprobamos la forma, no que sea no-nulo.
+    grade = body["grade"]
+    assert "grade" in body
+    if grade is not None:
+        assert grade["grade"] in {"A", "B", "C"}
+        assert isinstance(grade["reasons"], list)
+
     assert body["fundamentals"]["name"] == "AAPL Inc."
     assert len(body["news"]) > 0
 
