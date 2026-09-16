@@ -415,16 +415,17 @@ def mansfield_rs(closes: pd.Series, benchmark_closes: pd.Series, window: int = 2
     return (ratio / baseline - 1) * 100
 
 
-def rs_raw_score(closes: pd.Series) -> float | None:
-    """IBD-style weighted composite return: the trailing quarter counts double
-    each of the other three quarters, so a stock that's turned it on recently
-    outranks one coasting on an old move. Feed this into a cross-sectional
-    percentile rank (1-99) across your universe to get an RS Rating."""
-    periods = {63: 0.4, 126: 0.2, 189: 0.2, 252: 0.2}
-    components = {n: pct_change_over(closes, n) for n in periods}
-    if any(v is None for v in components.values()):
-        return None
-    return sum(components[n] * weight for n, weight in periods.items())
+RS_RAW_SCORE_WINDOW = 20  # Parte 3.2: percentil transversal de retorno a 20 sesiones
+
+
+def rs_raw_score(closes: pd.Series, window: int = RS_RAW_SCORE_WINDOW) -> float | None:
+    """Parte 3.2 (recalibración literal): retorno a `window` sesiones (~4
+    semanas por defecto) - feed this into a cross-sectional percentile rank
+    (1-99) across your universe to get the RS Rating. Reemplaza el compuesto
+    ponderado 63/126/189/252 sesiones (estilo IBD, momentum de 3-12 meses)
+    que este sistema heredó del checklist retirado - "el RS Rating de IBD es
+    momentum de 3-12 meses; a 5 días no aplica" (Parte 3.2, literal)."""
+    return pct_change_over(closes, window)
 
 
 def sma_slope_positive(series: pd.Series, lookback: int = 25) -> bool | None:

@@ -2449,3 +2449,56 @@ ruptura" (con ambas últimas barras ya al nuevo lado, esa comparación nunca det
 en absoluto). Corregido con la racha completa (`run_length`) antes de comitear nada de esta
 sección - un recordatorio de por qué esta auditoría escribe los tests antes de dar por buena la
 lógica, no después.
+
+### 27.7 Fuerza relativa recalibrada a 20 sesiones, `sector_rs_percentile` (Parte 2.5), y los grados A/B/C (Parte 5.3) - construidos, todavía sin conectar
+
+Tres piezas del mismo sub-paso, todas nuevas o recalibradas, ninguna conectada todavía a los
+consumidores reales (mismo patrón que la sección 27.5 con `Level`/`LevelKind`/`LevelState` -
+construir y probar primero, conectar en un sub-paso aparte).
+
+**`rs_raw_score` recalibrado (Parte 3.2, otro punto de esa tabla que se había marcado por error
+como resuelto en el mapeo inicial de esta auditoría)**: de un compuesto ponderado 63/126/189/252
+sesiones (estilo IBD, momentum de 3-12 meses - "a 5 días no aplica", literal) a un simple retorno a
+20 sesiones. El propio `_percentile_rank` transversal que ya existía no cambia - solo el valor
+crudo que alimenta. `RS_RAW_SCORE_WINDOW = 20` como constante nombrada, ya no un `dict` de cuatro
+pesos.
+
+**`sector_rs_percentile` (Parte 2.5)**: "un campo por ticker" que sustituye por completo los cinco
+servicios/cuatro vistas de sectores retirados en las auditorías previas (§25/26) - hasta ahora
+nunca implementado, ni siquiera parcialmente (`SECTOR_ETFS`/`EUROPE_SECTOR_ETFS` existían en
+`market_universe.py` sin ningún consumidor). `_sector_rs_percentiles` en `market_screener_service.py`:
+retorno a 20 sesiones del ETF de cada sector, percentilado entre los sectores de la región - los
+ETFs se descargan en el mismo lote bulk que el universo ya pedía (nunca una llamada de red nueva
+por ticker, ~11 tickers más en una petición que ya existía). Nuevo campo en `TickerSnapshot`,
+`None` hasta que el ETF de ese sector tenga suficiente historial.
+
+**Grados A/B/C (Parte 5.3)**: `Grade`/`GradeResult`/`compute_grade`/`apply_portfolio_grade_modifiers`
+en `levels_engine.py`, junto al gate. "No inventes una probabilidad; no la tienes" - geometría
+pura, nunca una probabilidad de éxito. Grado base por distancia al nivel del disparador (en ATR,
+un número distinto de `risk_atr`, la distancia al *stop*), riesgo en ATR, R:R neto y volumen
+relativo (los cuatro ya calculados por `trade_geometry`/`technical_analysis` - `compute_grade` no
+recalcula nada, solo los compara contra los umbrales literales), más semanal alcista/bajista de
+`multi_timeframe.py`. Los modificadores de fuerza relativa/SMA200/sector se aplican después,
+literalmente: como máximo un escalón de subida por el conjunto de razones de subida (no uno por
+cada razón), y un techo de B en cuanto cualquier razón de bajada aplica. Los dos modificadores que
+necesitan una cartera específica (correlación con una posición abierta, tope de posiciones) viven
+en una función separada, `apply_portfolio_grade_modifiers` - mismo motivo de la separación
+`compute_entry_geometry`/`size_position` ya usa: un disparador del universo no pertenece a ninguna
+cartera en particular. `grade=None` (nunca se emite el disparador) cuando la geometría de origen no
+es viable - no hay nada que gradar.
+
+**Deliberadamente no tocado en este sub-paso**: la ventana de Mansfield RS por defecto sigue en 200
+sesiones (Parte 3.2 también la pide en 20) - ya existe un campo separado `mansfield_rs_4w`
+(window=20, Segunda auditoría Bloque 3) sin consumidor todavía, así que la pieza de datos ya existe;
+cambiar el *default* global tiene más riesgo (Mansfield RS se muestra como serie/gráfico, no solo
+como número puntual para un ranking, así que una ventana de 20 sesiones cambiaría su naturaleza
+visual, no solo su calibración) - queda como hueco conocido, documentado, no una omisión silenciosa.
+
+**Tests**: 3 nuevos para `rs_raw_score` (positivo en una subida sostenida, `None` con historial
+genuinamente insuficiente para 20 sesiones, y que de verdad usa una ventana de 20 no la vieja de
+63+); 3 nuevos para `_sector_rs_percentiles` (ranking correcto entre sectores, sectores sin
+historial suficiente excluidos, vacío sin ningún ETF con historial); 16 nuevos para el sistema de
+grados (A/B/C limpios, `None` sin geometría viable, cada modificador de fuerza relativa/SMA200/
+sector en aislamiento, el tope de un solo escalón con dos razones de subida a la vez, y los tres
+casos de `apply_portfolio_grade_modifiers` - correlación alta, cartera llena, no-op sin grado).
+Suite completa verde, ruff limpio.

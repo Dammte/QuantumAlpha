@@ -423,3 +423,36 @@ def test_get_universe_snapshot_durable_cache_hit_still_warms_ohlcv_cache(monkeyp
     assert service.get_cached_ohlcv("us") == {"AAPL": fake_df}
 
 
+# --- _sector_rs_percentiles (Parte 2.5) ---------------------------------------
+
+
+def test_sector_rs_percentiles_ranks_sectors_by_20_session_etf_return():
+    sector_etfs = {"Tecnología": "XLK", "Energía": "XLE", "Utilities": "XLU"}
+    # XLK sube fuerte en las últimas 20 sesiones, XLU cae, XLE se queda plano.
+    n = 40
+    xlk = _df(list(100 + np.arange(n) * 0.8))
+    xlu = _df(list(100 - np.arange(n) * 0.5))
+    xle = _df([100.0] * n)
+    ohlcv = {"XLK": xlk, "XLU": xlu, "XLE": xle}
+
+    result = mss._sector_rs_percentiles(ohlcv, sector_etfs)
+
+    assert result["Tecnología"] > result["Energía"] > result["Utilities"]
+
+
+def test_sector_rs_percentiles_skips_sectors_without_enough_history():
+    sector_etfs = {"Tecnología": "XLK", "Energía": "XLE"}
+    ohlcv = {"XLK": _df([100.0] * 40), "XLE": _df([100.0] * 5)}  # XLE too short for a 20-session return
+
+    result = mss._sector_rs_percentiles(ohlcv, sector_etfs)
+
+    assert "Tecnología" in result
+    assert "Energía" not in result
+
+
+def test_sector_rs_percentiles_empty_when_no_etf_has_enough_history():
+    sector_etfs = {"Tecnología": "XLK"}
+    assert mss._sector_rs_percentiles({"XLK": _df([100.0] * 5)}, sector_etfs) == {}
+    assert mss._sector_rs_percentiles({}, sector_etfs) == {}
+
+

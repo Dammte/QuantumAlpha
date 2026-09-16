@@ -42,6 +42,7 @@ from app.services.market_universe import (
     benchmark_for_region,
     cap_tier_of,
     currency_of,
+    region_config,
 )
 from app.services.multi_timeframe import FAST_MA_PERIOD, SLOW_MA_PERIOD
 
@@ -289,7 +290,33 @@ def _percentile_rank(values: list[float]) -> list[int]:
     return [max(1, int(np.ceil(99 * (rank + 1) / n))) for rank in order]
 
 
-def _finalize(raw: _RawTicker, rs_rating: int | None) -> TickerSnapshot:
+SECTOR_RS_WINDOW = 20  # ~4 semanas, misma ventana que rs_raw_score (Parte 3.2)
+
+
+def _sector_rs_percentiles(
+    sector_etf_ohlcv: dict[str, pd.DataFrame], sector_etfs: dict[str, str]
+) -> dict[str, int]:
+    """Parte 2.5: "un campo por ticker" que sustituye por completo los cinco
+    servicios/cuatro vistas de sectores retirados (§25/26) - fuerza relativa
+    a 20 sesiones del ETF de cada sector, percentilada entre los sectores de
+    la región (normalmente 11), devuelta como `{sector: percentil}`. `{}` si
+    ningún ETF tiene suficiente historial todavía."""
+    etf_returns: dict[str, float] = {}
+    for sector, etf_ticker in sector_etfs.items():
+        df = sector_etf_ohlcv.get(etf_ticker)
+        if df is None or df.empty:
+            continue
+        ret = ta.pct_change_over(df["close"], SECTOR_RS_WINDOW)
+        if ret is not None:
+            etf_returns[sector] = ret
+    if not etf_returns:
+        return {}
+    sectors = list(etf_returns.keys())
+    percentiles = _percentile_rank([etf_returns[s] for s in sectors])
+    return dict(zip(sectors, percentiles, strict=True))
+
+
+def _finalize(raw: _RawTicker, rs_rating: int | None, sector_rs_percentile: int | None = None) -> TickerSnapshot:
     criteria = ta.minervini_checklist(
         price=raw.price,
         sma50=raw.sma50,
@@ -333,6 +360,7 @@ def _finalize(raw: _RawTicker, rs_rating: int | None) -> TickerSnapshot:
         minervini_score=sum(criteria.values()),
         minervini_pass=all(criteria.values()),
         rs_rating=rs_rating,
+        sector_rs_percentile=sector_rs_percentile,
         atr_ratio_50d=raw.atr_ratio_50d,
         atr_multiple_sma21=raw.atr_multiple_sma21,
         range_position_20d=raw.range_position_20d,
@@ -452,10 +480,15 @@ class MarketScreenerService:
         benchmark_ticker = benchmark_for_region(region)
         start, end = self._date_range()
 
-        fetch_list = [*ticker_sectors.keys(), benchmark_ticker]
+        # Parte 2.5: los ETFs de sector de esta región, en el mismo lote ya
+        # batcheado - nunca una llamada de red por ticker, solo ~11 tickers
+        # más en la petición bulk que este método ya hacía.
+        sector_etfs = region_config(region).sector_etfs
+        fetch_list = [*ticker_sectors.keys(), benchmark_ticker, *sector_etfs.values()]
         ohlcv_by_ticker = self.market_data.get_bulk_ohlcv(fetch_list, start, end)
         benchmark_close = ohlcv_by_ticker.get(benchmark_ticker)
         benchmark_close_series = benchmark_close["close"] if benchmark_close is not None else None
+        sector_rs_by_sector = _sector_rs_percentiles(ohlcv_by_ticker, sector_etfs)
 
         if len(ticker_sectors) > dus.CHEAP_SCREEN_KEEP_TOP_N:
             survivors = dus.apply_cheap_price_volume_screen(ohlcv_by_ticker, list(ticker_sectors.keys()))
@@ -509,7 +542,9 @@ class MarketScreenerService:
         rs_percentiles = _percentile_rank([r.rs_raw for r in rs_candidates])
         rs_ranks = dict(zip((r.ticker for r in rs_candidates), rs_percentiles, strict=True))
 
-        snapshots = [_finalize(raw, rs_ranks.get(raw.ticker)) for raw in raw_tickers]
+        snapshots = [
+            _finalize(raw, rs_ranks.get(raw.ticker), sector_rs_by_sector.get(raw.sector)) for raw in raw_tickers
+        ]
 
         self._snapshot_cache[region] = (datetime.now(UTC), snapshots)
         self._ohlcv_cache[region] = (datetime.now(UTC), ohlcv_by_ticker)

@@ -62,9 +62,11 @@ lo produjo).
 
 from dataclasses import dataclass
 from datetime import date
+from enum import Enum
 
 import pandas as pd
 
+from app.core.trading_params import HIGH_CORRELATION_THRESHOLD, MAX_OPEN_POSITIONS
 from app.services.technical_analysis import (
     PriceLevel,
     Stage,
@@ -330,3 +332,182 @@ def replay_gate_at(
         fast_pair_bearish_signal=detect_fast_pair_bearish_veto(close.iloc[: i + 1]),
         next_earnings_date=None,
     )
+
+
+# --- Parte 5.3 (encargo literal, sexta auditoría): grados A/B/C -------------
+#
+# "No inventes una probabilidad; no la tienes. El grado es una lectura de la
+# calidad de la oportunidad" - geometría, no un score de compra. Se calcula
+# sobre un disparador (`trade_geometry.EntryTrigger` + `TradeGeometry`) ya
+# viable - un gate que aprueba sin una entrada geométricamente viable no
+# tiene grado, porque no hay ningún disparador que gradar (ver
+# `levels_engine.py`'s propio docstring sobre por qué el R:R se separó del
+# gate hacia la viabilidad de la geometría).
+
+
+class Grade(str, Enum):
+    A = "A"
+    B = "B"
+    C = "C"
+
+
+_GRADE_ORDER = (Grade.C, Grade.B, Grade.A)  # peor a mejor
+
+
+def _upgrade_one_step(grade: Grade) -> Grade:
+    idx = _GRADE_ORDER.index(grade)
+    return _GRADE_ORDER[min(idx + 1, len(_GRADE_ORDER) - 1)]
+
+
+def _cap_at_most(grade: Grade, ceiling: Grade) -> Grade:
+    return ceiling if _GRADE_ORDER.index(grade) > _GRADE_ORDER.index(ceiling) else grade
+
+
+# Umbrales de grado base, literales (Parte 5.3).
+GRADE_A_MAX_DISTANCE_ATR = 1.0
+GRADE_A_MAX_RISK_ATR = 1.5
+GRADE_A_MIN_REWARD_RISK_NET = 2.5
+GRADE_A_MIN_REL_VOLUME = 1.2
+GRADE_B_MAX_DISTANCE_ATR = 1.5
+GRADE_B_MAX_RISK_ATR = 2.0
+GRADE_B_MIN_REWARD_RISK_NET = 2.0
+
+# Umbrales de los modificadores, literales (Parte 5.3).
+RS_PERCENTILE_UPGRADE_THRESHOLD = 70
+RS_PERCENTILE_DOWNGRADE_THRESHOLD = 40
+SECTOR_PERCENTILE_UPGRADE_THRESHOLD = 70
+SECTOR_PERCENTILE_DOWNGRADE_THRESHOLD = 30
+
+
+@dataclass(frozen=True, slots=True)
+class GradeResult:
+    """`grade=None` es el caso literal "si no llega a C, el disparador no se
+    emite" - preferible una lista vacía a una lista de trades malos. `reasons`
+    documenta cada modificador aplicado (no el grado base en sí, que ya se ve
+    en los propios números de la geometría) - Parte 5.3: "cada uno registra
+    su motivo en grade_reasons"."""
+
+    grade: Grade | None
+    reasons: list[str]
+
+
+def _base_grade(
+    distance_atr: float, risk_atr: float | None, reward_risk_net: float | None,
+    relative_volume: float | None, weekly_bullish: bool,
+) -> Grade:
+    if (
+        distance_atr <= GRADE_A_MAX_DISTANCE_ATR
+        and risk_atr is not None and risk_atr <= GRADE_A_MAX_RISK_ATR
+        and reward_risk_net is not None and reward_risk_net >= GRADE_A_MIN_REWARD_RISK_NET
+        and relative_volume is not None and relative_volume >= GRADE_A_MIN_REL_VOLUME
+        and weekly_bullish
+    ):
+        return Grade.A
+    if (
+        distance_atr <= GRADE_B_MAX_DISTANCE_ATR
+        and risk_atr is not None and risk_atr <= GRADE_B_MAX_RISK_ATR
+        and reward_risk_net is not None and reward_risk_net >= GRADE_B_MIN_REWARD_RISK_NET
+    ):
+        return Grade.B
+    # "Pasa el mínimo de viabilidad pero con concesiones" - el llamador ya
+    # garantiza `geometry.viable` antes de llegar aquí (ver `compute_grade`),
+    # así que todo lo que no llega a A/B es C, nunca "sin grado" en esta capa.
+    return Grade.C
+
+
+def compute_grade(
+    price: float,
+    atr14: float | None,
+    entry_trigger: EntryTrigger,
+    geometry: TradeGeometry,
+    weekly_bullish: bool,
+    relative_volume: float | None = None,
+    rs_percentile: int | None = None,
+    sma200: float | None = None,
+    sector_rs_percentile: int | None = None,
+) -> GradeResult:
+    """El grado base por geometría, más los modificadores de fuerza
+    relativa/SMA200/sector (Parte 5.3) - sin cartera todavía, ver
+    `apply_portfolio_grade_modifiers` para correlación/cartera llena, que sí
+    la necesitan. `None` (sin grado) si la geometría no es viable - no hay
+    ningún disparador real que gradar."""
+    if not geometry.viable:
+        return GradeResult(grade=None, reasons=[geometry.rejection_reason or "geometría no viable"])
+
+    # "Distancia" (Parte 5.3) es al propio nivel del disparador, en ATR - un
+    # número distinto de `geometry.risk_atr` (la distancia al *stop*, ver
+    # `trade_geometry.TradeGeometry`).
+    distance_atr = (
+        abs(price - entry_trigger.trigger_price) / atr14 if atr14 and atr14 > 0 else float("inf")
+    )
+
+    grade = _base_grade(
+        distance_atr, geometry.risk_atr, geometry.risk_reward_net, relative_volume, weekly_bullish
+    )
+    reasons: list[str] = []
+
+    upgraded = False
+    if rs_percentile is not None and rs_percentile >= RS_PERCENTILE_UPGRADE_THRESHOLD:
+        reasons.append(f"Fuerza relativa alta (percentil {rs_percentile} >= {RS_PERCENTILE_UPGRADE_THRESHOLD})")
+        upgraded = True
+    if sector_rs_percentile is not None and sector_rs_percentile >= SECTOR_PERCENTILE_UPGRADE_THRESHOLD:
+        reasons.append(
+            f"Sector fuerte (percentil {sector_rs_percentile} >= {SECTOR_PERCENTILE_UPGRADE_THRESHOLD})"
+        )
+        upgraded = True
+    # "Un grado nunca sube más de un escalón por el conjunto de modificadores"
+    # - un único paso, sin importar cuántas razones de subida se cumplan a
+    # la vez.
+    if upgraded:
+        grade = _upgrade_one_step(grade)
+
+    capped_to_b = False
+    if rs_percentile is not None and rs_percentile < RS_PERCENTILE_DOWNGRADE_THRESHOLD:
+        reasons.append(
+            f"Fuerza relativa baja (percentil {rs_percentile} < {RS_PERCENTILE_DOWNGRADE_THRESHOLD}) - limita a B"
+        )
+        capped_to_b = True
+    if sma200 is not None and price < sma200:
+        reasons.append("Precio bajo la SMA200 - limita a B")
+        capped_to_b = True
+    if sector_rs_percentile is not None and sector_rs_percentile <= SECTOR_PERCENTILE_DOWNGRADE_THRESHOLD:
+        reasons.append(
+            f"Sector débil (percentil {sector_rs_percentile} <= {SECTOR_PERCENTILE_DOWNGRADE_THRESHOLD}) - "
+            "limita a B"
+        )
+        capped_to_b = True
+    if capped_to_b:
+        grade = _cap_at_most(grade, Grade.B)
+
+    return GradeResult(grade=grade, reasons=reasons)
+
+
+def apply_portfolio_grade_modifiers(
+    grade_result: GradeResult,
+    max_correlation_with_open_position: float | None = None,
+    open_positions_count: int = 0,
+    max_open_positions: int = MAX_OPEN_POSITIONS,
+    high_correlation_threshold: float = HIGH_CORRELATION_THRESHOLD,
+) -> GradeResult:
+    """Los dos modificadores de la Parte 5.3 que necesitan una cartera
+    *específica* - correlación con una posición abierta y tope de posiciones
+    - separados de `compute_grade` por el mismo motivo que
+    `trade_geometry.size_position` está separado de `compute_entry_geometry`:
+    un disparador del universo no pertenece a ninguna cartera en particular.
+    No-op si `grade_result.grade` ya es `None` (nada que recortar)."""
+    if grade_result.grade is None:
+        return grade_result
+    grade = grade_result.grade
+    reasons = list(grade_result.reasons)
+    correlation_too_high = (
+        max_correlation_with_open_position is not None
+        and max_correlation_with_open_position >= high_correlation_threshold
+    )
+    if correlation_too_high:
+        reasons.append(
+            f"Correlación alta ({max_correlation_with_open_position:.2f}) con una posición abierta - concentración"
+        )
+        grade = Grade.C
+    if open_positions_count >= max_open_positions:
+        reasons.append("Cartera llena - cada nueva entrada diluye el tamaño medio")
+    return GradeResult(grade=grade, reasons=reasons)

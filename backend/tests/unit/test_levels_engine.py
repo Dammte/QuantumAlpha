@@ -186,3 +186,167 @@ def test_a_poor_reward_risk_no_longer_fails_the_gate_itself():
     result = le.evaluate_gate(**kwargs)
     assert result.stop_and_target.risk_reward < 1.5
     assert result.passes is True
+
+
+# --- Parte 5.3: grados A/B/C ---------------------------------------------
+
+
+def _trigger(trigger_price: float = 100.0) -> tg.EntryTrigger:
+    return tg.EntryTrigger(trigger_type="breakout", trigger_price=trigger_price, already_triggered=True)
+
+
+def _geometry(
+    risk_atr: float = 1.0, risk_reward_net: float = 3.0, viable: bool = True, rejection_reason: str | None = None
+) -> tg.TradeGeometry:
+    return tg.TradeGeometry(
+        entry_price=100.0, stop_price=100.0 - risk_atr * 2.0, stop_basis="bajo el soporte",
+        entry_type=tg.EntryType.PULLBACK_SUPPORT, risk_pct=0.02, risk_atr=risk_atr, risk_ceiling_pct=0.05,
+        target_price=110.0, target_basis="objetivo 2:1 sobre el riesgo", reward_pct=0.10,
+        risk_reward_gross=risk_reward_net, risk_reward_net=risk_reward_net,
+        shares_for_risk_budget=None, position_value=None, pct_of_portfolio=None,
+        viable=viable, rejection_reason=rejection_reason,
+    )
+
+
+def test_grade_a_when_every_condition_clears_its_bar():
+    # Precio ya en el nivel (distancia 0 ATR), riesgo 1.0 ATR, R:R neto 3.0,
+    # volumen relativo 1.5x, semanal alcista - todo dentro de los umbrales A.
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=1.5,
+    )
+    assert result.grade == le.Grade.A
+
+
+def test_grade_b_when_it_clears_b_but_not_a():
+    # Distancia 0, riesgo 1.0 ATR, R:R 3.0 - pero volumen relativo bajo, así
+    # que el grado A (que lo exige >= 1.2) no se alcanza; B no lo exige.
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=0.8,
+    )
+    assert result.grade == le.Grade.B
+
+
+def test_grade_c_when_it_only_clears_the_viability_floor():
+    # Riesgo 1.9 ATR (por encima del techo de B, 2.0 está bien pero R:R bajo
+    # rompe B) - viable igualmente (ya lo garantiza trade_geometry), C.
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0),
+        geometry=_geometry(risk_atr=1.9, risk_reward_net=1.6),
+        weekly_bullish=False,
+    )
+    assert result.grade == le.Grade.C
+
+
+def test_grade_none_when_geometry_is_not_viable():
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0),
+        geometry=_geometry(viable=False, rejection_reason="posición demasiado pequeña"),
+        weekly_bullish=True,
+    )
+    assert result.grade is None
+    assert "posición demasiado pequeña" in result.reasons[0]
+
+
+def test_grade_distance_beyond_a_threshold_falls_back_to_b():
+    # Mismo perfil de grado A salvo que el precio está a 1.2 ATR del nivel
+    # (por encima del techo de A, 1.0, pero dentro del de B, 1.5).
+    result = le.compute_grade(
+        price=102.4, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=1.5,
+    )
+    assert result.grade == le.Grade.B
+
+
+def test_grade_high_relative_strength_upgrades_one_step():
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=0.8, rs_percentile=80,
+    )
+    assert result.grade == le.Grade.A  # B (por el volumen bajo) sube a A
+    assert any("Fuerza relativa alta" in r for r in result.reasons)
+
+
+def test_grade_upgrade_has_no_effect_when_already_at_the_ceiling():
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=1.5, rs_percentile=90,
+    )
+    assert result.grade == le.Grade.A
+
+
+def test_grade_low_relative_strength_caps_at_b():
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=1.5, rs_percentile=30,
+    )
+    assert result.grade == le.Grade.B
+    assert any("Fuerza relativa baja" in r for r in result.reasons)
+
+
+def test_grade_price_below_sma200_caps_at_b():
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=1.5, sma200=110.0,
+    )
+    assert result.grade == le.Grade.B
+    assert any("SMA200" in r for r in result.reasons)
+
+
+def test_grade_strong_sector_upgrades_one_step():
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=0.8, sector_rs_percentile=75,
+    )
+    assert result.grade == le.Grade.A
+    assert any("Sector fuerte" in r for r in result.reasons)
+
+
+def test_grade_weak_sector_caps_at_b():
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=1.5, sector_rs_percentile=20,
+    )
+    assert result.grade == le.Grade.B
+    assert any("Sector débil" in r for r in result.reasons)
+
+
+def test_grade_never_upgrades_more_than_one_step_from_multiple_reasons():
+    # Grado base B (volumen bajo) + fuerza relativa alta Y sector fuerte a la
+    # vez - solo un escalón, no dos: sigue en A, no hay grado por encima.
+    result = le.compute_grade(
+        price=100.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=0.8, rs_percentile=90, sector_rs_percentile=90,
+    )
+    assert result.grade == le.Grade.A
+    upgrade_reasons = sum(("Fuerza relativa alta" in r or "Sector fuerte" in r) for r in result.reasons)
+    assert upgrade_reasons == 2
+
+
+def test_apply_portfolio_grade_modifiers_high_correlation_forces_c():
+    base = le.GradeResult(grade=le.Grade.A, reasons=[])
+    result = le.apply_portfolio_grade_modifiers(base, max_correlation_with_open_position=0.85)
+    assert result.grade == le.Grade.C
+    assert any("Correlación alta" in r for r in result.reasons)
+
+
+def test_apply_portfolio_grade_modifiers_low_correlation_is_a_noop():
+    base = le.GradeResult(grade=le.Grade.A, reasons=[])
+    result = le.apply_portfolio_grade_modifiers(base, max_correlation_with_open_position=0.3)
+    assert result.grade == le.Grade.A
+    assert result.reasons == []
+
+
+def test_apply_portfolio_grade_modifiers_full_portfolio_annotates_without_downgrading():
+    base = le.GradeResult(grade=le.Grade.A, reasons=[])
+    result = le.apply_portfolio_grade_modifiers(base, open_positions_count=10, max_open_positions=10)
+    assert result.grade == le.Grade.A  # no baja el grado, literal
+    assert any("Cartera llena" in r for r in result.reasons)
+
+
+def test_apply_portfolio_grade_modifiers_is_a_noop_on_no_grade():
+    base = le.GradeResult(grade=None, reasons=["geometría no viable"])
+    result = le.apply_portfolio_grade_modifiers(base, max_correlation_with_open_position=0.9)
+    assert result.grade is None
+    assert result.reasons == ["geometría no viable"]

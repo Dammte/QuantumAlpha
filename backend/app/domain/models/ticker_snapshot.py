@@ -36,6 +36,12 @@ class TickerSnapshot:
     minervini_score: int
     minervini_pass: bool
     rs_rating: int | None = None  # filled in later - needs the whole universe to percentile-rank
+    # Parte 2.5: el único campo que sustituye los cinco servicios/cuatro
+    # vistas de sectores retirados (§25/26) - percentil (1-99) de fuerza
+    # relativa a 20 sesiones del ETF del sector propio frente a los demás
+    # sectores de la región. `None` hasta que el ETF de ese sector tenga
+    # suficiente historial.
+    sector_rs_percentile: int | None = None
     currency: str = "USD"  # yfinance's own currency code; GBp means pence, not pounds (LSE convention)
     # Segunda auditoría, Bloque 3: originally the inputs for watchlist_service.py's
     # cross-sectional, setup-specific percentile score - that module retired

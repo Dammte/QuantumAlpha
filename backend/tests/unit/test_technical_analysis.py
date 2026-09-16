@@ -770,14 +770,28 @@ def test_mansfield_rs_negative_when_underperforming_benchmark():
 
 
 def test_rs_raw_score_positive_for_a_steady_riser():
-    closes = pd.Series(100 * (1.002 ** np.arange(260)))
+    # Parte 3.2: percentil transversal de retorno a 20 sesiones - reemplaza
+    # el compuesto ponderado 63/126/189/252 (estilo IBD, momentum de 3-12
+    # meses), que "a 5 días no aplica" (literal).
+    closes = pd.Series(100 * (1.002 ** np.arange(30)))
     score = ta.rs_raw_score(closes)
     assert score is not None
     assert score > 0
 
 
 def test_rs_raw_score_none_when_insufficient_history():
-    assert ta.rs_raw_score(pd.Series([100.0] * 50)) is None
+    assert ta.rs_raw_score(pd.Series([100.0] * 15)) is None
+
+
+def test_rs_raw_score_uses_a_20_session_window_by_default():
+    # A sharp move confined to the last 5 sessions, flat before that - only
+    # visible if the window is genuinely ~20 sessions, not the old 63+.
+    flat = [100.0] * 240
+    spike = list(100 + np.arange(1, 6) * 2.0)
+    closes = pd.Series(flat + spike)
+    score = ta.rs_raw_score(closes)
+    assert score is not None
+    assert score == pytest.approx(closes.iloc[-1] / closes.iloc[-21] - 1)
 
 
 def test_sma_slope_positive_true_for_rising_series():
