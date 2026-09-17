@@ -67,6 +67,7 @@ from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import benchmark_for_region
 from app.services.portfolio_risk_service import PositionRisk, get_portfolio_positions_risk
+from app.services.setups import arbitration as setups_arbitration
 from app.services.setups import registry as setups_registry
 from app.services.setups.context import SetupContext
 from app.services.setups.types import setup_match_to_dict
@@ -205,7 +206,11 @@ def build_ticker_daily_state(
     # esperado (la mayoría de tickers la mayoría de días no cumplen ningún
     # setup), mismo criterio que `gate_conditions` - `None` queda reservado
     # para una fila anterior a esta columna, no para "no se encontró nada".
-    setups_list = [setup_match_to_dict(m) for m in setups_registry.detect_all(setup_ctx)]
+    # `order_by_rank` (Parte 0/6, §28.8) deja el setup titular en el índice
+    # 0 - "el mejor gana, los demás se muestran como contexto" - sin
+    # descartar ninguno.
+    ordered_setups = setups_arbitration.order_by_rank(setups_registry.detect_all(setup_ctx))
+    setups_list = [setup_match_to_dict(m) for m in ordered_setups]
 
     gate = le.evaluate_gate(
         price=snapshot.price,

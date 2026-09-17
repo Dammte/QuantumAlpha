@@ -3036,3 +3036,34 @@ cuando el precio está a mitad de canal (ni banda inferior ni ruptura), el recha
 bajista cuando el sesgo semanal sigue bajista, que el ruido puro nunca produce un canal, e
 historial insuficiente. Presupuesto de latencia sigue en verde con el quinto detector real
 registrado. Suite completa verde, ruff limpio.
+
+### 28.8 Fase 6 (interna): `arbitration.py` - "nadie suma", la regla central del encargo
+
+Con cinco detectores reales ya construidos (28.3-28.7), "nadie suma" por fin tiene matches de
+verdad que arbitrar entre sí - hasta ahora cada detector devolvía como mucho uno propio, pero
+`registry.detect_all` puede devolver varios de FAMILIAS distintas a la vez para el mismo ticker
+(p. ej. una transición de etapa Y un cruce rápido simultáneos), y nada elegía entre ellos todavía.
+
+**`select_best`**: el titular entre los que coinciden, por `SetupStage` - TRIGGERED > READY >
+FORMING > FAILED, el mismo criterio que la Parte 9.1 ya usa como primera clave de ordenación del
+propio Radar, reutilizado aquí en vez de inventar un segundo criterio. Desempate entre familias
+distintas en la misma etapa: el orden de llegada de los propios `matches` (que en la práctica es
+el orden de `SETUP_DETECTORS` en `registry.py`) - documentado explícitamente como "lo mínimo
+defendible", no un criterio con respaldo del encargo: el texto original no dice cómo comparar una
+transición de etapa TRIGGERED contra una ruptura de nivel TRIGGERED cuando ambas ocurren a la vez.
+
+**`order_by_rank`**: la lista completa reordenada con el titular en el índice 0, sin descartar
+ningún otro match - "los otros dos se muestran como contexto" (Parte 0), nunca se pierden.
+`daily_close.py` ya la usa: `TickerDailyState.setups[0]` es, por convención desde este commit, el
+setup titular del ticker; el resto son contexto para la interfaz (Fase 11, todavía pendiente).
+
+**Deliberadamente fuera de este sub-paso**: los moduladores de contexto (Parte 6: squeeze, pocket
+pivot, secado de volumen, contracción de ATR, ruptura fallida, coincidencia de setups) que suben
+como máximo un escalón de grado en total viven en `setups/context.py`, todavía sin construir -
+ese módulo es quien produce las señales que este arbitraje tendría que capar; no tiene sentido
+escribir el tope de un escalón antes de que exista nada que subir.
+
+**Tests**: 8 en `test_arbitration.py` - lista vacía, un solo match, la prioridad TRIGGERED > READY
+> FORMING > FAILED verificada en ambos órdenes de entrada, el desempate estable por orden de
+llegada (verificado en ambos sentidos), y que `order_by_rank` nunca descarta ningún match aunque
+reordene. Suite completa verde, ruff limpio.
