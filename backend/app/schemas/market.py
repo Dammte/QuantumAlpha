@@ -378,6 +378,11 @@ class RadarResponse(BaseModel):
     # `items` quedó vacío tras los cortes - nunca para rellenar el hueco de
     # "todavía no hay datos", que `computed_at is None` ya distingue.
     message: str | None = None
+    # Parte 12.1, literal: el contador de cabecera («8 de 412 analizados») -
+    # cuántas filas `daily_close.py` calculó hoy para esta región, ANTES del
+    # filtro de gate/disparador y de los cortes de la Parte 9.2. `0` cuando
+    # `computed_at is None` (el job no ha corrido todavía).
+    total_analyzed: int = 0
 
 
 class CorrelationWarningResponse(BaseModel):

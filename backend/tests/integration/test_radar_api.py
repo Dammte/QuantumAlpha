@@ -426,6 +426,29 @@ def test_radar_exposes_sector_and_sector_rs_percentile(client: TestClient, db_se
     assert nvda["sector_rs_percentile"] == 88
 
 
+def test_radar_total_analyzed_counts_every_row_before_the_gate_trigger_filter(
+    client: TestClient, db_session: Session
+) -> None:
+    # Parte 12.1, literal: el contador de cabecera («8 de 412 analizados») -
+    # cuenta TODO lo que daily_close.py calculó hoy, no solo lo que pasó el
+    # filtro de gate/disparador ni lo que sobrevivió a los cortes.
+    _seed_state(db_session, ticker="PASS", gate_passes=True)
+    _seed_state(
+        db_session, ticker="EXCLUDED", gate_passes=False, entry_trigger_type=None, entry_trigger_price=None,
+        stop_loss=None, take_profit=None, take_profit_method=None, risk_reward=None,
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert len(body["items"]) == 1  # solo PASS sobrevive al filtro de gate/disparador
+    assert body["total_analyzed"] == 2  # pero ambos contaron como analizados
+
+
+def test_radar_total_analyzed_is_zero_when_nothing_has_run_yet(client: TestClient) -> None:
+    body = client.get("/api/v1/market/radar?region=us").json()
+    assert body["total_analyzed"] == 0
+
+
 def test_radar_narrows_a_sized_candidate_by_the_portfolios_sector_concentration(
     client: TestClient, db_session: Session
 ) -> None:

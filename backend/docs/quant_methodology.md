@@ -3430,3 +3430,70 @@ sector (quedándose con los 4 mejores, no cualquier 4), el tope total de 25, el 
 vacía y que nunca se confunde con "sin datos todavía", y que `sector`/`sector_rs_percentile` se
 exponen. Más 4 tests nuevos en `test_levels_engine.py`/`test_context_modifiers.py` para
 `distance_atr`. Suite completa verde, ruff limpio.
+
+### 28.15 Fase 10 (Parte 12): `RadarView.jsx`, la interfaz
+
+Reescritura completa sobre lo que la Fase 9 ya deja listo (una lista plana, ordenada, cortada, con
+`sector`/`sector_rs_percentile`/`setups`/`timeframe_strip`/`grade` en cada fila) - esta fase es
+PURA PRESENTACIÓN, cero cómputo de decisión nuevo. Probada de verdad en navegador (Playwright contra
+un backend real con Postgres local, datos sembrados a mano cubriendo las cinco familias de setups,
+grados A/B/C, las tres etapas visuales y ambos temas) - no solo `npm run lint`.
+
+**Campo backend nuevo, mínimo**: `RadarResponse.total_analyzed` (`len(states)`, antes del filtro de
+gate/disparador) - el contador de cabecera de la Parte 12.1 ("8 de 412 analizados") lo necesitaba y
+no existía ningún campo que ya lo diera.
+
+**8.1/8.2 y los chips de la 12.1 se resolvieron en el cliente, a propósito**: agrupar por sector,
+ordenar dentro del grupo, o filtrar por familia de setup - todo eso es una operación sobre datos que
+la fila YA trae, no un cálculo que justifique una segunda forma de servir el mismo endpoint. El
+conmutador agrupado/lista se guarda en `localStorage` (`radar-view-mode`), con manejo de excepción
+silencioso si falla (modo privado, cuota) - es una preferencia de presentación, no algo que deba
+romper el Radar si no se puede recordar. Los sectores con `sector_rs_percentile <= 30` empiezan
+plegados (verificado en pantalla: "Energía · RS 22" pliega sola, sin ocultar el sector - sigue
+presente y contable) - el estado de plegado por sector se guarda como una anulación explícita sobre
+ese valor por defecto (`collapsedOverrides`, un Map sector→booleano), no como "colapsado si-y-solo-si
+está en el Set", para que un clic sobre un sector que empieza plegado lo abra con un solo toque.
+
+**Dos de los nueve chips de la 12.1 se dejaron fuera, documentado en el propio código**: "Sin
+correlación con mi cartera" no tiene hoy un campo estructurado en `RadarItemResponse` (solo
+aparecería, si acaso, como texto libre dentro de `grade.reasons`); "Con muestra medida" depende de
+`setup_replay.py` (Parte 10, todavía no existe) - ningún setup es hoy `measured`, ese chip filtraría
+siempre a una lista vacía. Ninguno de los dos se fabrica con datos que no hay.
+
+**Codificación visual del estado del setup** (Parte 12.2, literal - "forma, no solo color"):
+`radar-row__setup--forming` (contorno punteado), `--ready` (contorno sólido), `--triggered` (relleno
+del color de acento), `--failed` (atenuado y tachado) - confirmado en pantalla que las tres primeras
+formas se distinguen a simple vista. La celda mensual de `TimeframeStrip` lleva su propia clase
+`--monthly` con opacidad reducida respecto a semanal/diaria, tal como pide la Parte 7.2/12.2 - nunca
+se le añade además un tono de sesgo distinto al de semanal/diaria, solo se atenúa.
+
+**Patrones clásicos en su propia sección, con la distinción exacta de la Parte 12.1**: el bloque
+"Patrones clásicos detectados" muestra TODOS los setups de familia `classic_pattern` (estén o no en
+el índice 0), y añade "no dispara por sí solo" únicamente a los que tienen `trigger_price == null` -
+sin una lista blanca duplicada en el frontend (`CLASSIC_PATTERNS_CAN_TRIGGER` ya vive en el backend,
+una sola vez); un doble suelo con gatillo real y un triángulo descendente sin él, detectados a la
+vez sobre el mismo ticker, se distinguen correctamente sin ningún caso especial por nombre.
+
+**Bug real de condición de carrera, encontrado probando el cambio de región a mano**: cambiar de
+EE.UU. a Europa mostraba, durante un instante y a veces de forma persistente, los tickers de EE.UU.
+bajo la etiqueta "Europa" - el `useEffect` de carga no protegía contra una respuesta vieja
+resolviendo DESPUÉS de una más nueva (la doble invocación de efectos de React StrictMode en
+desarrollo hace esto fácil de disparar: dos peticiones a `region=us` en el montaje, más una a
+`region=europe` al hacer clic, pueden resolver fuera de orden). Corregido con la guarda estándar de
+React - una bandera `ignore` fijada en la función de limpieza del efecto, que descarta cualquier
+respuesta que llegue después de que el efecto haya quedado obsoleto. El mismo patrón ya existía,
+sin protección, en la versión anterior de este componente - no es un bug introducido por esta fase,
+pero sí uno que esta fase encontró y dejó arreglado en vez de heredado en silencio.
+
+**Verificación en navegador** (Playwright, capturas revisadas a ojo, sin errores de consola en
+ningún paso): historial insuficiente → las tres celdas en `unknown`; agrupado por sector con
+"Energía RS 22" plegada por defecto y expandible; fila expandida de VCP con evidencia/gatillo-
+anulación/geometría/modificadores de contexto/otros setups; fila expandida de doble suelo +
+triángulo descendente con la sección de patrones clásicos correcta; modo lista con el orden
+lexicográfico completo visible (disparado > listo > formándose, luego grado); chip "Solo grado A"
+filtrando correctamente y actualizando el contador; estado vacío con el mensaje exacto del encargo
+tras la corrección de la condición de carrera; tema oscuro legible en todos los elementos nuevos.
+
+**Tests**: 2 nuevos en `test_radar_api.py` para `total_analyzed`. La interfaz en sí no tiene suite de
+tests automatizada en este repositorio (no hay Vitest/Testing Library configurado todavía) - la
+verificación es la sesión de Playwright descrita arriba, no una omisión. `npm run lint` limpio.

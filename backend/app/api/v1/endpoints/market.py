@@ -436,7 +436,7 @@ def get_radar(
             item.entry_geometry = TradeGeometryResponse(**geometry_to_dict(narrowed))
 
     message = RADAR_EMPTY_MESSAGE if not items and computed_at is not None else None
-    return RadarResponse(items=items, computed_at=computed_at, message=message)
+    return RadarResponse(items=items, computed_at=computed_at, message=message, total_analyzed=len(states))
 
 
 @router.get("/levels/proximity", response_model=list[ProximityItemResponse])

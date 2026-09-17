@@ -711,6 +711,15 @@
   background: var(--code-bg);
   color: var(--text);
 }
+.badge--warn {
+  background: rgba(237, 161, 0, 0.16);
+  color: #ad7a00;
+}
+@media (prefers-color-scheme: dark) {
+  .badge--warn {
+    color: #eda100;
+  }
+}
 
 /* Timeframe tabs */
 
@@ -1550,6 +1559,241 @@
   border-top: 1px solid var(--border);
   border-radius: 0 0 10px 10px;
   padding-top: 16px;
+}
+
+/* Radar - Parte 12 (interfaz): cabecera, chips, agrupación por sector */
+
+.radar-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.radar-header__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.radar-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.radar-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.radar-chip {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.radar-chip--active {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.radar-sector-group {
+  margin-bottom: 14px;
+}
+
+.radar-sector-group__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 6px 2px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.radar-sector-group__caret {
+  color: var(--text);
+  font-size: 12px;
+  width: 10px;
+}
+
+.radar-sector-group__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.radar-sector-group__meta {
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.radar-sector-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.radar-row__grade {
+  font-variant-numeric: tabular-nums;
+}
+
+.radar-row__setup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--text-h);
+}
+
+.radar-row__setup--forming {
+  border: 1px dashed var(--border);
+}
+
+.radar-row__setup--ready {
+  border: 1px solid var(--text-h);
+}
+
+.radar-row__setup--triggered {
+  border: 1px solid var(--accent);
+  background: var(--accent-bg);
+  font-weight: 600;
+}
+
+.radar-row__setup--failed {
+  border: 1px solid var(--border);
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.radar-row__numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+.radar-row__timeframe-strip {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.radar-row__timeframe-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+.radar-row__timeframe-cell--bullish {
+  background: rgba(12, 163, 12, 0.16);
+  color: var(--series-good);
+}
+
+.radar-row__timeframe-cell--bearish {
+  background: rgba(208, 59, 59, 0.16);
+  color: var(--series-critical);
+}
+
+.radar-row__timeframe-cell--monthly {
+  opacity: 0.55;
+}
+
+.radar-row__detail {
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.radar-row__narrative {
+  font-size: 13px;
+  color: var(--text-h);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.radar-row__detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.radar-row__detail-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  margin: 0;
+}
+
+.radar-row__trigger-invalidation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+}
+
+.radar-row__evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.radar-row__evidence dt {
+  display: inline;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.radar-row__evidence dd {
+  display: inline;
+  margin: 0 0 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.radar-row__reason-badges,
+.radar-row__other-setups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.radar-row__reason-badge {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--code-bg);
+  color: var(--text);
 }
 
 .sector-tier-badge {
