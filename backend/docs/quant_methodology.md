@@ -3164,3 +3164,84 @@ patrón, historial insuficiente, y que la lista blanca de disparo sigue siendo e
 
 **Pendiente para una fase posterior**: taza con asa y hombro-cabeza-hombro (los dos patrones
 restantes de la Parte 5), en un commit propio dado el tamaño ya alcanzado por este.
+
+### 28.11 Fase 5 (fin): `classic_patterns.py` - taza con asa y hombro-cabeza-hombro
+
+Cierra la Parte 5 - las cinco formas de patrones clásicos que pedía el encargo están ahora
+implementadas: doble suelo, triángulo (5 variantes), taza con asa y hombro-cabeza-hombro (2
+variantes). `classic_patterns.detect` pasa de 2 a 5 subdetectores.
+
+**Taza con asa (`cup_with_handle`)**: el encargo describe la duración de la taza "en semanas" (7 a
+65, canon de O'Neil) pero el asa "en sesiones" (≥ 5) - en vez de remuestrear a semanal solo para la
+taza y volver a diario para el asa (una costura entre dos resoluciones justo en el punto más
+delicado del patrón), todo el detector trabaja en barras diarias, con la duración de la taza
+convertida literalmente vía 5 sesiones/semana (35 a 325 sesiones). Mismo criterio que el resto de
+esta familia: ninguna otra forma de esta biblioteca remuestrea a mitad de su propia detección.
+
+Geometría: labio derecho = máximo de las últimas `HANDLE_MAX_DURATION_BARS` sesiones (sin pivote
+confirmado, misma lógica que `pullback._last_impulse` - un pivote confirmado llegaría demasiado
+tarde, justo cuando el asa es más accionable); fondo = mínimo antes del labio derecho; labio
+izquierdo = máximo antes del fondo. Profundidad de la taza 12%-50% (marcando "profunda" por encima
+del 33% típico, sin rechazarla). Asa en la mitad superior de la taza, profundidad 8%-15%, pendiente
+negativa (`linear_regression_fit`) y volumen descendente (mitad reciente < mitad inicial).
+
+**Bug real, encontrado con el script de verificación de este detector antes de fijar los tests**: la
+primera versión medía el labio derecho sobre una ventana que SÍ incluía la barra de hoy - el día
+exacto de la ruptura del asa, esa misma barra (la más alta de la ventana, por definición, si rompe)
+pasaba a autodesignarse "el nuevo labio derecho", dejando la duración del asa en 0 sesiones e
+imposibilitando estructuralmente el `TRIGGERED` que el propio test intentaba comprobar. Es la
+tercera vez en esta biblioteca que aparece la misma trampa (`stage_transition.py` §28.3,
+`breakout.py` §28.6) - aquí se corrigió con el mismo patrón que `breakout._darvas_box` ya usa: toda
+la geometría (labios, fondo, forma y volumen del asa) se mide sobre `close.iloc[:-1]`, excluyendo
+hoy; el cierre de hoy se compara aparte contra el pivote ya calculado para decidir READY vs
+TRIGGERED.
+
+**Umbral de forma en U ajustado tras verificarlo con un script**: el encargo pide que el "tramo
+bajo" de la taza dure al menos el 30% de su anchura total, pero no fija qué cuenta como "tramo
+bajo". La primera elección (tercio inferior del rango, `CUP_LOW_ZONE_DEPTH_FRACTION=0,33`) resultó
+matemáticamente casi inerte: para CUALQUIER rampa lineal (la V más simple posible, declive recto +
+recuperación recta), la fracción de ancho que cae dentro del f% inferior de la altura es, por
+semejanza de triángulos, aproximadamente f mismo - con f=0,33 casi igual al mínimo de 0,30 exigido,
+una V perfectamente recta pasaba el filtro sin ninguna base plana real, exactamente lo que la Parte
+5.2 dice que debe fallar ("una V es un fallo, no una base"). Bajado a f=0,20: una V recta da ahora
+~0,20-0,22 de fracción, claramente por debajo del 0,30 exigido, mientras que una taza con una base
+visiblemente más plana que una recta sigue superándolo con margen.
+
+**Confianza**: el encargo pide MEASURED/THIN según un umbral de muestra histórica específico de esta
+forma - eso exige el replay de la Parte 10 (`setup_replay.py`), todavía no construido. Hasta
+entonces, `UNVALIDATED`, la misma regla no negociable que ya aplica a los otros seis detectores de
+la biblioteca (ver `types.SetupConfidence`).
+
+**Hombro-cabeza-hombro (`head_shoulders_inverse`/`head_shoulders_top`)**: ninguna de las dos formas
+dispara jamás - la invertida (alcista) por solaparse con la transición de etapa 1 a 2, ya mejor
+especificada (Parte 5.5, literal); la normal (bajista) por ser puramente una bandera de aviso/evitar
+en el Radar o en una posición abierta. A diferencia de los triángulos, `trigger_price=None` se fija
+directamente en vez de consultar `CLASSIC_PATTERNS_CAN_TRIGGER`: el encargo es categórico en que
+ninguna de las dos genera nunca una entrada, no es una clasificación dinámica donde una sola función
+puede producir la única forma que sí dispara (como sí ocurre con el triángulo). El test existente de
+la lista blanca (§28.10) ya bloquea que alguien añada por accidente cualquiera de las dos a
+`CLASSIC_PATTERNS_CAN_TRIGGER` en el futuro.
+
+Geometría sobre `indexed_fractal_pivots` (3 extremos: hombro-cabeza-hombro, más 2 puntos de
+clavicular entre ellos, buscados directamente sobre cierres en cada tramo - igual que el resto de
+este módulo, que nunca usa `ctx.high`/`ctx.low`, solo `ctx.close`). Tolerancias literales del
+encargo: cabeza al menos 3% más allá de ambos hombros, hombros simétricos dentro de un 5%. La
+"pendiente de la clavicular menor al 10% de la altura del patrón" se interpreta como el cambio TOTAL
+de precio entre los dos puntos de la clavicular (no una pendiente por barra, que no sería
+dimensionalmente comparable contra una altura en precio sin normalizar por tiempo) - elección de
+lectura propia, documentada como tal en el código.
+
+Aun sin disparar, `stage` sigue siendo información real: `TRIGGERED` cuando la clavicular ya está
+rota (cierre por debajo para la forma normal, por encima para la invertida), `FORMING` si no - útil
+precisamente para lo que el encargo pide de la forma normal ("bandera de evitar"): una bandera
+"todavía formándose" pesa distinto que una "ya confirmada". Por el mismo motivo, a diferencia de los
+triángulos que no disparan (que sí anulan `invalidation_price` junto con `trigger_price`), aquí
+`invalidation_price` SÍ se rellena (ruptura de la cabeza en el sentido contrario invalida el propio
+patrón como pieza de información, incluso sin una posición que proteger) - una pequeña divergencia
+deliberada del precedente del triángulo, documentada en el código.
+
+**Tests**: 8 nuevos en `test_classic_patterns.py` (17 en total en el archivo) - taza válida
+disparando y sin disparar, rechazo por forma en V, rechazo por asa en la mitad inferior, rechazo por
+asa que sube; hombro-cabeza-hombro invertido y normal confirmando que nunca fijan `trigger_price`,
+`FORMING` antes de romper la clavicular, rechazo por hombros asimétricos. Suite completa verde (840
+en `tests/unit`), ruff limpio.

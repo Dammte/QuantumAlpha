@@ -1,11 +1,13 @@
 """Parte 5 (biblioteca de setups del Radar, quant_methodology.md §28):
-patrones clásicos - primera entrega, doble suelo y triángulos. Todos los
-fixtures verificados con un script antes de fijarlos."""
+patrones clásicos - doble suelo, triángulos, taza con asa y
+hombro-cabeza-hombro. Todos los fixtures verificados con un script antes de
+fijarlos."""
 
 from datetime import date
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
@@ -162,3 +164,153 @@ def test_classic_patterns_can_trigger_whitelist_is_exactly_three_patterns():
     assert cp.CLASSIC_PATTERNS_CAN_TRIGGER == frozenset(
         {"cup_with_handle", "double_bottom", "ascending_triangle"}
     )
+
+
+# --- Taza con asa ----------------------------------------------------------
+
+_CUP_SEGMENTS = [(100, 75, 30), (75, 76, 26), (76, 98, 35)]
+_CUP_VOLUMES = [1_000_000.0, 1_000_000.0, 1_000_000.0]
+
+
+def _with_handle(
+    cup_close: np.ndarray, cup_volume: np.ndarray, handle_end: float
+) -> tuple[np.ndarray, np.ndarray]:
+    # `_detect_cup_with_handle` mide la forma del asa EXCLUYENDO la barra de
+    # "hoy" (ver su propio comentario) - se añade una barra plana extra al
+    # nivel de `handle_end` para representar "hoy" sin profundizar ni
+    # deshacer el asa ya formada en las barras anteriores, que es lo que
+    # este fixture quiere fijar.
+    handle_close = np.linspace(cup_close[-1], handle_end, 10)
+    handle_close = np.append(handle_close, handle_end)
+    handle_volume = np.linspace(1_200_000.0, 700_000.0, 11)
+    close = np.concatenate([cup_close, handle_close[1:]])
+    volume = np.concatenate([cup_volume, handle_volume[1:]])
+    return close, volume
+
+
+def test_cup_with_handle_matches_with_valid_u_shape_and_declining_handle():
+    cup_close, cup_volume = _build(_CUP_SEGMENTS, _CUP_VOLUMES)
+    close, volume = _with_handle(cup_close, cup_volume, handle_end=90.0)
+
+    matches = [m for m in cp.detect(_ctx(close, volume)) if m.name == "cup_with_handle"]
+
+    assert len(matches) == 1
+    assert matches[0].stage == SetupStage.READY
+    assert matches[0].trigger_price == pytest.approx(98.0 * 1.002)
+    assert matches[0].evidence["cup_quality"] == "típica"
+
+
+def test_cup_with_handle_triggers_when_price_closes_above_the_handle_pivot():
+    # Ancla de regresión: la primera versión de este detector medía el
+    # labio derecho sobre una ventana que incluía la propia barra de hoy -
+    # el día de la ruptura, esa barra pasaba a ser "el nuevo labio" y el
+    # asa quedaba con duración 0, haciendo el TRIGGERED de este mismo test
+    # estructuralmente indetectable. Ver el comentario de `_detect_cup_with_handle`.
+    cup_close, cup_volume = _build(_CUP_SEGMENTS, _CUP_VOLUMES)
+    close, volume = _with_handle(cup_close, cup_volume, handle_end=90.0)
+    close[-1] = 99.5  # por encima de 98 * 1.002
+
+    matches = [m for m in cp.detect(_ctx(close, volume)) if m.name == "cup_with_handle"]
+
+    assert len(matches) == 1
+    assert matches[0].stage == SetupStage.TRIGGERED
+
+
+def test_cup_with_handle_rejected_when_shape_is_a_pure_v():
+    # Dos rectas sin ningún tramo plano en el fondo - Parte 5.2: "una V es
+    # un fallo, no una base". Ver el comentario de CUP_LOW_ZONE_DEPTH_FRACTION:
+    # una V recta pura ya deja ~20% de su ancho en la zona baja por pura
+    # geometría, por debajo del 30% exigido.
+    cup_close, cup_volume = _build([(100, 75, 40), (75, 98, 40)], [1_000_000.0, 1_000_000.0])
+    close, volume = _with_handle(cup_close, cup_volume, handle_end=90.0)
+
+    matches = [m for m in cp.detect(_ctx(close, volume)) if m.name == "cup_with_handle"]
+
+    assert matches == []
+
+
+def test_cup_with_handle_rejected_when_handle_forms_in_the_lower_half():
+    cup_close, cup_volume = _build(_CUP_SEGMENTS, _CUP_VOLUMES)
+    # Punto medio de la taza = 75 + 0,5*23 = 86,5 - un asa que baja hasta 82
+    # cae en la mitad inferior.
+    close, volume = _with_handle(cup_close, cup_volume, handle_end=82.0)
+
+    matches = [m for m in cp.detect(_ctx(close, volume)) if m.name == "cup_with_handle"]
+
+    assert matches == []
+
+
+def test_cup_with_handle_rejected_when_handle_drifts_up():
+    cup_close, cup_volume = _build(_CUP_SEGMENTS, _CUP_VOLUMES)
+    close, volume = _with_handle(cup_close, cup_volume, handle_end=104.0)  # "asa" que sube
+
+    matches = [m for m in cp.detect(_ctx(close, volume)) if m.name == "cup_with_handle"]
+
+    assert matches == []
+
+
+# --- Hombro-cabeza-hombro ---------------------------------------------------
+
+
+def _head_shoulders_close(
+    shoulder_low_or_high_idx: list[int], shoulder_low_or_high_val: list[float],
+    neckline_idx: list[int], neckline_val: list[float], n: int = 121,
+) -> np.ndarray:
+    x = np.arange(n)
+    pts_idx = sorted(shoulder_low_or_high_idx + neckline_idx)
+    pts_val = []
+    for idx in pts_idx:
+        if idx in shoulder_low_or_high_idx:
+            pts_val.append(shoulder_low_or_high_val[shoulder_low_or_high_idx.index(idx)])
+        else:
+            pts_val.append(neckline_val[neckline_idx.index(idx)])
+    return np.interp(x, pts_idx, pts_val)
+
+
+def test_head_shoulders_inverse_is_context_only_and_never_sets_a_trigger_price():
+    close = _head_shoulders_close(
+        [10, 50, 90], [90.0, 80.0, 91.0], [0, 30, 70, 110, 120], [100.0, 100.0, 100.5, 100.0, 102.0],
+    )
+    volume = np.full(len(close), 1_000_000.0)
+
+    matches = [m for m in cp.detect(_ctx(close, volume)) if m.name == "head_shoulders_inverse"]
+
+    assert len(matches) == 1
+    assert matches[0].trigger_price is None
+    assert matches[0].stage == SetupStage.TRIGGERED  # cierre (102.0) por encima de la clavicular
+
+
+def test_head_shoulders_top_is_an_avoid_flag_and_never_sets_a_trigger_price():
+    close = _head_shoulders_close(
+        [10, 50, 90], [110.0, 120.0, 109.0], [0, 30, 70, 110, 120], [100.0, 100.0, 99.5, 100.0, 99.0],
+    )
+    volume = np.full(len(close), 1_000_000.0)
+
+    matches = [m for m in cp.detect(_ctx(close, volume)) if m.name == "head_shoulders_top"]
+
+    assert len(matches) == 1
+    assert matches[0].trigger_price is None
+    assert matches[0].stage == SetupStage.TRIGGERED  # cierre (99.0) por debajo de la clavicular
+
+
+def test_head_shoulders_forming_when_the_neckline_has_not_broken_yet():
+    close = _head_shoulders_close(
+        [10, 50, 90], [90.0, 80.0, 91.0], [0, 30, 70, 110, 120], [100.0, 100.0, 100.5, 100.0, 99.0],
+    )
+    volume = np.full(len(close), 1_000_000.0)
+
+    matches = [m for m in cp.detect(_ctx(close, volume)) if m.name == "head_shoulders_inverse"]
+
+    assert len(matches) == 1
+    assert matches[0].stage == SetupStage.FORMING
+    assert matches[0].trigger_price is None
+
+
+def test_head_shoulders_rejected_when_shoulders_are_not_symmetric():
+    # Segundo hombro (96) a más de un 5% del primero (90) - Parte 5.5.
+    close = _head_shoulders_close(
+        [10, 50, 90], [90.0, 80.0, 96.0], [0, 30, 70, 110, 120], [100.0, 100.0, 100.5, 100.0, 102.0],
+    )
+    volume = np.full(len(close), 1_000_000.0)
+
+    assert [m for m in cp.detect(_ctx(close, volume)) if m.name == "head_shoulders_inverse"] == []
