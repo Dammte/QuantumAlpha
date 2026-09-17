@@ -2897,3 +2897,32 @@ insuficiente. Todos verificados primero con un script que inspecciona los valore
 reales (pendiente, racha, profundidad) antes de fijar cada fixture, no adivinados. Presupuesto de
 latencia (`test_latency_budgets.py`) sigue en verde con el detector real ya registrado y corriendo
 en cada ticker. Suite completa verde, ruff limpio.
+
+### 28.4 Fase 4 (interna): `ma_cross.py` - cruce rápido, cero cómputo nuevo
+
+Parte 4.3. El detector más barato de construir hasta ahora: `multi_timeframe.py` ya calcula
+`cross_quality_20_50` (`technical_analysis.detect_cross_with_quality` - pese al nombre "20_50",
+el par EMA21/55 real) e `imminent_cross_20_50` para el propio `TimeframeRead.daily` que
+`SetupContext.multi_timeframe` ya lleva desde 28.2 - este detector no calcula ninguna serie, solo
+interpreta objetos que `daily_close.py` ya construía antes de que este detector existiera.
+
+**Confirmado**: `direction=="golden"`, `bars_since <= MA_CROSS_MAX_BARS_SINCE=5` (coincide con el
+propio `CROSS_QUALITY_LOOKBACK` de la primitiva), `separation_atr >= MA_CROSS_MIN_SEPARATION_ATR=0,2`
+(deliberadamente distinto del `CROSS_STRONG_SEPARATION_ATR=0,5` que la primitiva usa para su
+propio criterio de "strong" - ese umbral decide si un cruce YA confirmado merece confianza alta;
+este decide si cuenta como setup en absoluto, un listón más bajo a propósito), y ambas pendientes
+(`fast_slope`/`slow_slope`) positivas.
+
+**Proyectado**: reutiliza `imminent_cross_20_50` con un post-filtro propio más estricto
+(`MA_CROSS_IMMINENT_MIN_R2=0,6` contra el `IMMINENT_CROSS_MIN_R2=0,5` de la primitiva compartida) -
+sin tocar `detect_imminent_cross` en sí, que otros consumidores (`exit_engine.py` vía
+`multi_timeframe.py`) siguen usando con su propio 0,5 por defecto. La distinción que Parte 4.3
+pide explícitamente ("la convergencia la produce la media rápida subiendo, no la lenta cayendo")
+se resuelve con el propio `fast_slope` de `cross_quality_20_50` - si la EMA21 no está subiendo,
+no importa cuán inminente sea el cruce proyectado, se descarta.
+
+**Tests**: 10 en `test_ma_cross.py`, construyendo `CrossQuality`/`ImminentCross` directamente (sin
+series OHLCV detrás - el detector no las necesita, así que tampoco los tests) - ambos umbrales de
+"confirmado" por separado, el bloqueo cuando la lenta todavía cae, el descarte explícito de la
+convergencia "por caída de la lenta", el post-filtro de R² más estricto, y que "confirmado" gana
+sobre "proyectado" cuando los dos aplican a la vez. Suite completa verde, ruff limpio.

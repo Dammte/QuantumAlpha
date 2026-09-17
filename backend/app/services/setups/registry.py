@@ -16,7 +16,7 @@ mismo ticker."""
 import logging
 from collections.abc import Callable
 
-from app.services.setups import stage_transition
+from app.services.setups import ma_cross, stage_transition
 from app.services.setups.context import SetupContext
 from app.services.setups.types import SetupMatch
 
@@ -26,6 +26,7 @@ SetupDetector = Callable[[SetupContext], list[SetupMatch]]
 
 SETUP_DETECTORS: list[SetupDetector] = [
     stage_transition.detect,  # Parte 2 - transición Weinstein etapa 1 -> 2
+    ma_cross.detect,  # Parte 4.3 - cruce rápido EMA21/55 al alza
 ]
 
 

@@ -133,8 +133,7 @@ def test_detect_all_never_orders_or_dedupes(monkeypatch):
 def test_setup_detectors_only_contains_families_with_their_own_detector_and_tests():
     # A family only joins SETUP_DETECTORS in its own phase, once its
     # detector/tests/replay all exist together (see registry.py's own
-    # "regla de admisión" docstring) - stage_transition (Parte 2) is the
-    # first and, for now, only one registered.
-    from app.services.setups import stage_transition
+    # "regla de admisión" docstring).
+    from app.services.setups import ma_cross, stage_transition
 
-    assert reg.SETUP_DETECTORS == [stage_transition.detect]
+    assert reg.SETUP_DETECTORS == [stage_transition.detect, ma_cross.detect]
