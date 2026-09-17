@@ -65,6 +65,7 @@ from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
+from app.services.market_universe import benchmark_for_region
 from app.services.portfolio_risk_service import PositionRisk, get_portfolio_positions_risk
 from app.services.setups import registry as setups_registry
 from app.services.setups.context import SetupContext
@@ -89,6 +90,7 @@ def build_ticker_daily_state(
     trade_date: date,
     computed_at: datetime,
     next_earnings_date: date | None = None,
+    benchmark_close: pd.Series | None = None,
 ) -> TickerDailyState | None:
     """Pure function (`next_earnings_date` is the one exception - a value
     the caller already paid the network cost for, never fetched here):
@@ -155,6 +157,12 @@ def build_ticker_daily_state(
     # (`Level`, con estado FAR/APPROACHING/TESTING/BREAKING/...) es solo para
     # que los detectores de setups la lean sin recalcular nada.
     setup_levels = ta.detect_levels(high, low, close, volume, weekly_close=weekly_close)
+    # Parte 2.2 (`stage1_rs_turning`): RS de Mansfield a 20 sesiones, sobre
+    # el benchmark real de la región - `None` sin uno disponible (el
+    # subestado simplemente no se evalúa, nunca se fabrica).
+    mansfield_rs_series = (
+        ta.mansfield_rs(close, benchmark_close, window=20) if benchmark_close is not None else None
+    )
 
     setup_ctx = SetupContext(
         ticker=snapshot.ticker,
@@ -184,11 +192,14 @@ def build_ticker_daily_state(
         relative_volume=snapshot.relative_volume,
         rs_percentile=snapshot.rs_rating,
         sector_rs_percentile=snapshot.sector_rs_percentile,
+        mansfield_rs_series=mansfield_rs_series,
     )
-    # `SETUP_DETECTORS` sigue vacío (Fase 1) - esta llamada siempre devuelve
-    # `[]` hoy. Cablearla ya, en vez de esperar al primer detector real, deja
-    # que los tests de este job cubran la construcción de `SetupContext`
-    # contra datos de verdad, no solo el stub sintético de `test_setups_registry.py`.
+    # `stage_transition.py` (Fase 3) es, por ahora, el único detector
+    # registrado en `SETUP_DETECTORS` - esta llamada devolvía siempre `[]`
+    # hasta entonces (§28.2). Cablearla desde antes de tener ningún detector
+    # real dejó que los tests de este job cubrieran la construcción de
+    # `SetupContext` contra datos de verdad, no solo el stub sintético de
+    # `test_setups_registry.py`.
     # `[]`, no `None`: "sin coincidencias hoy" es un resultado real y
     # esperado (la mayoría de tickers la mayoría de días no cumplen ningún
     # setup), mismo criterio que `gate_conditions` - `None` queda reservado
@@ -415,6 +426,12 @@ def run_daily_close(
             snapshot = screener.get_universe_snapshot(region, db=db)
             universe_snapshot.extend(snapshot)
             ohlcv_by_ticker = screener.get_cached_ohlcv(region)
+            # Biblioteca de setups del Radar (`stage1_rs_turning`, §28): el
+            # mismo benchmark de la región que `get_universe_snapshot` ya
+            # descargó en el lote batcheado (`market_screener_service.py`) -
+            # una sola búsqueda por región, no por ticker.
+            benchmark_df = ohlcv_by_ticker.get(benchmark_for_region(region))
+            benchmark_close = benchmark_df["close"] if benchmark_df is not None else None
             for ts in snapshot:
                 df = ohlcv_by_ticker.get(ts.ticker)
                 if df is None:
@@ -426,7 +443,9 @@ def run_daily_close(
                 # llamadas de red por ticker en los caminos calientes" rule
                 # draws between a job and an endpoint.
                 next_earnings_date = market_data.get_next_earnings_date(ts.ticker)
-                state = build_ticker_daily_state(ts, region, df, trade_date, now, next_earnings_date)
+                state = build_ticker_daily_state(
+                    ts, region, df, trade_date, now, next_earnings_date, benchmark_close
+                )
                 if state is None:
                     continue
                 previous = ticker_repo.latest_for_ticker(ts.ticker)

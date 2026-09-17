@@ -2819,3 +2819,81 @@ Python fila-a-fila donde numpy/pandas vectorizado alcanza". No fue necesario toc
 `GATE_VERSION` (refactor puro, mismo resultado, verificado contra los tests existentes de
 `detect_levels` - CLAUDE.md's own regla de cuándo un cambio SÍ necesita bump).
 Suite completa verde, ruff limpio.
+
+### 28.3 Fase 3 (interna): `stage_transition.py` - el primer detector real, transición etapa 1→2
+
+Parte 2 del encargo, "la petición central del propietario" según su propio texto - el primer
+detector registrado en `SETUP_DETECTORS` (antes vacío desde 28.1). Cierra, junto con 28.1/28.2,
+las Fases 1-2 literales del encargo ("la cadena completa funciona de punta a punta" + el primer
+subestado real).
+
+**Los cinco subestados**, evaluados de más a menos avanzado (`stage_transition.detect` devuelve
+como mucho uno, el más avanzado que cumple - misma regla "nadie suma" del paquete):
+`stage2_confirmed` (TRIGGERED) → `stage2_breakout_imminent` (READY) → `stage1_rs_turning`/
+`stage1_base_confirmed` (FORMING, mutuamente excluyentes según si la fuerza relativa ya giró) →
+`stage1_base_forming` (FORMING, la única que no exige una base ya identificada).
+
+**El techo/suelo de la base** (`_detect_base`) se mide sobre cierres SEMANALES de las últimas
+`min(run_weeks, STAGE_MAX_BASE_WEEKS=52)` semanas, donde `run_weeks` es la racha de semanas
+seguidas (contando hacia atrás) con la pendiente de la MA30 semanal "plana"
+(`|pendiente 8 semanas| < STAGE_FLAT_SLOPE_MAX_PCT=0,5%`) - mismo patrón de racha-hacia-atrás que
+`technical_analysis._level_state_and_duration` ya estableció para `Level.bars_in_state` (§27.5).
+Una base con `depth_pct > STAGE_MAX_BASE_DEPTH_PCT=0,35` se rechaza por completo (ver
+`test_a_base_deeper_than_35_percent_is_rejected_as_a_genuine_base`) - "no es una base, es una
+tendencia bajista todavía en curso" (Parte 2.3, literal).
+
+**Bug de diseño real, encontrado y corregido durante la propia implementación (no en producción)**:
+la primera versión medía `run_weeks` sobre la pendiente *de hoy* - pero el propio cierre de la
+semana de ruptura ya mueve esa pendiente fuera del rango "plano" en el momento exacto en que la
+ruptura ocurre, así que `stage2_confirmed` era estructuralmente indetectable (la racha siempre
+medía 0 justo cuando más importaba). `_base_candidates` corrige esto evaluando dos candidatos -
+la racha de hoy, y la de justo una semana antes - probándolos en ese orden. Detectado al verificar
+el escenario de ruptura semanal con un script antes de fijar el test (no adivinando números),
+mismo método usado para el fix de rendimiento de 28.2.
+
+**Discriminador anti-etapa-3** (Parte 13.1 lo exige explícitamente como caso de test):
+`_check_stage1_base_forming` exige que la pendiente de las 8 semanas *anteriores* a las últimas 8
+ya fuera negativa, además de que la actual también lo sea pero menos - una cima de etapa 3 (MA30
+aplanándose tras una subida) tiene la pendiente anterior positiva por definición (el resto de la
+subida), así que nunca cumple esta condición. Verificado con
+`test_stage1_base_forming_does_not_confuse_a_stage3_top_flattening_after_a_rise` sobre una serie
+sintética que sube 40 semanas, se frena 16 más (subiendo cada vez más despacio, no bajando) y
+termina en un rango estrecho - exactamente la forma de una cima real, que el detector rechaza
+correctamente.
+
+**RS de Mansfield real, no un placeholder**: `stage1_rs_turning` necesitaba una serie que
+`SetupContext` (28.1) no tenía - el cierre del benchmark de la región. `daily_close.py` ya lo
+descarga en el lote batcheado de `market_screener_service.get_universe_snapshot` (confirmado:
+`screener.get_cached_ohlcv(region)` ya lo cachea); `run_daily_close` ahora hace una sola búsqueda
+por región (`benchmark_for_region`), no por ticker, y `build_ticker_daily_state` calcula
+`ta.mansfield_rs(close, benchmark_close, window=20)` → `SetupContext.mansfield_rs_series` (campo
+nuevo, añadido después de 28.1 - `None` sin benchmark disponible, el subestado simplemente no se
+evalúa, nunca se fabrica).
+
+**Correcciones propias ya documentadas en 28.1, confirmadas en la implementación real**: el secado
+de volumen exige `STAGE_VOLUME_DRYUP_MIN_WEEKS=2` semanas *seguidas* bajo el umbral, no una
+lectura puntual (verificado con `test_stage1_base_confirmed_requires_sustained_volume_dryup_not_a_single_week`);
+"RS girando" solo comprueba el cruce de Mansfield RS sobre su propia MA10, sin el "mínimo más
+alto" del texto original.
+
+**Confirmación diaria de menor calidad** (Parte 2.4): `_check_stage2_confirmed` acepta también un
+cierre diario con volumen ≥ `STAGE_BREAKOUT_VOLUME_DAILY=1,5x` la media de 50 días, marcado en
+`evidence["confirmation"]` como "menor calidad" - probado llamando a la función directamente con
+una base y una pendiente ya fijadas (`test_stage2_confirmed_daily_only_path_is_marked_as_lower_quality`),
+no a través de `detect()` completo: encajar a la vez "techo de base no contaminado por la propia
+rampa de ruptura" y "pendiente ya positiva" en una sola serie semanal realista resultó
+genuinamente difícil de construir sin ese atajo - documentado en el propio test, no escondido.
+**Decisión interpretativa propia**: `slope_now > 0` ("MA30 con pendiente ya positiva") se exige
+para *ambos* caminos de confirmación, semanal y diario - el texto original solo lo ata
+explícitamente a la fila semanal, pero un solo día de precio sobre el techo sin que la MA30
+semanal haya empezado a girar no encaja con lo que "etapa 2 confirmada" significa en el propio
+marco de Weinstein; verificado con `test_stage2_confirmed_requires_ma30_slope_already_positive`.
+
+**Tests**: 13 en `test_stage_transition.py` - los cinco subestados por separado, el discriminador
+anti-etapa-3, el rechazo de bases demasiado profundas, la ausencia de RS sin benchmark, el secado
+de volumen sostenido, y los dos casos de `stage2_confirmed` (semanal genuino, diario de menor
+calidad, y el bloqueo cuando la pendiente todavía no giró) - más el test de historial
+insuficiente. Todos verificados primero con un script que inspecciona los valores intermedios
+reales (pendiente, racha, profundidad) antes de fijar cada fixture, no adivinados. Presupuesto de
+latencia (`test_latency_budgets.py`) sigue en verde con el detector real ya registrado y corriendo
+en cada ticker. Suite completa verde, ruff limpio.

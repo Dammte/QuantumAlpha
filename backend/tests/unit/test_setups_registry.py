@@ -56,6 +56,7 @@ def _ctx(**overrides) -> SetupContext:
         relative_volume=None,
         rs_percentile=None,
         sector_rs_percentile=None,
+        mansfield_rs_series=None,
     )
     defaults.update(overrides)
     return SetupContext(**defaults)
@@ -129,8 +130,11 @@ def test_detect_all_never_orders_or_dedupes(monkeypatch):
     assert [m.name for m in reg.detect_all(_ctx())] == ["same", "same"]
 
 
-def test_setup_detectors_is_empty_before_any_family_registers():
-    # Fase 1 has no detectors yet - a family only joins SETUP_DETECTORS in
-    # its own phase, once its detector/tests/replay all exist together (see
-    # registry.py's own "regla de admisión" docstring).
-    assert reg.SETUP_DETECTORS == []
+def test_setup_detectors_only_contains_families_with_their_own_detector_and_tests():
+    # A family only joins SETUP_DETECTORS in its own phase, once its
+    # detector/tests/replay all exist together (see registry.py's own
+    # "regla de admisión" docstring) - stage_transition (Parte 2) is the
+    # first and, for now, only one registered.
+    from app.services.setups import stage_transition
+
+    assert reg.SETUP_DETECTORS == [stage_transition.detect]

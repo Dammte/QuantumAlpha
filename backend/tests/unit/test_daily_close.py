@@ -213,14 +213,20 @@ def test_build_ticker_daily_state_grade_none_without_a_viable_geometry():
     assert state.grade is None
 
 
-def test_build_ticker_daily_state_setups_is_an_empty_list_with_no_detectors_registered():
+def test_build_ticker_daily_state_setups_is_an_empty_list_when_nothing_matches(monkeypatch):
     """Biblioteca de setups del Radar (en curso, quant_methodology.md §28):
     `SetupContext` ya se construye y `detect_all` ya se llama en este job -
-    `[]`, no `None`, es el resultado esperado hasta que la primera familia se
-    registre en `setups.registry.SETUP_DETECTORS`. `None` queda reservado
-    para una fila calculada antes de que esta columna existiera (ver
-    `TickerDailyState.setups`'s propio docstring), nunca para "no hay
-    detectores todavía"."""
+    `[]`, no `None`, es el resultado esperado cuando ningún detector
+    registrado encuentra nada. `None` queda reservado para una fila
+    calculada antes de que esta columna existiera (ver
+    `TickerDailyState.setups`'s propio docstring), nunca para "nada
+    coincidió". `SETUP_DETECTORS` se vacía aquí a propósito - esta prueba
+    verifica el cableado (detect_all -> setups_list), no la lógica de
+    ningún detector real en concreto (eso vive en el test de cada uno)."""
+    import app.services.setups.registry as setups_registry
+
+    monkeypatch.setattr(setups_registry, "SETUP_DETECTORS", [])
+
     df = _ohlc(100 + np.arange(300) * 0.15)
     state = dc.build_ticker_daily_state(_snapshot(), "us", df, date(2026, 9, 10), datetime.now(UTC))
     assert state.setups == []

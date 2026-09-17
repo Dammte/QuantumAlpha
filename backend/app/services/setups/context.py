@@ -67,3 +67,11 @@ class SetupContext:
     relative_volume: float | None
     rs_percentile: int | None
     sector_rs_percentile: int | None
+
+    # Serie diaria de RS de Mansfield a 20 sesiones (`ta.mansfield_rs(close,
+    # benchmark_close, window=20)` - Parte 2.2's "RS de Mansfield a 20
+    # sesiones"), no el escalar de 200 sesiones que ya muestra "Analizar
+    # activo". `None` sin un cierre de benchmark disponible para la región -
+    # `stage_transition.py`'s subestado `stage1_rs_turning` simplemente no
+    # se evalúa en ese caso, nunca se fabrica.
+    mansfield_rs_series: pd.Series | None
