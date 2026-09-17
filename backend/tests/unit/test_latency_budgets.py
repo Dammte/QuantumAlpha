@@ -66,7 +66,12 @@ def test_build_ticker_daily_state_scales_to_a_400_ticker_universe():
     # fast-pair-veto derivation) - its own per-ticker cost is exactly what
     # multiplies as Fase 10 grows the universe. N_TICKERS=50 (not 400) is
     # plenty to catch a real per-ticker regression without making this test
-    # itself slow to run in CI.
+    # itself slow to run in CI. Already covers the setups library end to
+    # end (detect_all, context_modifiers, build_timeframe_strip,
+    # apply_measured_confidence all run inside this same call) at this
+    # generous whole-pipeline budget - see the more targeted test below for
+    # the literal "< 40 ms por ticker" the setups library's own Parte 13.2
+    # asks for on the detectors alone, not the whole gate/grade pipeline.
     trade_date = date(2026, 9, 10)
     computed_at = datetime(2026, 9, 10, 22, 0, tzinfo=UTC)
     frames = [_ohlc(BARS_PER_TICKER, seed=i) for i in range(N_TICKERS)]
@@ -78,3 +83,52 @@ def test_build_ticker_daily_state_scales_to_a_400_ticker_universe():
     elapsed = time.perf_counter() - start
 
     assert elapsed < N_TICKERS * BUDGET_SECONDS_PER_TICKER
+
+
+# Parte 13.2 de la biblioteca de setups del Radar (quant_methodology.md
+# §28), literal: "que los detectores juntos tarden < 40 ms por ticker sobre
+# un frame realista de 10 años". Medido aquí en aislamiento (solo
+# `setups.registry.detect_all` sobre un `SetupContext` ya construido), no
+# sobre `build_ticker_daily_state` completo (ese ya lo cubre el test de
+# arriba, con presupuesto para el gate/grado/geometría además de los
+# setups) - un presupuesto diez veces más generoso que el literal (400 ms,
+# no 40 ms), mismo criterio del docstring del módulo: atrapar una regresión
+# real, no perseguir una cifra concreta de milisegundos en hardware de CI
+# variable.
+SETUPS_BUDGET_SECONDS_PER_TICKER = 0.4
+
+
+def _setup_context_for_latency_test(n: int, seed: int):
+    from app.services import multi_timeframe as mtf
+    from app.services.setups.context import SetupContext
+
+    df = _ohlc(n, seed)
+    close, high, low, volume, open_ = df["close"], df["high"], df["low"], df["volume"], df["open"]
+    weekly_df = ta.resample_ohlcv(df, mtf.WEEKLY_RULE)
+    multi = mtf.analyze_multi_timeframe(df)
+    return SetupContext(
+        ticker=f"T{seed}", region="us", trade_date=date(2026, 9, 10),
+        close=close, high=high, low=low, volume=volume, open_=open_,
+        weekly_close=weekly_df["close"], weekly_high=weekly_df["high"],
+        weekly_low=weekly_df["low"], weekly_volume=weekly_df["volume"],
+        atr_series=ta.atr(high, low, close), atr14=2.0, ema21=150.0, ema55=148.0,
+        sma20=149.0, sma50=145.0, sma150=140.0, sma200=135.0, rsi14=55.0,
+        levels=ta.detect_levels(high, low, close, volume, weekly_close=weekly_df["close"]),
+        multi_timeframe=multi, trend=multi.daily.trend,
+        weekly_stage=multi.weekly.stage if multi.weekly is not None else None,
+        relative_volume=1.1, rs_percentile=70, sector_rs_percentile=60,
+        mansfield_rs_series=None,
+    )
+
+
+def test_setups_registry_detect_all_stays_within_its_own_latency_budget():
+    import app.services.setups.registry as setups_registry
+
+    contexts = [_setup_context_for_latency_test(BARS_PER_TICKER, seed=i) for i in range(N_TICKERS)]
+
+    start = time.perf_counter()
+    for ctx in contexts:
+        setups_registry.detect_all(ctx)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < N_TICKERS * SETUPS_BUDGET_SECONDS_PER_TICKER

@@ -3630,3 +3630,38 @@ Con esto, la Parte 10 completa queda en producción - la única pieza que falta 
 de decir "unvalidated" en el Radar es correr `python scripts/setup_replay_study.py` una vez (varios
 minutos de descarga, igual que `factor_ablation_study.py`) y dejar que `daily_close.py` la recoja en
 su siguiente corrida nocturna.
+
+### 28.18 Fase 12 (Parte 13.2): las garantías estructurales, blindadas con tests
+
+Cuatro de las comprobaciones literales de integración de la Parte 13.2 no tenían todavía un test
+dedicado que las verificara automáticamente - se cumplían por construcción, pero "se cumple por
+construcción" no es lo mismo que "hay un test que lo demuestra y que fallaría de verdad si alguien
+lo rompe sin querer". Los cuatro nuevos, sin cambiar ningún comportamiento:
+
+**"Ningún detector hace una llamada de red"** (`test_no_setup_detector_module_imports_anything_network_related`,
+`test_setups_registry.py`) - AST, no una búsqueda de texto, mismo criterio exacto que
+`test_exit_engine_never_imports_recommendation_engine` (un docstring que nombra `yfinance` en prosa,
+como el de `classic_patterns.py` explicando por qué NO la importa, no debe disparar un falso
+positivo que una búsqueda de texto sí daría). Cubre los siete detectores más `context_modifiers.py`.
+
+**"Los detectores juntos tardan < 40 ms por ticker sobre un frame realista de 10 años"**
+(`test_setups_registry_detect_all_stays_within_its_own_latency_budget`, `test_latency_budgets.py`) -
+medido en aislamiento sobre `setups.registry.detect_all` con un `SetupContext` ya construido, no
+sobre `build_ticker_daily_state` completo (que ya cubre el test de latencia existente de esa misma
+fase anterior, con presupuesto para el gate/grado/geometría además de los setups - ambos tests
+conviven, cada uno mide una cosa distinta). Presupuesto de 400 ms/ticker en el test - diez veces el
+literal, mismo criterio de todo `test_latency_budgets.py`: atrapar una regresión real, no perseguir
+una cifra concreta en hardware de CI variable.
+
+**"GET /market/radar sigue respondiendo en < 500 ms"** (`test_radar_stays_within_its_latency_budget_over_a_realistic_universe`,
+`test_radar_api.py`) - 60 tickers sembrados, presupuesto de 2,5 s en el test (5x el literal), mismo
+criterio de margen que el anterior.
+
+**"Un ticker que cumple 4 setups aparece una sola vez"**
+(`test_radar_a_ticker_matching_several_setups_appears_only_once`, `test_radar_api.py`) - cierto por
+construcción desde la Fase 1 (una fila por ticker, `setups` como lista, nunca una fila por setup que
+cumple), pero sin ningún test que lo demostrara explícitamente con 4 setups reales hasta ahora.
+
+Los otros dos de la Parte 13.2 (mensual nunca altera gate/grado/gatillo; cortes por sector y por
+total respetados) ya tenían su propio test dedicado desde las Fases 8 y 9 respectivamente - no se
+repiten aquí. Suite completa verde, ruff limpio.

@@ -426,6 +426,27 @@ def test_radar_exposes_sector_and_sector_rs_percentile(client: TestClient, db_se
     assert nvda["sector_rs_percentile"] == 88
 
 
+def test_radar_a_ticker_matching_several_setups_appears_only_once(
+    client: TestClient, db_session: Session
+) -> None:
+    # Parte 13.2, literal: "un ticker que cumple 4 setups aparece una sola
+    # vez" - una fila por ticker con `setups` como lista, nunca una fila
+    # por setup que cumple.
+    four_setups = [
+        _setup("triggered", name="ma_cross_confirmado"),
+        _setup("ready", name="vcp_3_contracciones"),
+        _setup("ready", name="pullback_a_media_o_soporte"),
+        _setup("forming", name="stage1_base_confirmada"),
+    ]
+    _seed_state(db_session, ticker="NVDA", setups=four_setups, grade=_grade("A"))
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    matches = [item for item in body["items"] if item["ticker"] == "NVDA"]
+    assert len(matches) == 1
+    assert len(matches[0]["setups"]) == 4
+
+
 def test_radar_total_analyzed_counts_every_row_before_the_gate_trigger_filter(
     client: TestClient, db_session: Session
 ) -> None:
@@ -447,6 +468,32 @@ def test_radar_total_analyzed_counts_every_row_before_the_gate_trigger_filter(
 def test_radar_total_analyzed_is_zero_when_nothing_has_run_yet(client: TestClient) -> None:
     body = client.get("/api/v1/market/radar?region=us").json()
     assert body["total_analyzed"] == 0
+
+
+def test_radar_stays_within_its_latency_budget_over_a_realistic_universe(
+    client: TestClient, db_session: Session
+) -> None:
+    # Parte 13.2, literal: "GET /market/radar sigue respondiendo en <
+    # 500 ms... es una lectura de tabla; si sube, es que se ha colado
+    # cómputo en el endpoint." Presupuesto generoso (5x lo literal), mismo
+    # criterio que test_latency_budgets.py: atrapar una regresión real (un
+    # cálculo colado en el propio request), no perseguir una cifra de
+    # milisegundos concreta en hardware de CI variable.
+    import time
+
+    sectors = ["Tecnología", "Salud", "Financiero", "Industrial", "Energía", "Consumo discrecional"]
+    for i in range(60):
+        _seed_state(
+            db_session, ticker=f"T{i}", setups=[_setup("ready")], grade=_grade("A", distance_atr=float(i)),
+            sector=sectors[i % len(sectors)], sector_rs_percentile=50,
+        )
+
+    start = time.perf_counter()
+    response = client.get("/api/v1/market/radar?region=us")
+    elapsed = time.perf_counter() - start
+
+    assert response.status_code == 200
+    assert elapsed < 2.5  # 5x el presupuesto literal de 500 ms
 
 
 def test_radar_narrows_a_sized_candidate_by_the_portfolios_sector_concentration(

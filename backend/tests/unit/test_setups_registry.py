@@ -1,9 +1,22 @@
+import ast
+import inspect
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 
 from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
+from app.services.setups import (
+    breakout,
+    channel,
+    classic_patterns,
+    context_modifiers,
+    ma_cross,
+    pullback,
+    stage_transition,
+    vcp,
+)
 from app.services.setups import registry as reg
 from app.services.setups.context import SetupContext
 from app.services.setups.types import SetupConfidence, SetupFamily, SetupMatch, SetupStage
@@ -135,9 +148,37 @@ def test_setup_detectors_only_contains_families_with_their_own_detector_and_test
     # A family only joins SETUP_DETECTORS in its own phase, once its
     # detector/tests/replay all exist together (see registry.py's own
     # "regla de admisión" docstring).
-    from app.services.setups import breakout, channel, classic_patterns, ma_cross, pullback, stage_transition, vcp
-
     assert reg.SETUP_DETECTORS == [
         stage_transition.detect, vcp.detect, ma_cross.detect, pullback.detect, breakout.detect, channel.detect,
         classic_patterns.detect,
     ]
+
+
+# --- Parte 15, anti-patrón literal: "ningún detector hace una llamada de --
+# red" ------------------------------------------------------------------
+
+
+_DETECTOR_MODULES = (
+    stage_transition, vcp, ma_cross, pullback, breakout, channel, classic_patterns, context_modifiers,
+)
+# El único módulo de todo el backend que importa `yfinance` directamente -
+# cualquier import (directo o transitivo de un símbolo con este nombre) de
+# los módulos de detectores sería la señal de una llamada de red colada.
+_NETWORK_MODULE_MARKERS = ("yfinance", "market_data_service", "yfinance_provider")
+
+
+def test_no_setup_detector_module_imports_anything_network_related():
+    """AST, no una búsqueda de texto - mismo criterio que
+    `test_exit_engine_never_imports_recommendation_engine`: un docstring que
+    nombra `yfinance` en prosa (para explicar precisamente esta garantía) no
+    debe disparar un falso positivo que una búsqueda de texto sí daría."""
+    for module in _DETECTOR_MODULES:
+        tree = ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))
+        imported_modules = {
+            alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
+        } | {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+        offending = [
+            imported for imported in imported_modules
+            if any(marker in imported for marker in _NETWORK_MODULE_MARKERS)
+        ]
+        assert offending == [], f"{module.__name__} imports something network-related: {offending}"
