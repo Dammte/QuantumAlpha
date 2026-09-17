@@ -195,6 +195,39 @@ def test_radar_exposes_the_persisted_grade(client: TestClient, db_session: Sessi
     assert nvda["grade"] == {"grade": "A", "reasons": ["Cerca del nivel del disparador", "Semanal alcista"]}
 
 
+def test_radar_row_with_no_setups_is_none_pre_migration_row(client: TestClient, db_session: Session) -> None:
+    _seed_state(db_session)
+    aapl = client.get("/api/v1/market/radar?region=us").json()["items"][0]
+    assert aapl["setups"] is None
+
+
+def test_radar_exposes_the_persisted_setups(client: TestClient, db_session: Session) -> None:
+    # Biblioteca de setups del Radar (en curso, quant_methodology.md §28):
+    # `daily_close.py` persiste `setups.types.SetupMatch` como dicts planos -
+    # el Radar los lee tal cual, sin recomputar nada.
+    match = {
+        "family": "ma_cross",
+        "name": "ma_cross_confirmado",
+        "label_es": "Cruce rápido confirmado",
+        "stage": "triggered",
+        "bars_in_stage": 2,
+        "timeframe": "daily",
+        "trigger_price": None,
+        "trigger_condition": "",
+        "invalidation_price": None,
+        "invalidation_condition": "",
+        "evidence": {"separation_atr": 0.3},
+        "narrative_es": "La EMA21 cruzó por encima de la EMA55 hace 2 sesiones.",
+        "confidence": "unvalidated",
+    }
+    _seed_state(db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY, setups=[match])
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    assert nvda["setups"] == [match]
+
+
 def test_radar_sizes_the_entry_geometry_against_a_portfolios_capital(
     client: TestClient, db_session: Session
 ) -> None:

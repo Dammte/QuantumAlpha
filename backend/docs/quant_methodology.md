@@ -2756,4 +2756,66 @@ descarta tal cual estaba especificado - un setup en `FORMING` no tiene `entry_tr
 todavía, así que no puede tener un grado A/B/C real que cortar (`compute_grade` exige ambos); la
 propia ordenación por `SetupStage` ya los deja al final, sin necesidad de un grado especulativo
 sobre una entrada que aún no existe.
+
+### 28.2 Fase 2 (interna): `SetupContext` conectado a `daily_close.py`, columna `setups` persistida
+
+Nota de numeración: las "Fase 1-11" de este sub-apartado son la reorganización propia (arquitectura
+primero) presentada al propietario en 28.1, no las fases 1-11 literales del encargo original (que
+mezclan arquitectura y familias de detectores en el mismo número). Esta Fase 2 interna, junto con
+28.1, completa el criterio de cierre de la **Fase 1 literal del encargo**: "la cadena completa
+funciona de punta a punta" - con un registro todavía vacío, pero de verdad conectado desde
+`daily_close.py` hasta `GET /market/radar`, no simulado.
+
+**`build_ticker_daily_state`** gana, entre el cálculo de EMA21/55 y `evaluate_gate`: un segundo
+`ta.resample_ohlcv(df, mtf.WEEKLY_RULE)` (mismo `df` ya en memoria, mismo patrón ya aceptado en
+§27.11 para `ticker_analysis_service.compute_core_signals` - coste de CPU trivial, cero llamadas
+de red nuevas) para darle a `ta.detect_levels` un `weekly_close` real; la propia llamada a
+`detect_levels` (aditiva junto a `support_resistance_levels`, que sigue alimentando el gate sin
+cambios - `PriceLevel` y `Level` son tipos distintos, no intercambiables); y la construcción de
+`SetupContext` con todo lo anterior más lo que ya vivía en variables locales o en `snapshot`
+(`ema21/55`, `atr_series`/`atr14`, `multi_timeframe`, `trend`, `weekly_stage`,
+`relative_volume`/`rs_rating`/`sector_rs_percentile` del propio `snapshot`) - nada se recalculó
+para poder construir el contexto, confirmando la lectura de 28.1 de que el coste real está en la
+Fase 2, no en los detectores.
+
+`setups_registry.detect_all(setup_ctx)` se llama ya, siempre devuelve `[]` hoy (`SETUP_DETECTORS`
+sigue vacío) - `[]`, no `None`: "sin coincidencias" es un resultado normal y esperado para la
+mayoría de tickers la mayoría de días, mismo criterio que `gate_conditions`; `None` queda
+reservado para una fila calculada antes de que la columna `setups` existiera.
+
+**Persistencia**: migración `e1297786f1da` (`down_revision=4f7f279777aa`), columna `setups` JSON
+nullable en `ticker_daily_states` - mismo patrón exacto que `entry_geometry`/`grade`.
+`TickerDailyState.setups: list[dict] | None`, `TickerDailyStateORM.setups`,
+`TickerDailyStateRepository` actualizado (mecánico). `setup_match_to_dict`/`setup_match_from_dict`
+nuevos en `setups/types.py` (mismo patrón que `trade_geometry.geometry_to_dict`/`_from_dict`) -
+`family`/`stage`/`confidence` pasan a su `.value` explícito aunque los tres ya son subclases de
+`str`, mismo criterio de no confiar en ese detalle de implementación para lo que se guarda en una
+columna JSON.
+
+**API**: `SetupMatchResponse` nuevo en `schemas/market.py` (no en `schemas/common.py` - a
+diferencia de `LevelResponse`, esto no lo comparten `quant_analysis.py`/`market.py`, es
+exclusivo del Radar por ahora). `RadarItemResponse.setups: list[SetupMatchResponse] | None`,
+`_daily_state_to_radar_item` extendido con `_setups_list_to_response`, mismo patrón que
+`_grade_dict_to_response`.
+
+**Tests**: 2 nuevos en `test_daily_close.py` (`setups == []` sin detectores registrados; un
+detector falso registrado vía `monkeypatch` recibe un `SetupContext` con datos reales de este job
+- ticker/región/fecha correctos, `close` no vacío - y su resultado se serializa correctamente a
+dict plano); 2 nuevos en `test_radar_api.py` (`None` en fila pre-migración; un `setups` sembrado
+viaja tal cual a la respuesta real). Suite completa verde, ruff limpio.
+
+**Regresión de rendimiento real encontrada y corregida en el mismo commit**: conectar
+`detect_levels` a este job (llamado ahora una vez por ticker en un universo real, no solo en
+"Analizar activo" para un ticker a la vez) hizo fallar `test_latency_budgets.py` de verdad -
+33s frente a un presupuesto de 25s para 50 tickers, pese a que ese presupuesto ya es
+deliberadamente 1-2 órdenes de magnitud generoso. Perfilado (no supuesto): `detect_levels` sola
+costaba 0,54s/ticker frente a los 0,008s/ticker de `support_resistance_levels` (la función
+hermana que hace un trabajo similar) - un `rolling(21).apply(..., raw=False)` en el cálculo de
+volumen relativo, que construye una `Series` de pandas completa por ventana en vez de operar
+sobre el array de numpy crudo. Cambiar a `raw=True` (mismo resultado exacto, verificado con
+`np.allclose` antes de aplicarlo) baja el coste a ~0,014s - la regla "no llamadas de red por
+ticker en los caminos calientes" tiene una hermana menos citada pero igual de real: "no cómputo
+Python fila-a-fila donde numpy/pandas vectorizado alcanza". No fue necesario tocar
+`GATE_VERSION` (refactor puro, mismo resultado, verificado contra los tests existentes de
+`detect_levels` - CLAUDE.md's own regla de cuándo un cambio SÍ necesita bump).
 Suite completa verde, ruff limpio.

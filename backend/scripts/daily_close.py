@@ -66,6 +66,9 @@ from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.portfolio_risk_service import PositionRisk, get_portfolio_positions_risk
+from app.services.setups import registry as setups_registry
+from app.services.setups.context import SetupContext
+from app.services.setups.types import setup_match_to_dict
 from app.services.ticker_analysis_service import MIN_BARS_REQUIRED
 from app.services.trade_geometry import geometry_to_dict
 
@@ -136,6 +139,62 @@ def build_ticker_daily_state(
     ema21 = None if ema21_raw is None or pd.isna(ema21_raw) else float(ema21_raw)
     ema55 = None if ema55_raw is None or pd.isna(ema55_raw) else float(ema55_raw)
 
+    # Biblioteca de setups del Radar (en curso, ver quant_methodology.md §28):
+    # el mismo remuestreo semanal en memoria que `ticker_analysis_service.compute_core_signals`
+    # ya paga por separado (§27.11) para darle a `detect_levels` un
+    # `weekly_close` real - un segundo `resample_ohlcv` aquí, sobre el mismo
+    # `df` ya en memoria, nunca una llamada de red nueva.
+    weekly_df = ta.resample_ohlcv(df, mtf.WEEKLY_RULE)
+    weekly_close = weekly_df["close"] if len(weekly_df) >= 2 else None
+    weekly_high = weekly_df["high"] if len(weekly_df) >= 2 else None
+    weekly_low = weekly_df["low"] if len(weekly_df) >= 2 else None
+    weekly_volume = weekly_df["volume"] if len(weekly_df) >= 2 else None
+    # `detect_levels` (Parte 5.1/§27.5) es aditivo junto a `support_resistance_levels`
+    # de arriba, no un reemplazo - el gate sigue leyendo `nearest_support`/
+    # `nearest_resistance` (`PriceLevel`, el tipo simple); esta lista rica
+    # (`Level`, con estado FAR/APPROACHING/TESTING/BREAKING/...) es solo para
+    # que los detectores de setups la lean sin recalcular nada.
+    setup_levels = ta.detect_levels(high, low, close, volume, weekly_close=weekly_close)
+
+    setup_ctx = SetupContext(
+        ticker=snapshot.ticker,
+        region=region,
+        trade_date=trade_date,
+        close=close,
+        high=high,
+        low=low,
+        volume=volume,
+        open_=df["open"],
+        weekly_close=weekly_close,
+        weekly_high=weekly_high,
+        weekly_low=weekly_low,
+        weekly_volume=weekly_volume,
+        atr_series=atr_series,
+        atr14=atr14,
+        ema21=ema21,
+        ema55=ema55,
+        sma20=snapshot.sma20,
+        sma50=snapshot.sma50,
+        sma150=snapshot.sma150,
+        sma200=snapshot.sma200,
+        levels=setup_levels,
+        multi_timeframe=multi_timeframe,
+        trend=snapshot.trend,
+        weekly_stage=weekly_stage,
+        relative_volume=snapshot.relative_volume,
+        rs_percentile=snapshot.rs_rating,
+        sector_rs_percentile=snapshot.sector_rs_percentile,
+    )
+    # `SETUP_DETECTORS` sigue vacío (Fase 1) - esta llamada siempre devuelve
+    # `[]` hoy. Cablearla ya, en vez de esperar al primer detector real, deja
+    # que los tests de este job cubran la construcción de `SetupContext`
+    # contra datos de verdad, no solo el stub sintético de `test_setups_registry.py`.
+    # `[]`, no `None`: "sin coincidencias hoy" es un resultado real y
+    # esperado (la mayoría de tickers la mayoría de días no cumplen ningún
+    # setup), mismo criterio que `gate_conditions` - `None` queda reservado
+    # para una fila anterior a esta columna, no para "no se encontró nada".
+    setups_list = [setup_match_to_dict(m) for m in setups_registry.detect_all(setup_ctx)]
+
     gate = le.evaluate_gate(
         price=snapshot.price,
         trend=snapshot.trend,
@@ -205,6 +264,7 @@ def build_ticker_daily_state(
         risk_reward=stop_target.risk_reward,
         entry_geometry=geometry_to_dict(gate.entry_geometry) if gate.entry_geometry is not None else None,
         grade=grade_dict,
+        setups=setups_list,
     )
 
 

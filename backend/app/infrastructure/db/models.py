@@ -231,6 +231,7 @@ class TickerDailyStateORM(Base):
     risk_reward: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     entry_geometry: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     grade: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    setups: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class TickerIntradayStateORM(Base):

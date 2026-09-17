@@ -67,3 +67,44 @@ class SetupMatch:
     narrative_es: str  # una frase determinista (plantilla + números, nunca Gemini) del estado actual
 
     confidence: SetupConfidence
+
+
+_SETUP_MATCH_PLAIN_FIELDS = (
+    "name",
+    "label_es",
+    "bars_in_stage",
+    "timeframe",
+    "trigger_price",
+    "trigger_condition",
+    "invalidation_price",
+    "invalidation_condition",
+    "evidence",
+    "narrative_es",
+)
+
+
+def setup_match_to_dict(match: SetupMatch) -> dict:
+    """Plain JSON-safe read of a `SetupMatch` - mismo patrón que
+    `trade_geometry.geometry_to_dict`, para que `scripts/daily_close.py`
+    pueda persistir `TickerDailyState.setups` sin un mapeador propio de
+    esquema. `family`/`stage`/`confidence` pasan a su `.value` explícito -
+    aunque los tres son ya subclases de `str`, esta biblioteca no confía en
+    ese detalle de implementación para lo que se guarda en una columna JSON."""
+    data = {field: getattr(match, field) for field in _SETUP_MATCH_PLAIN_FIELDS}
+    data["family"] = match.family.value
+    data["stage"] = match.stage.value
+    data["confidence"] = match.confidence.value
+    return data
+
+
+def setup_match_from_dict(data: dict) -> SetupMatch:
+    """Inversa de `setup_match_to_dict` - reconstruye un `SetupMatch` real,
+    no solo su forma de visualización, por si una fase futura necesita
+    reprocesarlo (p. ej. el replay de `setup_replay.py`)."""
+    fields = {field: data[field] for field in _SETUP_MATCH_PLAIN_FIELDS}
+    return SetupMatch(
+        family=SetupFamily(data["family"]),
+        stage=SetupStage(data["stage"]),
+        confidence=SetupConfidence(data["confidence"]),
+        **fields,
+    )

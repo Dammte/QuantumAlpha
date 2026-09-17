@@ -32,6 +32,7 @@ from app.schemas.market import (
     RadarResponse,
     RelationshipMapResponse,
     SectorPeerResponse,
+    SetupMatchResponse,
     StatisticalRelationResponse,
     StopAndTargetResponse,
     SupportResistanceResponse,
@@ -202,6 +203,10 @@ def _grade_dict_to_response(data: dict | None) -> GradeResponse | None:
     return GradeResponse(**data) if data is not None else None
 
 
+def _setups_list_to_response(data: list[dict] | None) -> list[SetupMatchResponse] | None:
+    return [SetupMatchResponse(**item) for item in data] if data is not None else None
+
+
 def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
     return RadarItemResponse(
         ticker=state.ticker,
@@ -240,6 +245,7 @@ def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
         ),
         entry_geometry=_geometry_dict_to_response(state.entry_geometry),
         grade=_grade_dict_to_response(state.grade),
+        setups=_setups_list_to_response(state.setups),
     )
 
 

@@ -1228,8 +1228,14 @@ def detect_levels(
     if len(close) < 3:
         return []
     atr_series = atr(high, low, close)
+    # `raw=True` (arrays de numpy, no Series con índice por ventana) - mismo
+    # resultado exacto que `raw=False`, ~28x más rápido (perfilado: 0,40s ->
+    # 0,014s sobre 2520 barras). Encontrado al conectar `detect_levels` a la
+    # biblioteca de setups (§28.2): sin este cambio, `test_latency_budgets.py`
+    # fallaba de verdad sobre un universo de 50 tickers, no por un margen
+    # ajustado - este era el cuello de botella real, no el nuevo código.
     rel_vol_series = volume.rolling(21).apply(
-        lambda w: w.iloc[-1] / w.iloc[:-1].mean() if w.iloc[:-1].mean() > 0 else np.nan, raw=False
+        lambda w: w[-1] / w[:-1].mean() if w[:-1].mean() > 0 else np.nan, raw=True
     )
 
     levels: list[Level] = []

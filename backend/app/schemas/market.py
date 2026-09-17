@@ -272,6 +272,29 @@ class PortfolioTodayResponse(BaseModel):
     opportunity_cost: list[OpportunityCostNoteResponse]
 
 
+class SetupMatchResponse(BaseModel):
+    """Ver `app.services.setups.types.SetupMatch` - una coincidencia de un
+    detector de la biblioteca de setups del Radar (en curso,
+    `docs/quant_methodology.md` §28). Ningún campo aquí es una puntuación:
+    el propio `family`/`name` identifica qué setup es, y elegir entre varios
+    a la vez para un mismo ticker es trabajo de `setups/arbitration.py`
+    (fase posterior), no de esta respuesta."""
+
+    family: str
+    name: str
+    label_es: str
+    stage: str  # "forming" | "ready" | "triggered" | "failed"
+    bars_in_stage: int
+    timeframe: str  # "daily" | "weekly"
+    trigger_price: float | None
+    trigger_condition: str
+    invalidation_price: float | None
+    invalidation_condition: str
+    evidence: dict[str, float | int | str]
+    narrative_es: str
+    confidence: str  # "measured" | "thin" | "unvalidated"
+
+
 class RadarItemResponse(BaseModel):
     """Reconstruction (2026-09), Fase 5: one row of `TickerDailyStateORM`,
     read as-is - no live computation behind this response at all, unlike
@@ -305,6 +328,10 @@ class RadarItemResponse(BaseModel):
     # `daily_close.py` as a plain dict - `None` for rows computed before this
     # column existed, or when there was no viable entry geometry to grade.
     grade: GradeResponse | None = None
+    # Biblioteca de setups del Radar (en curso, §28) - `[]` es "sin
+    # coincidencias hoy", el resultado normal para la mayoría de tickers la
+    # mayoría de días; `None` solo para una fila anterior a esta columna.
+    setups: list[SetupMatchResponse] | None = None
 
 
 class RadarResponse(BaseModel):

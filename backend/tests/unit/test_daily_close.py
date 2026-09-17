@@ -213,6 +213,81 @@ def test_build_ticker_daily_state_grade_none_without_a_viable_geometry():
     assert state.grade is None
 
 
+def test_build_ticker_daily_state_setups_is_an_empty_list_with_no_detectors_registered():
+    """Biblioteca de setups del Radar (en curso, quant_methodology.md §28):
+    `SetupContext` ya se construye y `detect_all` ya se llama en este job -
+    `[]`, no `None`, es el resultado esperado hasta que la primera familia se
+    registre en `setups.registry.SETUP_DETECTORS`. `None` queda reservado
+    para una fila calculada antes de que esta columna existiera (ver
+    `TickerDailyState.setups`'s propio docstring), nunca para "no hay
+    detectores todavía"."""
+    df = _ohlc(100 + np.arange(300) * 0.15)
+    state = dc.build_ticker_daily_state(_snapshot(), "us", df, date(2026, 9, 10), datetime.now(UTC))
+    assert state.setups == []
+
+
+def test_build_ticker_daily_state_setup_context_reaches_a_registered_detector(monkeypatch):
+    """No sondea el contenido exacto de `SetupContext` campo por campo (eso
+    es responsabilidad de los tests de cada detector) - solo bloquea que el
+    contexto que de verdad llega a un detector viene de datos reales de este
+    job (ticker/región/fecha correctos, `close` no vacío), no de un stub."""
+    import app.services.setups.registry as setups_registry
+    from app.services.setups.context import SetupContext
+    from app.services.setups.types import SetupConfidence, SetupFamily, SetupMatch, SetupStage
+
+    captured: list[SetupContext] = []
+
+    def fake_detector(ctx: SetupContext) -> list[SetupMatch]:
+        captured.append(ctx)
+        return [
+            SetupMatch(
+                family=SetupFamily.MA_CROSS,
+                name="dummy",
+                label_es="Dummy",
+                stage=SetupStage.READY,
+                bars_in_stage=1,
+                timeframe="daily",
+                trigger_price=None,
+                trigger_condition="",
+                invalidation_price=None,
+                invalidation_condition="",
+                evidence={},
+                narrative_es="",
+                confidence=SetupConfidence.UNVALIDATED,
+            )
+        ]
+
+    monkeypatch.setattr(setups_registry, "SETUP_DETECTORS", [fake_detector])
+
+    df = _ohlc(100 + np.arange(300) * 0.15)
+    state = dc.build_ticker_daily_state(
+        _snapshot(ticker="NVDA"), "europe", df, date(2026, 9, 10), datetime.now(UTC)
+    )
+
+    assert len(captured) == 1
+    assert captured[0].ticker == "NVDA"
+    assert captured[0].region == "europe"
+    assert captured[0].trade_date == date(2026, 9, 10)
+    assert not captured[0].close.empty
+    assert state.setups == [
+        {
+            "family": "ma_cross",
+            "name": "dummy",
+            "label_es": "Dummy",
+            "bars_in_stage": 1,
+            "timeframe": "daily",
+            "trigger_price": None,
+            "trigger_condition": "",
+            "invalidation_price": None,
+            "invalidation_condition": "",
+            "evidence": {},
+            "narrative_es": "",
+            "confidence": "unvalidated",
+            "stage": "ready",
+        }
+    ]
+
+
 # --- ticker_trigger_events -----------------------------------------------------
 
 

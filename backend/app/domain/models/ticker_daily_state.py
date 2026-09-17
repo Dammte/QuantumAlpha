@@ -60,3 +60,10 @@ class TickerDailyState:
     # display value. `None` for rows computed before this column existed, or
     # when there was no viable entry geometry to grade in the first place.
     grade: dict | None = None
+    # Biblioteca de setups del Radar (en curso, quant_methodology.md §28):
+    # lista de `setups.types.SetupMatch` como dicts planos
+    # (`setup_match_to_dict`). `[]` es el resultado normal y esperado - "sin
+    # coincidencias hoy" para la mayoría de tickers la mayoría de días,
+    # mismo criterio que `gate_conditions`. `None` solo para una fila
+    # calculada antes de que esta columna existiera.
+    setups: list[dict] | None = None
