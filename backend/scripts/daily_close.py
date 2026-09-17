@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 from app.domain.models.daily_brief import DailyBrief
 from app.domain.models.job_run import JobRun
 from app.domain.models.position_daily_state import PositionDailyState
+from app.domain.models.setup_performance import SetupPerformance
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.domain.models.trigger_event import TriggerEvent
@@ -53,6 +54,7 @@ from app.infrastructure.db.repositories.position_daily_state_repository import P
 from app.infrastructure.db.repositories.position_signal_snapshot_repository import (
     PositionSignalSnapshotRepository,
 )
+from app.infrastructure.db.repositories.setup_performance_repository import SetupPerformanceRepository
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.infrastructure.db.repositories.trigger_event_repository import TriggerEventRepository
@@ -62,6 +64,7 @@ from app.services import dynamic_universe_service as dus
 from app.services import exit_engine as ee
 from app.services import levels_engine as le
 from app.services import multi_timeframe as mtf
+from app.services import setup_replay
 from app.services import technical_analysis as ta
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
@@ -93,6 +96,7 @@ def build_ticker_daily_state(
     computed_at: datetime,
     next_earnings_date: date | None = None,
     benchmark_close: pd.Series | None = None,
+    setup_performance_by_name: dict[str, SetupPerformance] | None = None,
 ) -> TickerDailyState | None:
     """Pure function (`next_earnings_date` is the one exception - a value
     the caller already paid the network cost for, never fetched here):
@@ -215,6 +219,13 @@ def build_ticker_daily_state(
     # 0 - "el mejor gana, los demás se muestran como contexto" - sin
     # descartar ninguno.
     ordered_setups = setups_arbitration.order_by_rank(setups_registry.detect_all(setup_ctx))
+    # Parte 10.3 (§28.x): sustituye el UNVALIDATED con el que sale cada
+    # detector por la confianza medida de verdad en `setup_performance`,
+    # cuando el estudio (`scripts/setup_replay_study.py`) ya corrió para
+    # ese nombre de setup - `{}` (el valor por defecto) dejaría a todos en
+    # UNVALIDATED, el mismo comportamiento honesto de antes de que esta
+    # tabla existiera, nunca un error.
+    ordered_setups = setup_replay.apply_measured_confidence(ordered_setups, setup_performance_by_name or {})
     setups_list = [setup_match_to_dict(m) for m in ordered_setups]
 
     gate = le.evaluate_gate(
@@ -442,6 +453,18 @@ def run_daily_close(
     new_gate_passes = 0
     new_entry_triggers = 0
 
+    # Parte 10.3 (§28.x): la foto completa de `setup_performance` (si
+    # `scripts/setup_replay_study.py` ya corrió alguna vez), leída una sola
+    # vez para todo el job - no por ticker. Solo la fila SIN segmentar de
+    # cada nombre (ver `setup_replay.apply_measured_confidence`); `{}` si
+    # la tabla todavía está vacía, dejando todo en UNVALIDATED como hasta
+    # ahora, nunca un error.
+    setup_performance_by_name = {
+        row.setup_name: row
+        for row in SetupPerformanceRepository(db).all()
+        if row.grade is None and row.market_regime is None
+    }
+
     try:
         universe_snapshot: list[TickerSnapshot] = []
         for region in regions:
@@ -466,7 +489,8 @@ def run_daily_close(
                 # draws between a job and an endpoint.
                 next_earnings_date = market_data.get_next_earnings_date(ts.ticker)
                 state = build_ticker_daily_state(
-                    ts, region, df, trade_date, now, next_earnings_date, benchmark_close
+                    ts, region, df, trade_date, now, next_earnings_date, benchmark_close,
+                    setup_performance_by_name,
                 )
                 if state is None:
                     continue

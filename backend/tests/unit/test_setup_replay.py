@@ -7,13 +7,14 @@ dispare en una fecha concreta. Los detectores reales ya tienen su propia
 suite; este módulo es una capa de orquestación por encima, no un
 sustituto de esa cobertura."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from app.domain.models.setup_performance import SetupPerformance
 from app.services import setup_replay as sr
 from app.services import technical_analysis as ta
 from app.services.backtest_engine import TripleBarrierLabel
@@ -276,3 +277,51 @@ def test_aggregate_never_fabricates_stats_when_nothing_triggered():
     assert overall.median_bars_held is None
     assert overall.mae_p80_pct is None
     assert overall.failure_rate_3d is None
+
+
+# --- apply_measured_confidence ----------------------------------------------
+
+
+def _performance_row(setup_name: str, confidence: str, grade: str | None = None) -> SetupPerformance:
+    return SetupPerformance(
+        id=1, setup_name=setup_name, family="vcp", grade=grade, market_regime=None,
+        n_observations=35, trigger_rate=0.6, win_rate=0.55, expectancy_r=0.42,
+        median_bars_held=6.0, mae_p80_pct=-0.03, failure_rate_3d=0.1, confidence=confidence,
+        computed_at=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+
+
+def test_apply_measured_confidence_upgrades_a_measured_setup():
+    match = _fake_match(SetupStage.READY, trigger_price=100.0, bars_in_stage=1, name="vcp_3_contracciones")
+    performance_by_name = {"vcp_3_contracciones": _performance_row("vcp_3_contracciones", "measured")}
+
+    result = sr.apply_measured_confidence([match], performance_by_name)
+
+    assert result[0].confidence == SetupConfidence.MEASURED
+    assert result[0] is not match  # replace() crea un objeto nuevo, nunca muta el original
+
+
+def test_apply_measured_confidence_leaves_an_unknown_setup_name_unvalidated():
+    match = _fake_match(SetupStage.READY, trigger_price=100.0, bars_in_stage=1, name="nunca_medido")
+
+    result = sr.apply_measured_confidence([match], {"vcp_3_contracciones": _performance_row("x", "measured")})
+
+    assert result[0].confidence == SetupConfidence.UNVALIDATED
+    assert result[0] is match  # sin fila que aplicar, se devuelve tal cual
+
+
+def test_apply_measured_confidence_is_a_noop_with_an_empty_performance_table():
+    match = _fake_match(SetupStage.READY, trigger_price=100.0, bars_in_stage=1, name="vcp_3_contracciones")
+    assert sr.apply_measured_confidence([match], {}) == [match]
+
+
+def test_apply_measured_confidence_only_uses_the_ungrouped_row_never_a_segmented_one():
+    # `performance_by_name` ya viene filtrado (por daily_close.py) a solo
+    # las filas sin segmentar - esta función confía en esa precondición y
+    # no vuelve a filtrar por grado, ver su propio docstring.
+    match = _fake_match(SetupStage.READY, trigger_price=100.0, bars_in_stage=1, name="vcp_3_contracciones")
+    performance_by_name = {"vcp_3_contracciones": _performance_row("vcp_3_contracciones", "thin", grade=None)}
+
+    result = sr.apply_measured_confidence([match], performance_by_name)
+
+    assert result[0].confidence == SetupConfidence.THIN

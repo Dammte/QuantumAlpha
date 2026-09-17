@@ -64,12 +64,13 @@ solo con la observación de un READY reciente (`bars_in_stage < grid_stride_bars
 - aproximadamente "la primera vez que se ve", sin necesitar guardar estado
 entre puntos de la rejilla."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 import numpy as np
 import pandas as pd
 
+from app.domain.models.setup_performance import SetupPerformance
 from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 from app.services import trade_geometry as tg
@@ -77,7 +78,7 @@ from app.services.backtest_engine import ROUND_TRIP_COST_PCT, TripleBarrierLabel
 from app.services.levels_engine import compute_grade
 from app.services.setups import registry as setups_registry
 from app.services.setups.context import SetupContext
-from app.services.setups.types import SetupConfidence, SetupStage
+from app.services.setups.types import SetupConfidence, SetupMatch, SetupStage
 
 REPLAY_WARMUP_BARS = 260  # mismo que backtest_engine.WARMUP_BARS - SMA200 + su propio lookback de pendiente
 REPLAY_GRID_STRIDE_BARS = 10  # una rejilla no solapada, mismo orden de magnitud que backtest_engine
@@ -390,3 +391,28 @@ def aggregate_setup_performance(observations: list[SetupReplayObservation]) -> l
                 _stats_for_group(name, family, None, regime, [o for o in obs_list if o.market_regime == regime])
             )
     return stats
+
+
+def apply_measured_confidence(
+    matches: list[SetupMatch], performance_by_name: dict[str, SetupPerformance]
+) -> list[SetupMatch]:
+    """Sustituye el `SetupConfidence.UNVALIDATED` con el que sale cada
+    detector por la confianza medida de verdad en `setup_performance`
+    (Parte 10.3), usando siempre la fila SIN segmentar de cada nombre de
+    setup (`grade=None`, `market_regime=None`) - la pregunta de la 10.3
+    ("¿hay muestra suficiente?") es sobre el propio setup, no sobre una
+    combinación fina de grado/régimen; esa segmentación más fina es para
+    el análisis y la interfaz (Parte 10.2: "información valiosa, no un
+    defecto"), no para esta decisión binaria. Un nombre sin ninguna fila
+    en `setup_performance` (el estudio nunca corrió, o el detector es
+    nuevo) se queda tal cual - nunca se fabrica una medición."""
+    if not performance_by_name:
+        return matches
+    result = []
+    for match in matches:
+        performance = performance_by_name.get(match.name)
+        if performance is None:
+            result.append(match)
+            continue
+        result.append(replace(match, confidence=SetupConfidence(performance.confidence)))
+    return result

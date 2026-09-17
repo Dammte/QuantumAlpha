@@ -338,3 +338,28 @@ class UniverseMembershipORM(Base):
     as_of_date: Mapped[date] = mapped_column()
     source: Mapped[str] = mapped_column(String(20))  # "live" | "curated_fallback"
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class SetupPerformanceORM(Base):
+    """Parte 10.2 de la biblioteca de setups del Radar - ver
+    `app.domain.models.setup_performance.SetupPerformance` para el porqué
+    de que esta tabla no tenga una restricción UNIQUE declarada (una foto
+    completa reemplazada entera por `SetupPerformanceRepository.replace_all`,
+    no un histórico acumulado)."""
+
+    __tablename__ = "setup_performance"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    setup_name: Mapped[str] = mapped_column(String(60), index=True)
+    family: Mapped[str] = mapped_column(String(30))
+    grade: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    market_regime: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    n_observations: Mapped[int] = mapped_column()
+    trigger_rate: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    win_rate: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    expectancy_r: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    median_bars_held: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    mae_p80_pct: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    failure_rate_3d: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    confidence: Mapped[str] = mapped_column(String(20))
+    computed_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))

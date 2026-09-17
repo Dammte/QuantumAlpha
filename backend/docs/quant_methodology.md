@@ -3573,3 +3573,60 @@ dispara, deduplica una racha larga, ignora FORMING/TRIGGERED, y devuelve `[]` co
 insuficiente; la agregación calcula las siete métricas, clasifica la confianza en los tres niveles,
 segmenta por grado/régimen sin cruzarlos, y nunca fabrica estadísticas cuando nada disparó. Suite
 completa verde, ruff limpio.
+
+### 28.17 Fase 11 (fin): tabla `setup_performance`, script y reconexión con `daily_close.py`
+
+Cierra la Parte 10: la tabla persistida, el script offline que ejecuta el motor de la §28.16 contra
+el universo real, y la reconexión de `SetupConfidence` hacia el propio `daily_close.py` - lo que la
+§28.16 dejó explícitamente pendiente.
+
+**`setup_performance` es una FOTO COMPLETA, no un histórico acumulado** - `SetupPerformanceRepository.replace_all`
+borra toda la tabla e inserta el lote nuevo en cada corrida del estudio, sin restricción `UNIQUE`
+declarada a nivel de base de datos. Motivo concreto, no solo estilístico: `grade`/`market_regime`
+pueden ser `NULL` (la fila sin segmentar de cada setup), y Postgres trata cada `NULL` como distinto
+en una restricción `UNIQUE` - una tabla con `UNIQUE(setup_name, grade, market_regime)` dejaría
+insertar la fila sin segmentar de `vcp_3_contracciones` tantas veces como corridas del estudio se
+hicieran, en vez de sustituirla. `replace_all`/`all` se prueban contra el esquema real de pruebas
+(`test_setup_performance_repository.py`, mismo patrón que `test_position_signal_snapshot_repository.py` -
+una `Session` real, sin la app FastAPI de por medio), incluyendo el caso exacto que motivó evitar la
+restricción: tres filas para el mismo `setup_name` (sin segmentar, grado A, grado B) coexistiendo
+sin colisionar.
+
+**`scripts/setup_replay_study.py` reutiliza `factor_ablation_study.resolve_universe_tickers`/
+`download_universe_ohlcv` en vez de repetirlos** - son funciones puras de propósito general (resolver
+qué tickers entran, bajar su OHLCV real más el de su benchmark), sin nada específico de la ablación
+de factores en su comportamiento; importarlas de un script a otro no es distinto de importarlas de
+un módulo de servicio, Python no distingue. Mismo patrón de pruebas que ese script: se prueba la
+pieza pura nueva (`_stats_to_rows`, en `test_setup_replay_study.py`), no la orquestación de nivel
+superior que solo pega piezas ya probadas por separado y que además descarga datos reales - esa
+orquestación se verificó a mano con un script (universo falso de 2 tickers, `download_universe_ohlcv`
+sustituido) para confirmar que el camino completo - descarga, replay, agregación, persistencia,
+limpieza - corre sin excepciones contra el Postgres local real antes de darlo por bueno, sin
+necesidad de una descarga yfinance real de varios minutos para esa verificación.
+
+**`daily_close.py` lee `setup_performance` una sola vez por corrida, no por ticker** - `run_daily_close`
+carga la tabla entera (`SetupPerformanceRepository(db).all()`) antes del bucle de regiones/tickers,
+filtra a las filas sin segmentar (`grade is None and market_regime is None`) e indexa por
+`setup_name` en un diccionario que se pasa tal cual a cada llamada de `build_ticker_daily_state` -
+igual que el universo dinámico mensual, una lectura, no una consulta por fila. `setup_replay.apply_measured_confidence`
+sustituye el `UNVALIDATED` con el que sale cada detector por la confianza medida, usando siempre esa
+fila sin segmentar - la pregunta de la Parte 10.3 ("¿hay muestra suficiente?") es sobre el propio
+nombre del setup, no sobre una combinación fina de grado/régimen; esa segmentación más fina sigue
+sirviendo para el análisis (Parte 10.2), no para esta decisión binaria. Un nombre sin ninguna fila
+en la tabla (el estudio nunca corrió, o el detector es nuevo) se queda tal cual en `UNVALIDATED` -
+`{}` como valor por defecto de `setup_performance_by_name` reproduce exactamente el comportamiento
+de antes de que esta tabla existiera, nunca un error ni una medición fabricada.
+
+**Tests**: 5 en `test_setup_performance_repository.py` (round-trip completo, reemplazo total en vez
+de acumulación, filas segmentadas y sin segmentar del mismo setup coexistiendo, tabla vacía antes de
+la primera corrida, métricas `None` para un setup que nunca disparó); 3 en `test_setup_replay_study.py`
+para `_stats_to_rows`; 4 nuevos en `test_setup_replay.py` para `apply_measured_confidence` (sustituye
+la confianza cuando hay fila, deja `UNVALIDATED` un nombre sin medir, no-op con la tabla vacía, usa
+siempre la fila sin segmentar); 1 en `test_daily_close.py` confirmando el cableado completo de
+`build_ticker_daily_state` hasta el `"confidence"` persistido. Migración `f7a1c9e3b6d2` aplicada y
+verificada contra Postgres local real. Suite completa verde, ruff limpio.
+
+Con esto, la Parte 10 completa queda en producción - la única pieza que falta para que un setup deje
+de decir "unvalidated" en el Radar es correr `python scripts/setup_replay_study.py` una vez (varios
+minutos de descarga, igual que `factor_ablation_study.py`) y dejar que `daily_close.py` la recoja en
+su siguiente corrida nocturna.

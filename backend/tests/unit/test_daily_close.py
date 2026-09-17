@@ -294,6 +294,44 @@ def test_build_ticker_daily_state_setup_context_reaches_a_registered_detector(mo
     ]
 
 
+def test_build_ticker_daily_state_applies_measured_confidence_from_setup_performance(monkeypatch):
+    # Parte 10.3 (§28.x): un detector siempre sale de detect_all en
+    # UNVALIDATED (visto arriba) - build_ticker_daily_state es quien lo
+    # sustituye por la medición real de setup_performance, cuando existe.
+    import app.services.setups.registry as setups_registry
+    from app.domain.models.setup_performance import SetupPerformance
+    from app.services.setups.context import SetupContext
+    from app.services.setups.types import SetupConfidence, SetupFamily, SetupMatch, SetupStage
+
+    def fake_detector(ctx: SetupContext) -> list[SetupMatch]:
+        return [
+            SetupMatch(
+                family=SetupFamily.MA_CROSS, name="dummy", label_es="Dummy", stage=SetupStage.READY,
+                bars_in_stage=1, timeframe="daily", trigger_price=None, trigger_condition="",
+                invalidation_price=None, invalidation_condition="", evidence={}, narrative_es="",
+                confidence=SetupConfidence.UNVALIDATED,
+            )
+        ]
+
+    monkeypatch.setattr(setups_registry, "SETUP_DETECTORS", [fake_detector])
+    performance_by_name = {
+        "dummy": SetupPerformance(
+            id=1, setup_name="dummy", family="ma_cross", grade=None, market_regime=None,
+            n_observations=35, trigger_rate=0.6, win_rate=0.55, expectancy_r=0.42,
+            median_bars_held=6.0, mae_p80_pct=-0.03, failure_rate_3d=0.1, confidence="measured",
+            computed_at=datetime.now(UTC),
+        )
+    }
+
+    df = _ohlc(100 + np.arange(300) * 0.15)
+    state = dc.build_ticker_daily_state(
+        _snapshot(ticker="NVDA"), "europe", df, date(2026, 9, 10), datetime.now(UTC),
+        setup_performance_by_name=performance_by_name,
+    )
+
+    assert state.setups[0]["confidence"] == "measured"
+
+
 # --- ticker_trigger_events -----------------------------------------------------
 
 
