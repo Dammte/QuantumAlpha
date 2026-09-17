@@ -11,6 +11,7 @@ from enum import Enum
 
 import numpy as np
 import pandas as pd
+from scipy import stats as _scipy_stats
 
 # Conservative, single global default cutoff (UTC time-of-day) used by
 # `closed_bars` to decide whether *today's* bar is safe to treat as settled -
@@ -805,6 +806,55 @@ def detect_imminent_cross(fast: pd.Series, slow: pd.Series) -> ImminentCross | N
     # the case `current_gap == 0` above already carves out separately. Never
     # report less than 1: this is genuinely imminent, not retroactive.
     return ImminentCross(direction=direction, bars_until=max(1, round(bars_until)), r_squared=round(r_squared, 3))
+
+
+@dataclass(frozen=True, slots=True)
+class RegressionFit:
+    """Ajuste de regresión lineal de una serie contra el índice de barra
+    (0, 1, 2, ... - nunca fechas), pensado para reutilizarse: Parte 4.4
+    (`setups/channel.py`) lo usa sobre una ventana de cierres, y Parte 5.4
+    (`setups/classic_patterns.py`, fase posterior) sobre subconjuntos de
+    pivotes alternos para triángulos - una sola implementación de
+    regresión para ambos, no dos. A diferencia de `detect_imminent_cross`
+    (que hace su propio ajuste manual con `np.polyfit` porque solo necesita
+    pendiente/R²), esta usa `scipy.stats.linregress` porque además hace
+    falta el error estándar de la pendiente para el t-estadístico - `scipy`
+    ya es una dependencia declarada del proyecto, y derivarlo a mano es más
+    fácil de hacer mal que de reutilizar la implementación ya validada."""
+
+    slope: float
+    intercept: float
+    r_squared: float
+    t_stat: float  # pendiente / su propio error estándar - |t| >= ~2 indica una pendiente genuina, no ruido
+    residual_std: float  # desviación típica de los residuos - la anchura de las bandas de un canal
+
+
+def linear_regression_fit(y: pd.Series) -> RegressionFit | None:
+    """`None` con menos de 3 puntos, o si la serie es constante (pendiente
+    indefinida - no hay nada que ajustar)."""
+    values = y.dropna()
+    n = len(values)
+    if n < 3:
+        return None
+    y_arr = values.to_numpy(dtype=float)
+    if np.allclose(y_arr, y_arr[0]):
+        return None
+    x = np.arange(n, dtype=float)
+    fit = _scipy_stats.linregress(x, y_arr)
+    predicted = fit.slope * x + fit.intercept
+    residuals = y_arr - predicted
+    dof = n - 2
+    if dof <= 0:
+        return None
+    residual_std = float(np.sqrt(np.sum(residuals**2) / dof))
+    t_stat = float(fit.slope / fit.stderr) if fit.stderr > 0 else 0.0
+    return RegressionFit(
+        slope=float(fit.slope),
+        intercept=float(fit.intercept),
+        r_squared=float(fit.rvalue**2),
+        t_stat=t_stat,
+        residual_std=residual_std,
+    )
 
 
 # Cuarta auditoría independiente, Bloque B (B-1.3): a fast pair deliberately

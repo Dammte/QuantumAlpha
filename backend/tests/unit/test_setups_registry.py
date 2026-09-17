@@ -135,8 +135,8 @@ def test_setup_detectors_only_contains_families_with_their_own_detector_and_test
     # A family only joins SETUP_DETECTORS in its own phase, once its
     # detector/tests/replay all exist together (see registry.py's own
     # "regla de admisión" docstring).
-    from app.services.setups import breakout, ma_cross, pullback, stage_transition
+    from app.services.setups import breakout, channel, ma_cross, pullback, stage_transition
 
     assert reg.SETUP_DETECTORS == [
-        stage_transition.detect, ma_cross.detect, pullback.detect, breakout.detect,
+        stage_transition.detect, ma_cross.detect, pullback.detect, breakout.detect, channel.detect,
     ]

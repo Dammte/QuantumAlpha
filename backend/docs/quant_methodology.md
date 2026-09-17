@@ -2995,3 +2995,44 @@ demasiado extendida, confirmada del lado bajista), que `RANGE_HIGH_20` no necesi
 caja de Darvas con su propio rechazo por rango demasiado ancho, el caso explícito de "el cierre de
 hoy ya rompió la caja de ayer" (el bug que motivó el fix), y la prioridad de ruptura de nivel sobre
 caja cuando ambas aplican. Suite completa verde, ruff limpio.
+
+### 28.7 Fase 4 (fin): `channel.py` - canales por regresión lineal, con primitiva compartida nueva
+
+Parte 4.4. Nueva primitiva `technical_analysis.linear_regression_fit`/`RegressionFit` - pensada
+para reutilizarse también en `classic_patterns.py` (Parte 5.4, triángulos, fase posterior) sobre
+subconjuntos de pivotes alternos, una sola implementación de regresión para ambos. Usa
+`scipy.stats.linregress` (ya una dependencia declarada del proyecto, nunca antes importada en
+`app/`) en vez de repetir el `np.polyfit` manual que `detect_imminent_cross` ya usa - ese caso solo
+necesita pendiente/R², este necesita además el error estándar de la pendiente para el
+t-estadístico, y derivarlo a mano es más fácil de hacer mal que de reutilizar la implementación ya
+validada.
+
+**Advertencia de diseño del propio encargo, verificada empíricamente**: un paseo aleatorio (suma
+acumulada de ruido, no ruido puro) puede producir t-estadísticos muy altos por pura casualidad -
+confirmado al escribir el primer test de `linear_regression_fit`, que originalmente usaba un paseo
+aleatorio como "caso sin tendencia" y fallaba con t≈9,9 - la misma disciplina de "medir, no
+asumir" que CLAUDE.md exige para producción, aplicada aquí a la construcción de un test. El filtro
+real de `channel.py`
+(`|t| >= CHANNEL_MIN_ABS_T_STAT=2,0` + `R² >= CHANNEL_MIN_R2=0,55`) sí distingue correctamente
+ruido i.i.d. puro de una tendencia genuina - es el paseo aleatorio como *fixture de test* el que
+no sirve de "caso negativo", no el filtro en sí.
+
+**Mismo patrón de auto-referencia ya corregido dos veces esta fase** (`stage_transition.py` §28.3,
+`breakout.py` §28.6): el canal se ajusta sobre las `CHANNEL_LOOKBACK=60` sesiones ANTERIORES a hoy,
+nunca incluyendo la barra de hoy - las bandas (±2 desviaciones típicas de los residuos) se
+proyectan un paso más allá del ajuste, y el precio de hoy se compara contra esa proyección. Escrito
+correctamente desde el principio esta vez, con el patrón ya interiorizado de las dos veces
+anteriores.
+
+**Los dos setups derivados, literales**: canal alcista con el precio en el 20% inferior de la
+banda (`CHANNEL_LOWER_BAND_FRACTION=0,20`) → retroceso dentro de tendencia (READY); canal bajista
+con ruptura de la banda superior → posible cambio de tendencia (TRIGGERED), pero **solo si el sesgo
+semanal ya no es bajista** (Parte 4.4, condición explícita para no ser contratendencia pura).
+
+**Tests**: 4 nuevos en `test_technical_analysis.py` para la primitiva compartida (tendencia limpia
+con t-estadístico alto, ruido puro con t-estadístico débil, serie constante devuelve `None`,
+menos de 3 puntos devuelve `None`); 6 en `test_channel.py` - los dos setups derivados, el rechazo
+cuando el precio está a mitad de canal (ni banda inferior ni ruptura), el rechazo de la ruptura
+bajista cuando el sesgo semanal sigue bajista, que el ruido puro nunca produce un canal, e
+historial insuficiente. Presupuesto de latencia sigue en verde con el quinto detector real
+registrado. Suite completa verde, ruff limpio.

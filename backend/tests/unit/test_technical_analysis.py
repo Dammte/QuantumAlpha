@@ -605,6 +605,48 @@ def test_detect_imminent_cross_never_reports_zero_bars_until():
     assert result.bars_until == 1  # never 0
 
 
+# --- linear_regression_fit: biblioteca de setups del Radar, Parte 4.4/5.4 --
+
+
+def test_linear_regression_fit_clean_uptrend_has_high_r2_and_t_stat():
+    # Un residuo minúsculo (no cero exacto) - con una recta perfectamente
+    # limpia, el error estándar de la pendiente es 0.0 exacto (scipy lo
+    # calcula así), lo que da un t-estadístico matemáticamente indefinido,
+    # no "muy alto" - por eso este test usa un ruido ínfimo, no cero.
+    rng = np.random.default_rng(1)
+    y = pd.Series(np.arange(30, dtype=float) * 2.0 + 1.0 + rng.normal(0, 0.01, 30))
+    fit = ta.linear_regression_fit(y)
+    assert fit is not None
+    assert fit.slope == pytest.approx(2.0, abs=0.01)
+    assert fit.r_squared > 0.999
+    assert fit.t_stat > 100  # una recta casi perfecta es una pendiente extremadamente significativa
+    assert fit.residual_std < 0.05
+
+
+def test_linear_regression_fit_pure_noise_has_a_weak_t_stat():
+    # Ruido i.i.d. alrededor de un nivel constante - sin tendencia genuina
+    # que declarar. Un paseo aleatorio (suma acumulada de ruido) NO sirve
+    # para este test: por su propia naturaleza integrada suele mostrar
+    # tendencias locales aparentes incluso sin ninguna deriva real, así que
+    # produciría t-estadísticos altos por casualidad la mayoría de las
+    # veces - lo que se quiere aquí es ruido puro, no un paseo aleatorio.
+    rng = np.random.default_rng(11)
+    y = pd.Series(100 + rng.normal(0, 1.0, 60))
+    fit = ta.linear_regression_fit(y)
+    assert fit is not None
+    assert abs(fit.t_stat) < 2.0  # no hay tendencia genuina que declarar
+
+
+def test_linear_regression_fit_none_for_a_constant_series():
+    y = pd.Series([100.0] * 30)
+    assert ta.linear_regression_fit(y) is None
+
+
+def test_linear_regression_fit_none_with_fewer_than_three_points():
+    y = pd.Series([100.0, 101.0])
+    assert ta.linear_regression_fit(y) is None
+
+
 # --- detect_fast_pair_bearish_veto: cuarta auditoría, Bloque B (B-1.3) ------
 
 
