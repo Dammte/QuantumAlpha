@@ -37,6 +37,8 @@ def _to_domain(orm: TickerDailyStateORM) -> TickerDailyState:
         grade=orm.grade,
         setups=orm.setups,
         timeframe_strip=orm.timeframe_strip,
+        sector=orm.sector,
+        sector_rs_percentile=orm.sector_rs_percentile,
     )
 
 
@@ -79,6 +81,8 @@ class TickerDailyStateRepository(TickerDailyStateRepositoryPort):
             grade=state.grade,
             setups=state.setups,
             timeframe_strip=state.timeframe_strip,
+            sector=state.sector,
+            sector_rs_percentile=state.sector_rs_percentile,
         )
         self.db.add(orm)
         self.db.commit()

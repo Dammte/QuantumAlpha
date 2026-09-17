@@ -390,10 +390,18 @@ class GradeResult:
     emite" - preferible una lista vacía a una lista de trades malos. `reasons`
     documenta cada modificador aplicado (no el grado base en sí, que ya se ve
     en los propios números de la geometría) - Parte 5.3: "cada uno registra
-    su motivo en grade_reasons"."""
+    su motivo en grade_reasons".
+
+    `distance_atr`, añadido para la Parte 9.1 de la biblioteca de setups del
+    Radar (`docs/quant_methodology.md` §28.x): la MISMA distancia que ya
+    calculaba `compute_grade` internamente para el grado base - expuesta
+    aquí en vez de recalculada aparte, para que la clave de ordenación del
+    Radar ("distancia al gatillo en ATR, ascendente") no repita esa cuenta.
+    `None` (no `inf`, que no serializa a JSON) cuando no hay ATR14 válido."""
 
     grade: Grade | None
     reasons: list[str]
+    distance_atr: float | None = None
 
 
 def _base_grade(
@@ -484,7 +492,9 @@ def compute_grade(
     if capped_to_b:
         grade = cap_grade_at_most(grade, Grade.B)
 
-    return GradeResult(grade=grade, reasons=reasons)
+    return GradeResult(
+        grade=grade, reasons=reasons, distance_atr=distance_atr if atr14 and atr14 > 0 else None
+    )
 
 
 def apply_portfolio_grade_modifiers(
@@ -515,4 +525,4 @@ def apply_portfolio_grade_modifiers(
         grade = Grade.C
     if open_positions_count >= max_open_positions:
         reasons.append("Cartera llena - cada nueva entrada diluye el tamaño medio")
-    return GradeResult(grade=grade, reasons=reasons)
+    return GradeResult(grade=grade, reasons=reasons, distance_atr=grade_result.distance_atr)

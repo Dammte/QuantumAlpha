@@ -92,6 +92,12 @@ class GradeResponse(BaseModel):
 
     grade: str | None  # "A" | "B" | "C" | None
     reasons: list[str]
+    # Parte 9.1 de la biblioteca de setups del Radar - la misma distancia
+    # que `compute_grade` ya calculaba internamente, expuesta para la clave
+    # de ordenación del Radar ("distancia al gatillo en ATR, ascendente").
+    # `None` en filas persistidas antes de que este campo existiera, o sin
+    # un ATR14 válido.
+    distance_atr: float | None = None
 
 
 class ImminentCrossResponse(BaseModel):

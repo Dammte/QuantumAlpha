@@ -192,7 +192,11 @@ def test_radar_exposes_the_persisted_grade(client: TestClient, db_session: Sessi
     body = client.get("/api/v1/market/radar?region=us").json()
 
     nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
-    assert nvda["grade"] == {"grade": "A", "reasons": ["Cerca del nivel del disparador", "Semanal alcista"]}
+    # `distance_atr` (Parte 9.1) siempre se serializa aunque la fila
+    # persistida sea anterior a ese campo - `None` es su valor por defecto.
+    assert nvda["grade"] == {
+        "grade": "A", "reasons": ["Cerca del nivel del disparador", "Semanal alcista"], "distance_atr": None,
+    }
 
 
 def test_radar_row_with_no_setups_is_none_pre_migration_row(client: TestClient, db_session: Session) -> None:
@@ -278,6 +282,148 @@ def test_radar_with_unknown_portfolio_id_returns_404(client: TestClient, db_sess
     _seed_state(db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY)
     response = client.get("/api/v1/market/radar?region=us&portfolio_id=999")
     assert response.status_code == 404
+
+
+def _setup(stage: str = "ready", name: str = "x") -> dict:
+    return {
+        "family": "stage_transition", "name": name, "label_es": "Prueba", "stage": stage, "bars_in_stage": 1,
+        "timeframe": "daily", "trigger_price": None, "trigger_condition": "", "invalidation_price": None,
+        "invalidation_condition": "", "evidence": {}, "narrative_es": "", "confidence": "unvalidated",
+    }
+
+
+def _grade(value: str, distance_atr: float | None = None) -> dict:
+    return {"grade": value, "reasons": [], "distance_atr": distance_atr}
+
+
+# --- Parte 8/9 (§28.x): ordenación, agrupación por sector y cortes --------
+
+
+def test_radar_sorts_triggered_before_ready_before_forming(client: TestClient, db_session: Session) -> None:
+    _seed_state(db_session, ticker="FORM", setups=[_setup("forming")], grade=_grade("A"))
+    _seed_state(db_session, ticker="TRIG", setups=[_setup("triggered")], grade=_grade("A"))
+    _seed_state(db_session, ticker="RDY", setups=[_setup("ready")], grade=_grade("A"))
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    order = [item["ticker"] for item in body["items"]]
+    assert order.index("TRIG") < order.index("RDY") < order.index("FORM")
+
+
+def test_radar_sorts_by_grade_within_the_same_stage(client: TestClient, db_session: Session) -> None:
+    _seed_state(db_session, ticker="GC", setups=[_setup("ready")], grade=_grade("C"))
+    _seed_state(db_session, ticker="GA", setups=[_setup("ready")], grade=_grade("A"))
+    _seed_state(db_session, ticker="GB", setups=[_setup("ready")], grade=_grade("B"))
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    order = [item["ticker"] for item in body["items"]]
+    assert order.index("GA") < order.index("GB") < order.index("GC")
+
+
+def test_radar_sorts_by_sector_percentile_descending(client: TestClient, db_session: Session) -> None:
+    _seed_state(
+        db_session, ticker="WEAK", setups=[_setup("ready")], grade=_grade("A"), sector="Salud",
+        sector_rs_percentile=22,
+    )
+    _seed_state(
+        db_session, ticker="STRONG", setups=[_setup("ready")], grade=_grade("A"), sector="Tecnología",
+        sector_rs_percentile=88,
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    order = [item["ticker"] for item in body["items"]]
+    assert order.index("STRONG") < order.index("WEAK")
+
+
+def test_radar_sorts_by_distance_atr_ascending_as_the_final_tiebreak(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_state(db_session, ticker="FAR", setups=[_setup("ready")], grade=_grade("A", distance_atr=1.8))
+    _seed_state(db_session, ticker="NEAR", setups=[_setup("ready")], grade=_grade("A", distance_atr=0.2))
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    order = [item["ticker"] for item in body["items"]]
+    assert order.index("NEAR") < order.index("FAR")
+
+
+def test_radar_drops_a_forming_setup_graded_c(client: TestClient, db_session: Session) -> None:
+    # Parte 9.2, literal: "los FORMING de grado C no se muestran".
+    _seed_state(db_session, ticker="DROP", setups=[_setup("forming")], grade=_grade("C"))
+    _seed_state(db_session, ticker="KEEP_B", setups=[_setup("forming")], grade=_grade("B"))
+    _seed_state(db_session, ticker="KEEP_READY_C", setups=[_setup("ready")], grade=_grade("C"))
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    tickers = {item["ticker"] for item in body["items"]}
+    assert "DROP" not in tickers
+    assert "KEEP_B" in tickers
+    assert "KEEP_READY_C" in tickers
+
+
+def test_radar_caps_candidates_per_sector(client: TestClient, db_session: Session) -> None:
+    for i in range(6):
+        _seed_state(
+            db_session, ticker=f"TEC{i}", setups=[_setup("ready")], grade=_grade("A", distance_atr=float(i)),
+            sector="Tecnología", sector_rs_percentile=80,
+        )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    tec_items = [item for item in body["items"] if item["sector"] == "Tecnología"]
+    assert len(tec_items) == 4
+    # Se queda con los 4 mejores (menor distancia al gatillo), no cualquier 4.
+    assert {item["ticker"] for item in tec_items} == {"TEC0", "TEC1", "TEC2", "TEC3"}
+
+
+def test_radar_caps_the_total_at_radar_max_items(client: TestClient, db_session: Session) -> None:
+    sectors = ["Tecnología", "Salud", "Financiero", "Industrial", "Energía", "Consumo discrecional", "Materiales"]
+    for i in range(30):
+        _seed_state(
+            db_session, ticker=f"T{i}", setups=[_setup("ready")], grade=_grade("A", distance_atr=float(i)),
+            sector=sectors[i % len(sectors)], sector_rs_percentile=50,
+        )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert len(body["items"]) == 25
+
+
+def test_radar_shows_a_clear_message_when_nothing_qualifies_after_the_cuts(
+    client: TestClient, db_session: Session
+) -> None:
+    # El propio gate ya excluye este candidato (sin trigger, gate en falso)
+    # - el job SÍ corrió (computed_at existe) pero nada cumple hoy.
+    _seed_state(
+        db_session, ticker="XYZ", gate_passes=False, entry_trigger_type=None, entry_trigger_price=None,
+        stop_loss=None, take_profit=None, take_profit_method=None, risk_reward=None,
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["items"] == []
+    assert body["computed_at"] is not None
+    assert body["message"] == "Ningún setup cumple los criterios hoy. Es un resultado normal en esta operativa."
+
+
+def test_radar_computed_at_none_never_shows_the_empty_setups_message(client: TestClient) -> None:
+    # Distingue "todavía no hay datos" (computed_at=None) de "hoy no hay
+    # nada que cumpla" (Parte 9.2) - no son el mismo mensaje.
+    body = client.get("/api/v1/market/radar?region=us").json()
+    assert body["computed_at"] is None
+    assert body["message"] is None
+
+
+def test_radar_exposes_sector_and_sector_rs_percentile(client: TestClient, db_session: Session) -> None:
+    _seed_state(db_session, ticker="NVDA", sector="Tecnología", sector_rs_percentile=88)
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    assert nvda["sector"] == "Tecnología"
+    assert nvda["sector_rs_percentile"] == 88
 
 
 def test_radar_narrows_a_sized_candidate_by_the_portfolios_sector_concentration(

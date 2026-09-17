@@ -3364,3 +3364,69 @@ que ni `evaluate_gate` ni `compute_grade` la reciben. `GET /market/radar` la exp
 `unknown`; tendencia alcista/bajista larga y limpia → las tres celdas de acuerdo; `_stage_bias` no
 mira tendencia) más el test de aislamiento estructural en `test_levels_engine.py`. Suite completa
 verde (864 en `tests/unit`), ruff limpio.
+
+### 28.14 Fase 9 (Parte 8/9): ordenación, agrupación por sector y cortes del Radar
+
+`GET /market/radar` pasó de devolver los candidatos sin ordenar (el orden que `latest_by_region`
+devolviera) a una lista curada: descartada, ordenada lexicográficamente y recortada - toda la lógica
+vive en `app/api/v1/endpoints/market.py` (`_rank_and_cut_radar_items`), aplicada ANTES de dimensionar
+contra una cartera concreta (no tiene sentido gastar ese trabajo en filas que el propio corte va a
+descartar).
+
+**Dos campos nuevos, persistidos por primera vez**: `TickerSnapshot.sector`/`.sector_rs_percentile`
+ya existían como valores TRANSITORIOS - se usaban una sola vez, dentro de `daily_close.py`, para
+calcular `grade`, y se perdían en cuanto el snapshot salía de alcance; nunca llegaban a
+`TickerDailyState`. Parte 8 los necesita persistidos de verdad para poder agrupar/ordenar el Radar
+sin recalcular nada en el propio request - `TickerDailyState.sector`/`.sector_rs_percentile`
+(columnas nuevas, migración `d29a6e4f0b3c`). `sector` ya llega en español
+(`market_universe.sector_of`, p. ej. "Tecnología") - ninguna traducción nueva que mantener.
+
+**`distance_atr` no fue una columna nueva**: en vez de duplicar el cálculo de "distancia al gatillo
+en ATR" que `compute_grade` ya hacía internamente para decidir el grado base, `levels_engine.GradeResult`
+se extendió con un campo `distance_atr: float | None` (`None`, no `inf`, que no serializa a JSON) -
+`apply_portfolio_grade_modifiers`/`context_modifiers.apply_context_modifiers` (las dos funciones que
+reconstruyen un `GradeResult` nuevo a partir de uno existente) se actualizaron para propagarlo, no
+perderlo por el camino. Viaja dentro del mismo `grade` JSON ya existente (`{"grade", "reasons",
+"distance_atr"}`) - cero columnas nuevas para esto.
+
+**9.1, la clave de ordenación, lexicográfica de más a menos significativo**: etapa del setup LÍDER
+(`item.setups[0]`, ya elegido por `arbitration.order_by_rank` - "el mejor gana" - esta clave solo lo
+lee, nunca vuelve a decidir entre setups) · grado · expectancy medida · percentil de sector ·
+distancia al gatillo en ATR · percentil de fuerza relativa. La expectancy medida (Parte 10,
+`setup_replay.py`) todavía no existe - sin esa medición, ese escalón es un empate universal para
+todos los candidatos hoy, exactamente el comportamiento de "los setups sin muestra van al final de
+su grupo" que el propio encargo ya contempla como caso normal, no un hueco: el escalón ya está en su
+sitio correcto en la clave para cuando Parte 10 exista de verdad, sin tener que tocar esta función
+otra vez.
+
+**9.2, los cortes duros**: `RADAR_MAX_ITEMS=25`, `RADAR_MAX_PER_SECTOR=4` (aplicado DESPUÉS de
+ordenar - se queda con los primeros 4 de cada sector en el orden ya decidido, nunca una selección
+aparte), `RADAR_DROP_FORMING_BELOW_GRADE="B"` (un candidato cuyo setup líder está en FORMING y cuyo
+grado es peor que B - es decir, C - se descarta por completo; un FORMING de grado A o B se conserva,
+igual que cualquier READY/TRIGGERED sea cual sea su grado). `RADAR_MIN_REWARD_RISK_NET=1,5` del
+encargo NO se reimplementó - `trading_params.MIN_RISK_REWARD_NET` (el mismo valor) ya es la
+condición que exige `trade_geometry.py` para que `geometry.viable` sea `True`; un candidato con peor
+R:R neto ya se queda sin geometría viable, sin grado y sin disparador mucho antes de llegar a este
+endpoint - repetirlo aquí habría sido la misma pieza dos veces.
+
+**Mensaje de lista vacía (9.2, literal)**: `RadarResponse.message` se rellena con el texto exacto del
+encargo SOLO cuando `computed_at` existe (el job sí corrió) pero `items` quedó vacío tras los cortes
+- nunca para el caso ya existente de "todavía no hay datos" (`computed_at is None`), que ya tenía su
+propio significado antes de esta fase y no se pisa.
+
+**8.1/8.2 (agrupación por sector vs. lista plana, con el conmutador guardado en localStorage) se
+dejan deliberadamente al frontend**: el backend ya devuelve una lista PLANA, completamente ordenada y
+cortada - agrupar por `sector`/`sector_rs_percentile` (ambos ya en cada fila) es una operación de
+presentación pura sobre datos que el cliente ya tiene, no un cálculo que justifique una segunda forma
+de servir el mismo endpoint. La construcción de la cabecera de cada grupo ("▸ Tecnología · RS 88 · 4
+candidatos") y el plegado por defecto de sectores con percentil ≤ 30 quedan para la Fase 10
+(interfaz, `RadarView.jsx`).
+
+**Tests**: 1 test corregido en `test_radar_exposes_the_persisted_grade` (ahora `distance_atr: None`
+se serializa siempre, incluso en una fila persistida antes de que ese campo existiera); 10 nuevos en
+`test_radar_api.py` - orden por etapa/grado/percentil de sector/distancia ATR, el descarte de un
+FORMING de grado C (y que un FORMING de grado B y un READY de grado C SÍ sobreviven), el tope por
+sector (quedándose con los 4 mejores, no cualquier 4), el tope total de 25, el mensaje de lista
+vacía y que nunca se confunde con "sin datos todavía", y que `sector`/`sector_rs_percentile` se
+exponen. Más 4 tests nuevos en `test_levels_engine.py`/`test_context_modifiers.py` para
+`distance_atr`. Suite completa verde, ruff limpio.

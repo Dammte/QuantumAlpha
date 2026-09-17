@@ -8,6 +8,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.services import levels_engine as le
 from app.services import multi_timeframe as mtf
@@ -212,3 +213,15 @@ def test_apply_context_modifiers_pocket_pivot_and_volume_dryup_never_change_the_
 
     assert result.grade == le.Grade.B
     assert any("Pocket pivot" in r for r in result.reasons)
+
+
+def test_apply_context_modifiers_preserves_distance_atr():
+    # compute_grade ya calculó esta distancia (Parte 9.1, la clave de
+    # ordenación del Radar la necesita) - apply_context_modifiers no debe
+    # perderla al reconstruir el GradeResult.
+    smooth_ramp = 100 + np.linspace(0, 0.5, 80)
+    ctx = _ctx(smooth_ramp, np.full(80, 1_000_000.0))
+
+    result = cm.apply_context_modifiers(le.GradeResult(grade=le.Grade.B, reasons=[], distance_atr=0.75), ctx, [])
+
+    assert result.distance_atr == pytest.approx(0.75)

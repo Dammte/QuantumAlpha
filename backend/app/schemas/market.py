@@ -358,6 +358,11 @@ class RadarItemResponse(BaseModel):
     setups: list[SetupMatchResponse] | None = None
     # Parte 7 (§28.x) - `None` solo para una fila anterior a esta columna.
     timeframe_strip: TimeframeStripResponse | None = None
+    # Parte 8/9 (§28.x): agrupación/ordenación del Radar por sector. `sector`
+    # ya en español (`market_universe.sector_of`) - `None` solo para una
+    # fila anterior a esta columna, o un ticker sin sector conocido.
+    sector: str | None = None
+    sector_rs_percentile: int | None = None
 
 
 class RadarResponse(BaseModel):
@@ -368,6 +373,11 @@ class RadarResponse(BaseModel):
     # same "prefiero una lista vacía a datos a medias" rule CLAUDE.md already
     # applies elsewhere.
     computed_at: datetime | None
+    # Parte 9.2, literal: "si no hay nada, el Radar lo dice con claridad" -
+    # solo se rellena cuando `computed_at` existe (el job SÍ corrió) pero
+    # `items` quedó vacío tras los cortes - nunca para rellenar el hueco de
+    # "todavía no hay datos", que `computed_at is None` ya distingue.
+    message: str | None = None
 
 
 class CorrelationWarningResponse(BaseModel):

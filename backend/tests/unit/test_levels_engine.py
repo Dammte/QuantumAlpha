@@ -248,6 +248,32 @@ def test_grade_none_when_geometry_is_not_viable():
     )
     assert result.grade is None
     assert "posición demasiado pequeña" in result.reasons[0]
+    assert result.distance_atr is None
+
+
+def test_grade_result_exposes_distance_atr_for_the_radar_sort_key():
+    # Parte 9.1 (biblioteca de setups del Radar): la clave de ordenación
+    # necesita "distancia al gatillo en ATR" sin volver a calcularla -
+    # precio a 102, gatillo en 100, ATR 2.0 -> 1.0 ATR de distancia.
+    result = le.compute_grade(
+        price=102.0, atr14=2.0, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=1.5,
+    )
+    assert result.distance_atr == pytest.approx(1.0)
+
+
+def test_grade_result_distance_atr_is_none_without_a_valid_atr14():
+    result = le.compute_grade(
+        price=100.0, atr14=None, entry_trigger=_trigger(100.0), geometry=_geometry(risk_atr=1.0),
+        weekly_bullish=True, relative_volume=1.5,
+    )
+    assert result.distance_atr is None
+
+
+def test_apply_portfolio_grade_modifiers_preserves_distance_atr():
+    base = le.GradeResult(grade=le.Grade.A, reasons=[], distance_atr=0.42)
+    result = le.apply_portfolio_grade_modifiers(base, max_correlation_with_open_position=0.9)
+    assert result.distance_atr == pytest.approx(0.42)
 
 
 def test_grade_distance_beyond_a_threshold_falls_back_to_b():

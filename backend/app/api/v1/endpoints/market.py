@@ -212,6 +212,93 @@ def _timeframe_strip_dict_to_response(data: dict | None) -> TimeframeStripRespon
     return TimeframeStripResponse(**data) if data is not None else None
 
 
+# --- Ordenación, agrupación por sector y cortes (Parte 8/9, §28.x) ---------
+
+RADAR_MAX_ITEMS = 25
+RADAR_MAX_PER_SECTOR = 4
+# Parte 9.2 también pide "RADAR_MIN_REWARD_RISK_NET = 1,5 (ya en
+# trade_geometry)" - literal, no hace falta reimplementarlo aquí:
+# `trading_params.MIN_RISK_REWARD_NET` (=1,5) ya es el umbral que
+# `trade_geometry.py` exige para que `geometry.viable` sea `True` - un
+# candidato con peor R:R neto ya se queda sin geometría viable, sin grado y
+# sin disparador mucho antes de llegar a este endpoint. Repetirlo aquí
+# sería la misma pieza dos veces.
+RADAR_DROP_FORMING_BELOW_GRADE = "B"  # los FORMING de grado C no se muestran
+RADAR_EMPTY_MESSAGE = "Ningún setup cumple los criterios hoy. Es un resultado normal en esta operativa."
+
+_SETUP_STAGE_SORT_RANK = {"triggered": 0, "ready": 1, "forming": 2}
+_GRADE_SORT_RANK = {"A": 0, "B": 1, "C": 2}
+
+
+def _leading_setup(item: RadarItemResponse) -> SetupMatchResponse | None:
+    """El primer elemento de `item.setups` ya es el ganador de
+    `arbitration.order_by_rank` ("el mejor gana, los demás son contexto") -
+    esto solo LEE esa posición, nunca vuelve a elegir entre setups."""
+    return item.setups[0] if item.setups else None
+
+
+def _should_drop_forming_below_grade(item: RadarItemResponse) -> bool:
+    # Parte 9.2, literal: "los FORMING de grado C no se muestran". Un
+    # candidato sin ningún setup de la biblioteca nueva (la mayoría hoy,
+    # ver §28.2) no tiene un FORMING que evaluar - la regla es sobre el
+    # setup LÍDER, no sobre el ticker en sí, así que nunca se descarta por
+    # esta vía.
+    leading = _leading_setup(item)
+    if leading is None or leading.stage != "forming":
+        return False
+    grade_value = item.grade.grade if item.grade is not None else None
+    if grade_value is None:
+        return False
+    threshold_rank = _GRADE_SORT_RANK.get(RADAR_DROP_FORMING_BELOW_GRADE, 0)
+    return _GRADE_SORT_RANK.get(grade_value, 0) > threshold_rank
+
+
+def _radar_sort_key(item: RadarItemResponse) -> tuple:
+    """Parte 9.1, lexicográfica - de más a menos significativo: etapa del
+    setup líder, grado, expectancy medida, percentil de sector, distancia
+    al gatillo en ATR, percentil de fuerza relativa."""
+    leading = _leading_setup(item)
+    stage_rank = _SETUP_STAGE_SORT_RANK.get(leading.stage, 3) if leading is not None else 3
+    grade_value = item.grade.grade if item.grade is not None else None
+    grade_rank = _GRADE_SORT_RANK.get(grade_value, 3)
+    # Expectancy medida del setup (Parte 10, `setup_replay.py`) - todavía no
+    # existe, fase posterior. Sin esa medición, TODO empata en este escalón
+    # - es exactamente "los setups sin muestra van al final de su grupo"
+    # (el encargo ya lo contempla), no un hueco: el escalón ya está en su
+    # sitio correcto en la clave para cuando exista de verdad.
+    expectancy_rank = 0
+    sector_percentile_rank = -(item.sector_rs_percentile or 0)
+    distance_atr = (
+        item.grade.distance_atr
+        if item.grade is not None and item.grade.distance_atr is not None
+        else float("inf")
+    )
+    rs_percentile_rank = -(item.rs_rating or 0)
+    return (stage_rank, grade_rank, expectancy_rank, sector_percentile_rank, distance_atr, rs_percentile_rank)
+
+
+def _apply_sector_cap(items: list[RadarItemResponse], max_per_sector: int) -> list[RadarItemResponse]:
+    """Aplicado DESPUÉS de ordenar - se queda con los primeros
+    `max_per_sector` de cada sector en el orden ya decidido por
+    `_radar_sort_key`, nunca una selección aparte."""
+    counts: dict[str | None, int] = {}
+    kept: list[RadarItemResponse] = []
+    for item in items:
+        count = counts.get(item.sector, 0)
+        if count >= max_per_sector:
+            continue
+        counts[item.sector] = count + 1
+        kept.append(item)
+    return kept
+
+
+def _rank_and_cut_radar_items(items: list[RadarItemResponse]) -> list[RadarItemResponse]:
+    survivors = [item for item in items if not _should_drop_forming_below_grade(item)]
+    survivors.sort(key=_radar_sort_key)
+    survivors = _apply_sector_cap(survivors, RADAR_MAX_PER_SECTOR)
+    return survivors[:RADAR_MAX_ITEMS]
+
+
 def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
     return RadarItemResponse(
         ticker=state.ticker,
@@ -252,6 +339,8 @@ def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
         grade=_grade_dict_to_response(state.grade),
         setups=_setups_list_to_response(state.setups),
         timeframe_strip=_timeframe_strip_dict_to_response(state.timeframe_strip),
+        sector=state.sector,
+        sector_rs_percentile=state.sector_rs_percentile,
     )
 
 
@@ -281,6 +370,10 @@ def get_radar(
     candidates = [s for s in states if s.gate_passes or s.entry_trigger_price is not None]
     computed_at = max((s.computed_at for s in states), default=None)
     items = [_daily_state_to_radar_item(s) for s in candidates]
+    # Parte 8/9 (§28.x): descarta/ordena/recorta ANTES de dimensionar contra
+    # una cartera concreta más abajo - no tiene sentido gastar ese trabajo
+    # en filas que el propio corte va a descartar de todas formas.
+    items = _rank_and_cut_radar_items(items)
 
     # Parte 7 (later pass): "the Radar rendering for one portfolio" -
     # `trade_geometry.py`'s own docstring names this as the natural place to
@@ -342,7 +435,8 @@ def get_radar(
             )
             item.entry_geometry = TradeGeometryResponse(**geometry_to_dict(narrowed))
 
-    return RadarResponse(items=items, computed_at=computed_at)
+    message = RADAR_EMPTY_MESSAGE if not items and computed_at is not None else None
+    return RadarResponse(items=items, computed_at=computed_at, message=message)
 
 
 @router.get("/levels/proximity", response_model=list[ProximityItemResponse])

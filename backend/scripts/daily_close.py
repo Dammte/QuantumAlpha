@@ -265,6 +265,7 @@ def build_ticker_daily_state(
         grade_dict = {
             "grade": grade_result.grade.value if grade_result.grade is not None else None,
             "reasons": grade_result.reasons,
+            "distance_atr": grade_result.distance_atr,
         }
 
     return TickerDailyState(
@@ -295,6 +296,8 @@ def build_ticker_daily_state(
         grade=grade_dict,
         setups=setups_list,
         timeframe_strip=timeframe_strip_dict,
+        sector=snapshot.sector,
+        sector_rs_percentile=snapshot.sector_rs_percentile,
     )
 
 

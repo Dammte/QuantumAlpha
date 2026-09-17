@@ -212,4 +212,4 @@ def apply_context_modifiers(
             f"{CONTEXT_VOLUME_DRYUP_RATIO * 100:.0f}% de {CONTEXT_VOLUME_DRYUP_LONG_WINDOW}) - base madura"
         )
 
-    return le.GradeResult(grade=grade, reasons=reasons)
+    return le.GradeResult(grade=grade, reasons=reasons, distance_atr=grade_result.distance_atr)

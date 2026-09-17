@@ -74,3 +74,12 @@ class TickerDailyState:
     # redimensiona). `None` solo para una fila calculada antes de que esta
     # columna existiera.
     timeframe_strip: dict | None = None
+    # Parte 8/9 de la biblioteca de setups (agrupación/ordenación del
+    # Radar): `TickerSnapshot.sector`/`.sector_rs_percentile` ya existían
+    # como valores transitorios (solo se usaban para calcular `grade`, sin
+    # persistirse) - Parte 8 los necesita persistidos de verdad para agrupar
+    # y ordenar el Radar por sector sin recalcular nada en el propio
+    # request. `sector` ya viene en español (`market_universe.sector_of`,
+    # p. ej. "Tecnología") - ninguna traducción nueva que mantener.
+    sector: str | None = None
+    sector_rs_percentile: int | None = None

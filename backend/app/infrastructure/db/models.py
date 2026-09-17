@@ -233,6 +233,8 @@ class TickerDailyStateORM(Base):
     grade: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     setups: Mapped[list | None] = mapped_column(JSON, nullable=True)
     timeframe_strip: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    sector: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    sector_rs_percentile: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class TickerIntradayStateORM(Base):
