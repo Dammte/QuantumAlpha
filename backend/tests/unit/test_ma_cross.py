@@ -55,6 +55,7 @@ def _ctx(daily: mtf.TimeframeRead) -> SetupContext:
         close=empty, high=empty, low=empty, volume=empty, open_=empty,
         weekly_close=None, weekly_high=None, weekly_low=None, weekly_volume=None,
         atr_series=empty, atr14=None, ema21=None, ema55=None, sma20=None, sma50=None, sma150=None, sma200=None,
+        rsi14=None,
         levels=[],
         multi_timeframe=mtf.MultiTimeframeRead(
             weekly=None, daily=daily, intraday=None, alignment="transitioning", alignment_score=0.0, conflicts=[]

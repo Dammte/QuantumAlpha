@@ -71,6 +71,7 @@ def _ctx(
         sma50=None,
         sma150=None,
         sma200=None,
+        rsi14=None,
         levels=[],
         multi_timeframe=_mtf_stub(),
         trend=ta.TrendState.UPTREND,

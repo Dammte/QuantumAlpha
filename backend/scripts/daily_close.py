@@ -185,6 +185,7 @@ def build_ticker_daily_state(
         sma50=snapshot.sma50,
         sma150=snapshot.sma150,
         sma200=snapshot.sma200,
+        rsi14=snapshot.rsi14,
         levels=setup_levels,
         multi_timeframe=multi_timeframe,
         trend=snapshot.trend,

@@ -53,6 +53,7 @@ class SetupContext:
     sma50: float | None
     sma150: float | None
     sma200: float | None
+    rsi14: float | None
 
     # El motor de niveles real (Parte 5.1) - ya trae estado/duración
     # (FAR/APPROACHING/TESTING/BREAKING/BROKEN_CONFIRMED/LOST_CONFIRMED) por

@@ -49,6 +49,7 @@ def _ctx(**overrides) -> SetupContext:
         sma50=None,
         sma150=None,
         sma200=None,
+        rsi14=None,
         levels=[],
         multi_timeframe=_mtf(),
         trend=ta.TrendState.SIDEWAYS,
@@ -134,6 +135,6 @@ def test_setup_detectors_only_contains_families_with_their_own_detector_and_test
     # A family only joins SETUP_DETECTORS in its own phase, once its
     # detector/tests/replay all exist together (see registry.py's own
     # "regla de admisión" docstring).
-    from app.services.setups import ma_cross, stage_transition
+    from app.services.setups import ma_cross, pullback, stage_transition
 
-    assert reg.SETUP_DETECTORS == [stage_transition.detect, ma_cross.detect]
+    assert reg.SETUP_DETECTORS == [stage_transition.detect, ma_cross.detect, pullback.detect]

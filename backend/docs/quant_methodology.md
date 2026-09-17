@@ -2926,3 +2926,37 @@ series OHLCV detrás - el detector no las necesita, así que tampoco los tests) 
 "confirmado" por separado, el bloqueo cuando la lenta todavía cae, el descarte explícito de la
 convergencia "por caída de la lenta", el post-filtro de R² más estricto, y que "confirmado" gana
 sobre "proyectado" cuando los dos aplican a la vez. Suite completa verde, ruff limpio.
+
+### 28.5 Fase 4 (interna, cont.): `pullback.py` - retroceso en tendencia
+
+Parte 4.2, "el setup de mejor geometría de todos, porque el stop queda muy cerca". `SetupContext`
+gana `rsi14` (campo nuevo, tomado de `snapshot.rsi14` - el screener ya lo calcula, sin recómputo).
+
+**"A menos de 0,5 ATR de la EMA21/55 o de un pivote de soporte" es, literalmente,
+`LevelState.TESTING`** (definido como "< 0,5 ATR" en `technical_analysis.py` desde la Parte 5.1)
+- `_matching_level` recorre `ctx.levels` buscando un `EMA21`/`EMA55`/`PIVOT_SUPPORT` en estado
+`TESTING` con `side="above"` (retrocediendo HACIA el nivel desde arriba, no ya roto por debajo),
+exigiendo `strength >= 2` solo para el caso de pivote (las medias no tienen `strength`, siempre
+`None` por diseño de `detect_levels`). Cero distancias medidas a mano - el motor de niveles ya
+hizo ese trabajo.
+
+**Simplificación deliberada, documentada en el propio módulo**: "el retroceso no supera el 50% del
+último impulso (del último pivote mínimo al último máximo)" pide un detector de pivotes indexado
+en el tiempo - `technical_analysis._fractal_pivots` (el que ya existe, "no repitas ninguna pieza")
+solo devuelve una lista de precios, sin su posición temporal, así que no alcanza para "el último
+mínimo ANTES del último máximo" tal cual está escrito. `_last_impulse` usa en su lugar el máximo de
+una ventana de `PULLBACK_IMPULSE_LOOKBACK_BARS=60` sesiones y el mínimo de `low` en cualquier punto
+ANTES de ese máximo dentro de la misma ventana - aproxima el mismo concepto ("del último mínimo de
+swing al máximo que le siguió") sin necesitar un detector de pivotes indexado nuevo. No es el
+detector exacto que el texto describe; es una lectura razonable de la misma idea, documentada como
+tal en vez de silenciada.
+
+**Corrección propia ya documentada, confirmada en la implementación**: `PULLBACK_VOLUME_DRYUP_RATIO=0,75`,
+no el 0,9 del texto original (0,9 apenas filtra nada - la mayoría de sesiones caen ahí por varianza
+normal del volumen).
+
+**Tests**: 8 en `test_pullback.py` - el caso positivo completo, cada condición fallando por
+separado (fuera de tendencia alcista, semanal bajista, sin nivel que encaje, pivote con un solo
+toque, volumen sin secarse, RSI fuera de la banda 40-55 por ambos lados, retroceso por encima del
+50%), y que un pivote con `strength=2` sí pasa donde uno con `strength=1` no. Suite completa
+verde, ruff limpio.
