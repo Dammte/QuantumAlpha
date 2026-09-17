@@ -2960,3 +2960,38 @@ separado (fuera de tendencia alcista, semanal bajista, sin nivel que encaje, piv
 toque, volumen sin secarse, RSI fuera de la banda 40-55 por ambos lados, retroceso por encima del
 50%), y que un pivote con `strength=2` sí pasa donde uno con `strength=1` no. Suite completa
 verde, ruff limpio.
+
+### 28.6 Fase 4 (interna, cont.): `breakout.py` - ruptura de nivel y caja de Darvas
+
+Parte 4.1. La ruptura de nivel reutiliza el motor de niveles casi sin cómputo nuevo: un
+`PIVOT_RESISTANCE`/`RANGE_HIGH_20`/`HIGH_52W` en `LevelState.BROKEN_CONFIRMED`, `side="above"`,
+`strength>=2` solo para el caso de pivote (los otros dos no tienen `strength`, siempre `None` por
+diseño de `detect_levels`), y no extendido más de `BREAKOUT_MAX_EXTENSION_ATR=1,0` ATR.
+
+**Decisión de reuso explícita**: `BROKEN_CONFIRMED` ya exige su propia confirmación de volumen
+desde la Parte 5.1 (`BREAKOUT_CONFIRM_MIN_REL_VOLUME=1,2` sobre una ventana de 21 sesiones, dentro
+de la propia máquina de estados de `Level`) - este detector NO re-deriva un segundo umbral de
+volumen independiente sobre la ventana de 50 sesiones que el texto original menciona. Confía en
+que "confirmado" ya significa lo que Parte 4.1 pide, mismo criterio de "no repitas ninguna pieza"
+que ya aplicó `pullback.py` a las distancias en ATR.
+
+**Caja de Darvas - cómputo genuinamente nuevo, con un bug real encontrado antes de escribir el
+primer test**: la primera versión medía los límites de la caja sobre una ventana que INCLUÍA la
+barra de hoy - lo que significa que un movimiento fuerte de hoy simplemente "ensancharía la caja"
+en el mismo cálculo que debía detectarlo como ruptura, haciendo la ruptura estructuralmente
+indetectable el mismo día en que ocurre (el mismo tipo de error de diseño que ya apareció en
+`stage_transition.py`, §28.3 - una ventana que se mide a sí misma no puede usarse para juzgar si
+la barra más reciente la rompió). Corregido midiendo los límites sobre `close.iloc[:-1]` (todo
+menos hoy) y comprobando el precio de hoy contra esos límites ya fijados. Prueba de la ventana más
+larga (60 sesiones) a la más corta (20) - una caja que se sostiene más tiempo es una señal más
+fuerte, así que la primera que encaja gana.
+
+Si ambos matchean (una ruptura de nivel real y, además, una caja de Darvas vigente), gana la
+ruptura de nivel - mismo patrón "como mucho un match por familia" de todos los detectores
+anteriores.
+
+**Tests**: 9 en `test_breakout.py` - la ruptura de nivel con sus tres rechazos (un solo toque,
+demasiado extendida, confirmada del lado bajista), que `RANGE_HIGH_20` no necesita `strength`, la
+caja de Darvas con su propio rechazo por rango demasiado ancho, el caso explícito de "el cierre de
+hoy ya rompió la caja de ayer" (el bug que motivó el fix), y la prioridad de ruptura de nivel sobre
+caja cuando ambas aplican. Suite completa verde, ruff limpio.
