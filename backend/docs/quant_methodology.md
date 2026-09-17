@@ -3067,3 +3067,50 @@ escribir el tope de un escalón antes de que exista nada que subir.
 > FORMING > FAILED verificada en ambos órdenes de entrada, el desempate estable por orden de
 llegada (verificado en ambos sentidos), y que `order_by_rank` nunca descarta ningún match aunque
 reordene. Suite completa verde, ruff limpio.
+
+### 28.9 Fase 3 (interna): `vcp.py` - VCP, la familia genuinamente cara
+
+Parte 3, ya anticipada en el propio plan de fases (§28.1) como "la familia genuinamente cara de
+construir" - la única que necesita la SECUENCIA cronológica de pivotes (máximo→mínimo→máximo...),
+no solo sus precios. `technical_analysis._fractal_pivots` (la primitiva compartida, usada por
+`detect_levels`) descarta la posición de cada pivote porque ese consumidor no la necesita -
+`vcp._indexed_fractal_pivots` reimplementa la MISMA definición exacta de pivote (no una regla
+nueva), conservando también el índice. "No repitas piezas" se cumple a nivel de lógica, no de
+firma: cuando la firma compartida no puede dar lo que un detector necesita sin cambiar a todos los
+demás consumidores, la elección correcta es una reimplementación local de la misma regla, no forzar
+un cambio de contrato aguas arriba.
+
+**Algoritmo, verificado con un script antes de escribir ningún test** (misma disciplina que ya
+encontró los bugs de auto-referencia en `stage_transition.py`/`breakout.py`/`channel.py`):
+`_alternating_pivots` fusiona altos y bajos en una secuencia cronológica que alterna de verdad -
+dos pivotes del mismo lado seguidos (sin uno del lado contrario entre medias) se colapsan al más
+extremo, que es el swing real. `_contractions` construye cada tramo Alto→Bajo sucesivo. Una serie
+sintética de control con contracciones 24,00%/13,03%/7,03% (deliberadamente cerca del ejemplo
+canónico de Minervini, 25%/15%/8%) confirmó que la secuenciación y el cálculo de profundidad son
+correctos antes de fijar ningún fixture.
+
+**Detalle de construcción de fixtures descubierto durante la verificación, no obvio a priori**: un
+mínimo de swing en el ÚLTIMO bar de una serie sintética nunca se confirma como pivote - el
+detector fractal exige barras a AMBOS lados. Los tests de "solo 2 contracciones" necesitan un
+tramo posterior que vuelva a subir después del segundo mínimo, o ese mínimo simplemente no se
+detecta y el resultado sale vacío en vez de `vcp_forming`.
+
+**Las cuatro subestados**: `vcp_forming` (2 contracciones, o ≥3 pero la última todavía ancha,
+FORMING); `vcp_ready` (≥3 contracciones, última <10%, precio a ≤1,5 ATR del pivote sin haberlo
+cruzado todavía, READY); `vcp_triggered` (cierre por encima del pivote con volumen ≥1,4x la media
+de 50 días, TRIGGERED); `vcp_failed` (cerró por encima del pivote en los últimos
+`VCP_FAILED_LOOKBACK_DAYS=3` cierres y hoy vuelve a estar por debajo, FAILED - sin exigir volumen,
+el volumen del intento fallido ya no importa). Todos calculados sin estado entre días (a partir
+solo del OHLCV de la propia ventana), igual que el resto de detectores - "fallido" no necesita
+consultar qué dijo el `SetupMatch` de ayer.
+
+**Corrección propia confirmada en la implementación**: `VCP_CONTRACTION_TOLERANCE=0,08`, no el
+0,15 del texto original (con 0,15 una secuencia 20%→22%→18% pasaba como "decreciente" pese a que
+el segundo tramo es más grande que el primero) - misma tolerancia corregida para el volumen
+decreciente.
+
+**Tests**: 8 en `test_vcp.py` - los cuatro subestados, el rechazo cuando las contracciones no
+decrecen, el rechazo cuando el volumen crece en vez de decrecer, y dos casos de historial
+insuficiente (sin datos de sobra, y con datos pero sin bares suficientes para ningún pivote).
+Presupuesto de latencia sigue en verde con el detector más caro ya registrado. Suite completa
+verde, ruff limpio.

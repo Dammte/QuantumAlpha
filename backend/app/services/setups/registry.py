@@ -16,7 +16,7 @@ mismo ticker."""
 import logging
 from collections.abc import Callable
 
-from app.services.setups import breakout, channel, ma_cross, pullback, stage_transition
+from app.services.setups import breakout, channel, ma_cross, pullback, stage_transition, vcp
 from app.services.setups.context import SetupContext
 from app.services.setups.types import SetupMatch
 
@@ -26,6 +26,7 @@ SetupDetector = Callable[[SetupContext], list[SetupMatch]]
 
 SETUP_DETECTORS: list[SetupDetector] = [
     stage_transition.detect,  # Parte 2 - transición Weinstein etapa 1 -> 2
+    vcp.detect,  # Parte 3 - VCP (Volatility Contraction Pattern)
     ma_cross.detect,  # Parte 4.3 - cruce rápido EMA21/55 al alza
     pullback.detect,  # Parte 4.2 - retroceso en tendencia
     breakout.detect,  # Parte 4.1 - ruptura de nivel / caja de Darvas
