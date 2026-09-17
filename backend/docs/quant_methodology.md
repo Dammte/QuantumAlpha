@@ -2654,4 +2654,106 @@ presente y sin racha reciente de cruce en una subida sostenida, `support_resista
 poblado sin cambios); `test_ticker_analysis_returns_full_payload` (integración) extendido para
 comprobar `body["levels"]` en la respuesta real de la API, incluido `"weekly_ma30"` entre los
 `kind` presentes (los 10 años de histórico falso de AAPL superan de sobra el mínimo semanal).
+
+## 28. Biblioteca de setups del Radar (septiembre 2026, en curso)
+
+Encargo nuevo del propietario, independiente de las 20 Partes originales: el Radar
+(`GET /market/radar`) responde hoy "qué está a punto de dar entrada" con una lista plana -
+ticker, precio, RS, tendencia, etapa - sin decir *por qué* ese ticker merece atención ni en qué
+punto de su formación está. El encargo pide una biblioteca de detectores de patrones técnicos
+con nombre propio (transición de etapa 1→2 de Weinstein, VCP, rupturas, retrocesos, cruces de
+medias, canales, patrones clásicos) que conviertan esa lista en setups identificados, con su
+gatillo, su geometría y su estadística histórica medida.
+
+**Por qué esto no contradice "menos factores, no más"** (la regla fundacional de toda la
+reconstrucción de 2026-09, ver §1/§6.6): la distinción está en el propio módulo -
+`app/services/setups/__init__.py` documenta la regla completa, resumida aquí porque es el
+estándar contra el que se audita cada fase siguiente: ningún setup suma puntos a otro (el mejor
+gana, los demás son contexto - `setups/arbitration.py`, fase posterior); los modificadores de
+contexto suben como máximo un escalón de grado en total, nunca más; ningún setup entra a
+producción sin su propio detector, tests y medición histórica (replay con triple barrera); un
+setup medido peor que la entrada aleatoria en dos regímenes se retira por completo, misma
+disciplina que ya retiró el filtro de Faber y la cadena de Markov. Los patrones clásicos
+(taza-con-asa, H-C-H, doble suelo, triángulos) reciben trato asimétrico: se detectan porque el
+propietario los quiere ver, no por evidencia sólida de que operarlos sea rentable (Lo, Mamaysky
+y Wang 2000 - informativos, no necesariamente rentables, sin costes de transacción en su
+prueba) - solo taza-con-asa/doble-suelo/triángulo-ascendente disparan por sí solos, el resto
+(H-C-H incluido) siempre acompaña.
+
+**Decisión de esquema, tomada antes de escribir el primer detector**: `ticker_daily_states.setups`
+será una columna JSON nueva (mismo patrón exacto que `entry_geometry`/`grade`, §27.8-§27.10) -
+no una tabla `setup_matches` propia, que multiplicaría filas (~7 familias × universo × sesión)
+para datos que el Radar siempre lee en bloque y nunca filtra por SQL. `setup_performance` sí será
+una tabla nueva de verdad (dominio/ORM/repo/migración propios) porque su grano es distinto -
+agregado por `(setup_name, grado, régimen)`, no por ticker/día.
+
+### 28.1 Fase 1: tipos y registro, sin detectores todavía
+
+Primer sub-paso, puramente de andamiaje - ningún detector real todavía, siguiendo la misma
+disciplina de la reconstrucción de que cada fase termine con tests en verde y su propio commit.
+
+- `app/services/setups/types.py`: `SetupFamily`/`SetupStage`/`SetupConfidence` (los tres enums
+  literales del encargo) y `SetupMatch` (dataclass frozen con los campos exactos que pide el
+  encargo - `family, name, label_es, stage, bars_in_stage, timeframe, trigger_price,
+  trigger_condition, invalidation_price, invalidation_condition, evidence, narrative_es,
+  confidence`).
+- `app/services/setups/context.py`: `SetupContext` (frozen, **`kw_only=True`** a propósito - más
+  de una docena de campos, una llamada posicional sería ilegible) con todo lo que un detector
+  puede necesitar ya calculado: OHLCV diario y semanal (remuestreado una sola vez por quien
+  construye el contexto, nunca por el propio detector), `atr_series`/`atr14`, ema21/55,
+  sma20/50/150/200, `levels: list[ta.Level]` (el motor de niveles de Parte 5.1/§27.5, ya con
+  estado y duración), `multi_timeframe`, `trend`, `weekly_stage`, `relative_volume` y los
+  percentiles de RS/sector. Ningún campo se calcula aquí - el módulo entero es un contenedor.
+- `app/services/setups/registry.py`: `SETUP_DETECTORS: list[SetupDetector]` (vacío a propósito -
+  cada familia se añade explícitamente en su propia fase, nunca antes de tener detector+tests+
+  medición) y `detect_all(ctx) -> list[SetupMatch]`, con aislamiento por detector vía
+  `try/except` - un detector con un borde no cubierto no debe vaciar el resultado de los demás
+  del mismo ticker, la misma disciplina que `portfolio_risk_service._safe_assess_position_risk`
+  ya aplica un nivel más arriba (por ticker, no por detector).
+- `app/services/setups/__init__.py`: la nota de estándar completa de la biblioteca (regla
+  anti-suma, tope de un escalón, regla de admisión, tratamiento asimétrico de patrones clásicos
+  con la cita de Lo-Mamaysky-Wang) como docstring del paquete - es el único `__init__.py` del
+  proyecto con contenido real (los de `infrastructure/llm`/`infrastructure/market_data` están
+  vacíos a propósito), justificado porque el propio encargo pide este texto exactamente en este
+  archivo, como referencia obligada antes de escribir cualquier detector nuevo.
+
+**Presupuesto de rendimiento** (documentado, no medido todavía - se mide de verdad en la Fase 7
+vía una columna JSON nueva `job_runs.detail`): 40 ms/ticker para todos los detectores juntos. El
+riesgo real no está en los detectores en sí, sino en que la Fase 2 (conectar `SetupContext` a
+`daily_close.py`) evite que cualquier detector recalcule `resample_ohlcv`/`detect_levels` por su
+cuenta - si eso se cumple, el coste real ya está pagado por el gate/la geometría existentes antes
+de que el primer detector corra.
+
+**Tests**: `test_setups_registry.py` - `detect_all` con cero detectores registrados devuelve
+`[]`; recolecta coincidencias de varios detectores en orden; aísla un detector que lanza
+excepción sin perder las coincidencias de los demás (mismo patrón que
+`test_get_portfolio_positions_risk_isolates_a_ticker_whose_compute_raises`); nunca ordena ni
+deduplica (eso es trabajo de `arbitration.py`, fase posterior). Suite completa verde, ruff
+limpio.
+
+**Plan de fases 2-11** (arquitectura completa ya diseñada y presentada al propietario, pendiente
+de ejecutar paso a paso): wiring a `daily_close.py` sin duplicar cómputo (Fase 2); familias
+baratas - transición de etapa, cruce rápido, retroceso (Fase 3); ruptura, canal (con una
+primitiva nueva compartida `technical_analysis.linear_regression_fit`, reutilizada también por
+triángulos) (Fase 4); VCP y modificadores de contexto (Fase 5); arbitraje - el único sitio donde
+viven las reglas "nadie suma"/"máximo un escalón" (Fase 6); persistencia - migraciones, columna
+`setups` (Fase 7); `GET /market/radar` extendido - orden lexicográfico, agrupación por sector,
+cortes duros (Fase 8); replay histórico de setups reutilizando `label_triple_barrier`/
+`compute_trading_metrics` tal cual (Fase 9); `taken` derivado contra transacciones reales, nunca
+persistido (Fase 10, misma decisión que `trigger_performance_service.py` ya tomó); frontend
+(Fase 11).
+
+**Correcciones ya incorporadas al plan original tras revisión propia, antes de implementar**:
+tolerancia de "contracción decreciente" del VCP bajada de 15% a 5-8% (con 15%, una secuencia
+20%→22%→18% pasaba como "decreciente"); umbral de secado de volumen del retroceso bajado de 0,9×
+a 0,70-0,75× (0,9× apenas filtra nada - la mayoría de sesiones caen ahí por varianza natural);
+"RS girando" simplificado a solo el cruce de Mansfield RS sobre su MA10 (se descarta, de momento,
+detectar también "mínimo más alto" sobre la propia línea de RS - complejidad real por beneficio
+marginal); el cruce rápido "proyectado" no toca el umbral interno de `detect_imminent_cross`
+(`IMMINENT_CROSS_MIN_R2=0.5`, usado por otros consumidores) - en su lugar post-filtra el
+`r_squared` ya devuelto para exigir 0,6 solo en este setup; `RADAR_DROP_FORMING_BELOW_GRADE` se
+descarta tal cual estaba especificado - un setup en `FORMING` no tiene `entry_trigger`/geometría
+todavía, así que no puede tener un grado A/B/C real que cortar (`compute_grade` exige ambos); la
+propia ordenación por `SetupStage` ya los deja al final, sin necesidad de un grado especulativo
+sobre una entrada que aún no existe.
 Suite completa verde, ruff limpio.
