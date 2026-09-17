@@ -68,6 +68,7 @@ from app.services.market_screener_service import MarketScreenerService
 from app.services.market_universe import benchmark_for_region
 from app.services.portfolio_risk_service import PositionRisk, get_portfolio_positions_risk
 from app.services.setups import arbitration as setups_arbitration
+from app.services.setups import context_modifiers as setups_context_modifiers
 from app.services.setups import registry as setups_registry
 from app.services.setups.context import SetupContext
 from app.services.setups.types import setup_match_to_dict
@@ -250,6 +251,13 @@ def build_ticker_daily_state(
             sma200=snapshot.sma200,
             sector_rs_percentile=snapshot.sector_rs_percentile,
         )
+        # Parte 6 (§28.x): los modificadores de contexto de la biblioteca de
+        # setups ajustan este MISMO grado - no un concepto paralelo - con la
+        # lista de setups que este ticker ya calculó arriba
+        # (`ordered_setups`). No necesitan cartera, así que corren aquí, no
+        # en el endpoint de lectura (a diferencia de
+        # `apply_portfolio_grade_modifiers`).
+        grade_result = setups_context_modifiers.apply_context_modifiers(grade_result, setup_ctx, ordered_setups)
         grade_dict = {
             "grade": grade_result.grade.value if grade_result.grade is not None else None,
             "reasons": grade_result.reasons,

@@ -166,6 +166,19 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> 
     return true_range(high, low, close).ewm(alpha=1 / window, min_periods=window, adjust=False).mean()
 
 
+def keltner_channel(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 20, atr_multiplier: float = 1.5
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Middle band (EMA), upper/lower bands +/- `atr_multiplier` * ATR(window).
+    Igual que `bollinger_bands`, devuelve (middle, upper, lower) - la banda de
+    Bollinger METIDA dentro del canal de Keltner (`bb_upper < kc_upper and
+    bb_lower > kc_lower`) es el squeeze de volatilidad que
+    `setups/context_modifiers.py` (Parte 6) usa."""
+    middle = ema(close, window)
+    band = atr_multiplier * atr(high, low, close, window)
+    return middle, middle + band, middle - band
+
+
 ATR_PERCENTILE_WINDOW = 252
 
 

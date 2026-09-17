@@ -312,6 +312,23 @@ def test_bollinger_bands_widen_with_more_volatility():
     assert (vol_upper.iloc[-1] - vol_lower.iloc[-1]) > (calm_upper.iloc[-1] - calm_lower.iloc[-1])
 
 
+def test_keltner_channel_upper_above_middle_above_lower():
+    closes = pd.Series(100 + np.sin(np.arange(60) / 3) * 5)
+    highs, lows = closes + 1.0, closes - 1.0
+    middle, upper, lower = ta.keltner_channel(highs, lows, closes, window=20)
+    valid = middle.dropna().index
+    assert (upper[valid] >= middle[valid]).all()
+    assert (middle[valid] >= lower[valid]).all()
+
+
+def test_keltner_channel_widens_with_more_true_range():
+    calm_close = pd.Series([100.0] * 40)
+    volatile_close = pd.Series(100 + np.array([((-1) ** i) * 5 for i in range(40)]))
+    _, calm_upper, calm_lower = ta.keltner_channel(calm_close + 1, calm_close - 1, calm_close, window=20)
+    _, vol_upper, vol_lower = ta.keltner_channel(volatile_close + 1, volatile_close - 1, volatile_close, window=20)
+    assert (vol_upper.iloc[-1] - vol_lower.iloc[-1]) > (calm_upper.iloc[-1] - calm_lower.iloc[-1])
+
+
 def test_rsi_all_gains_is_100():
     closes = pd.Series([100 + i for i in range(20)])
     result = ta.rsi(closes, window=14)

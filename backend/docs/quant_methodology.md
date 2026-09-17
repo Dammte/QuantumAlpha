@@ -3245,3 +3245,65 @@ disparando y sin disparar, rechazo por forma en V, rechazo por asa en la mitad i
 asa que sube; hombro-cabeza-hombro invertido y normal confirmando que nunca fijan `trigger_price`,
 `FORMING` antes de romper la clavicular, rechazo por hombros asimétricos. Suite completa verde (840
 en `tests/unit`), ruff limpio.
+
+### 28.12 Fase 7 (Parte 6): `context_modifiers.py` - modificadores de contexto
+
+"No son setups: son condiciones que acompañan y pueden mejorar el grado" (Parte 6, literal). Ni
+`SetupMatch` ni ninguna fila nueva del Radar - los seis modificadores de esta fase ajustan el MISMO
+grado A/B/C que ya calcula `levels_engine.compute_grade` para "Analizar activo", `/risk` de cartera
+y el Radar. No es un concepto paralelo: `context_modifiers.apply_context_modifiers` es la tercera
+función de este tipo, junto a `compute_grade` (geometría + RS/sector/SMA200) y
+`apply_portfolio_grade_modifiers` (correlación/cartera llena) - a diferencia de la última, esta no
+necesita una cartera concreta (todo lo que usa ya está en `SetupContext`/la lista de setups del
+propio ticker), así que corre en `scripts/daily_close.py` junto al resto del cálculo diario, justo
+después de `compute_grade`, con la misma lista de setups (`ordered_setups`) que ese ticker ya
+calculó. `levels_engine._upgrade_one_step`/`_cap_at_most` se hacen públicas
+(`upgrade_grade_one_step`/`cap_grade_at_most`) para este segundo consumidor - mismo criterio de "no
+repitas ninguna pieza" que ya promovió `indexed_fractal_pivots` en la fase anterior. Ninguna
+migración nueva: `TickerDailyState.grade` ya persistía `{"grade": ..., "reasons": [...]}` desde antes
+de esta biblioteca (Parte 5.3 del encargo anterior), así que los modificadores de contexto solo
+añaden más entradas a `reasons`, reutilizando la columna existente.
+
+**Solo tres de los seis modificadores mueven el grado, y ninguno más de un escalón combinado entre
+los tres**: squeeze de volatilidad, contracción de ATR y coincidencia de setups pueden subir un
+escalón (un único booleano `upgraded`, igual que ya hace `compute_grade` con RS/sector - no importa
+cuántas de las tres razones se cumplan a la vez, un único paso). Ruptura fallida reciente limita a C
+(vía el `cap_grade_at_most` ahora público), sin importar si algún modificador de subida también
+aplicó - el tope gana, no se promedia. Pocket pivot y secado de volumen son puramente informativos:
+el encargo dice "marca .../confirma ..." para esos dos, sin ningún "puede subir/limita" como sí tiene
+cada uno de los otros cuatro - no se les inventa un efecto que el encargo no pide, aunque sí se
+registran en `reasons` como contexto legible.
+
+**`keltner_channel` nuevo en `technical_analysis.py`** (junto a `bollinger_bands`, mismo patrón de
+retorno `(middle, upper, lower)`): EMA central +/- `atr_multiplier` * ATR. El squeeze es literal -
+`bb_upper < kc_upper and bb_lower > kc_lower`.
+
+**Bug real de "ruptura fallida reciente", encontrado con el script de verificación de este módulo
+antes de fijar los tests**: la primera versión medía "el nivel" como el máximo de una ventana móvil
+cruda de 20 sesiones, recalculada para cada sesión candidata - en una serie lateral con ruido puro
+(el mismo tipo de fixture de "sin tendencia genuina" que ya usa `test_technical_analysis.py`, Parte
+28.7), CUALQUIER fluctuación mínima que superase por azar ese máximo recién recalculado, seguida de
+cualquier vuelta por debajo dentro de 3 sesiones, contaba como "ruptura fallida" - una tasa de falsos
+positivos altísima en el caso más común (un valor lateral sin ninguna ruptura real). Cambiar el
+"nivel" a un pivote de fractal confirmado (`ta.indexed_fractal_pivots`, la misma primitiva que
+`vcp.py`/`classic_patterns.py`) redujo pero NO eliminó el problema: ruido puro alrededor de un nivel
+plano sigue produciendo pivotes diminutos que se "rompen" y se "pierden" por pura varianza, porque un
+pivote de fractal exige barras más bajas alrededor para EXISTIR, pero nada sobre cuánto hay que
+superarlo para que romperlo signifique algo. Solución final: `FAILED_BREAKOUT_MIN_MARGIN_ATR_FRACTION
+= 0,1` - un margen mínimo, normalizado por ATR (la misma convención de "todos los umbrales del
+sistema van en ATR" del proyecto), que tanto la ruptura como la pérdida deben superar. Sin número
+literal en el encargo para esto, mismo tratamiento que `TRIANGLE_FLAT_SLOPE_ATR_FRACTION`: una
+elección propia, necesaria para que el concepto esté bien definido contra datos ruidosos reales, no
+solo contra los ejemplos limpios de manual.
+
+**Coincidencia de setups**: cuenta literal del encargo, "≥ 3 setups distintos en READY a la vez" -
+`TRIGGERED` no cuenta a propósito (el encargo nombra la etapa exacta; una señal que ya disparó no es
+lo mismo que tres señales todavía esperando su gatillo, todas de acuerdo).
+
+**Tests**: 2 nuevos en `test_technical_analysis.py` para `keltner_channel` (bandas ordenadas,
+ensancha con más rango verdadero); 17 en `test_context_modifiers.py` - cada uno de los seis
+detectores con su caso positivo y negativo, incluyendo el ancla de regresión de ruido puro sin
+ruptura real para la ruptura fallida, más `apply_context_modifiers` completo: tope de un escalón con
+los tres modificadores de subida simultáneos, ruptura fallida limitando a C incluso partiendo de A,
+no-op con grado `None`, y confirmación de que pocket pivot/secado de volumen nunca mueven el grado.
+Suite completa verde (859 en `tests/unit`), ruff limpio.

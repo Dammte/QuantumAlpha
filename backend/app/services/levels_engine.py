@@ -354,12 +354,17 @@ class Grade(str, Enum):
 _GRADE_ORDER = (Grade.C, Grade.B, Grade.A)  # peor a mejor
 
 
-def _upgrade_one_step(grade: Grade) -> Grade:
+def upgrade_grade_one_step(grade: Grade) -> Grade:
+    """Pública desde que `setups/context_modifiers.py` (Parte 6) también la
+    necesita para su propio tope de un escalón - antes de eso, un detalle
+    interno de este módulo (mismo criterio de "no repitas ninguna pieza" que
+    ya promovió `technical_analysis.indexed_fractal_pivots`)."""
     idx = _GRADE_ORDER.index(grade)
     return _GRADE_ORDER[min(idx + 1, len(_GRADE_ORDER) - 1)]
 
 
-def _cap_at_most(grade: Grade, ceiling: Grade) -> Grade:
+def cap_grade_at_most(grade: Grade, ceiling: Grade) -> Grade:
+    """Pública por el mismo motivo que `upgrade_grade_one_step`."""
     return ceiling if _GRADE_ORDER.index(grade) > _GRADE_ORDER.index(ceiling) else grade
 
 
@@ -459,7 +464,7 @@ def compute_grade(
     # - un único paso, sin importar cuántas razones de subida se cumplan a
     # la vez.
     if upgraded:
-        grade = _upgrade_one_step(grade)
+        grade = upgrade_grade_one_step(grade)
 
     capped_to_b = False
     if rs_percentile is not None and rs_percentile < RS_PERCENTILE_DOWNGRADE_THRESHOLD:
@@ -477,7 +482,7 @@ def compute_grade(
         )
         capped_to_b = True
     if capped_to_b:
-        grade = _cap_at_most(grade, Grade.B)
+        grade = cap_grade_at_most(grade, Grade.B)
 
     return GradeResult(grade=grade, reasons=reasons)
 
