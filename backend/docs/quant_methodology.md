@@ -3497,3 +3497,79 @@ tras la corrección de la condición de carrera; tema oscuro legible en todos lo
 **Tests**: 2 nuevos en `test_radar_api.py` para `total_analyzed`. La interfaz en sí no tiene suite de
 tests automatizada en este repositorio (no hay Vitest/Testing Library configurado todavía) - la
 verificación es la sesión de Playwright descrita arriba, no una omisión. `npm run lint` limpio.
+
+### 28.16 Fase 11 (Parte 10, primera entrega): `setup_replay.py` - el motor de medición
+
+"Un setup sin medición es una opinión con nombre técnico" (literal, y "esta parte no es opcional").
+Primera entrega del motor puro (funciones sin red ni base de datos, igual que `backtest_engine.py`
+es el motor y `scripts/factor_ablation_study.py` el script que lo ejecuta contra el universo real) -
+extiende el mismo patrón de replay punto-en-el-tiempo que `levels_engine.replay_gate_at`/
+`scripts/factor_ablation_study.py` ya establecieron para el gate, aplicado ahora a
+`setups.registry.detect_all`. Quedan para una fase posterior: la tabla `setup_performance` en base
+de datos, el script que baja el histórico real y la reconexión de `SetupConfidence` hacia
+`daily_close.py`/el Radar en vivo - este commit es el motor, verificado a fondo, sin esas tres
+piezas todavía.
+
+**Dos etapas, no una - el porqué está en el propio docstring del módulo**: "cuando el setup alcanza
+READY, registra el gatillo propuesto" y "etiqueta con triple barrera" son dos eventos DISTINTOS, no
+uno solo - la Parte 10.2 pide `trigger_rate` ("de los READY, ¿qué % llegó a disparar?") como una
+métrica separada de `win_rate` ("de los disparados, ¿qué % tocó objetivo antes que stop?"). Si la
+barrera se etiquetara desde el propio bar en que el setup llega a READY, esas dos preguntas
+colapsarían en una sola. `_find_trigger_bar` busca la primera sesión, dentro de
+`REPLAY_TRIGGER_WINDOW_BARS=10`, cuyo cierre confirma el nivel propuesto - solo esa sub-muestra se
+etiqueta con triple barrera, con la geometría real calculada en el momento del READY (no
+recalculada de nuevo al disparar).
+
+**Simplificaciones documentadas, mismo criterio que `replay_gate_at`** (no aproximaciones
+silenciosas): `ctx.levels` siempre `[]` (el escaneo de pivotes es O(n) por llamada - repetirlo en
+cada punto de una rejilla histórica es el mismo coste "prohibitivo" que `replay_gate_at` ya
+documenta para soporte/resistencia más cercano; `breakout.py`/`pullback.py` estructuralmente nunca
+disparan en este replay, una limitación real); `ctx.rs_percentile`/`ctx.sector_rs_percentile`
+siempre `None` (percentiles transversales sobre el universo completo en una fecha histórica
+arbitraria, mismo motivo que `replay_gate_at` ya documenta para RS Rating - y ningún detector de
+esta biblioteca los lee para decidir, solo `context_modifiers.py`, una capa posterior). A
+diferencia del gate, semanal/`multi_timeframe`/`mansfield_rs_series` SÍ se reconstruyen de verdad en
+cada punto (remuestrear a semanal es barato, vectorizado en pandas, a diferencia del escaneo de
+pivotes) - `stage_transition.py` los necesita de verdad para ser replayable en absoluto.
+
+**Bug de deduplicación evitado antes de escribir el primer test, no encontrado después**: un setup
+puede seguir en READY durante más sesiones que el propio paso de la rejilla - sin protección, el
+mismo READY se contaría una vez por cada punto de rejilla en que sigue vigente, inflando
+`n_observations` artificialmente. Solución: reutilizar `SetupMatch.bars_in_stage` (que cada
+detector ya rellena) para quedarse solo con un READY reciente (`bars_in_stage < grid_stride_bars`) -
+sin necesitar guardar ningún estado entre puntos de la rejilla. Verificado con un script antes de
+escribir el test: una racha de 40 sesiones en READY con paso de rejilla 10 daba exactamente 1
+observación, no 4.
+
+**`risk_pct` en `SetupReplayObservation`, no solo en `TripleBarrierLabel`**: `expectancy_r` (Parte
+10.2, "en múltiplos de R") necesita el riesgo inicial para convertir el retorno neto en múltiplos de
+R - `TripleBarrierLabel` es un resultado genérico reutilizado por `backtest_engine.py` en contextos
+sin sizing, así que no lo lleva; se toma de `TradeGeometry.risk_pct` en el momento del READY.
+
+**Verificado con scripts antes de escribir los tests** (el patrón ya establecido para cada pieza
+geométricamente no trivial de esta biblioteca), en dos frentes:
+- El propio `_build_point_in_time_context` no ve nunca información futura (un salto de precio
+  colocado deliberadamente en los últimos 5 bares de una serie de 900 es invisible en el contexto
+  reconstruido en el bar 500).
+- Los detectores REALES no se disparan de forma fiable sobre series sintéticas simples construidas
+  a mano para este módulo (ya lo probé y descarté - un ascenso perfectamente monótono no activa
+  ningún detector, cada uno tiene su propia geometría específica ya cubierta en su propia suite) -
+  el mecanismo de reproducción en sí (deduplicación, ventana de disparo, agregación) se prueba con
+  `setups.registry.detect_all` simulado, mismo criterio que `test_setups_registry.py` ya usa para
+  probar el registro sin depender de que un detector real dispare en una fecha concreta.
+
+**Agregación (`aggregate_setup_performance`)**: las siete métricas literales de la Parte 10.2, más
+`confidence` (Parte 10.3 - `MEASURED` solo con `n_observations >= MIN_SAMPLE_FOR_STATS=30`, `THIN`
+por debajo con muestra > 0, `UNVALIDATED` sin ninguna). Segmentado "además" por grado y por régimen
+de mercado (`índice sobre/bajo su SMA200`, vía `ta.market_regime_inputs`, ya reutilizado tal cual de
+`factor_ablation_study.py`) - por separado, nunca cruzados a la vez: cruzar setup × grado × régimen
+fragmentaría la muestra de casi cualquier setup muy por debajo del mínimo antes de poder decir nada
+de ninguna combinación, y el encargo pide "además", no un cruce.
+
+**Tests**: 15 nuevos en `test_setup_replay.py` - el contexto punto-en-el-tiempo no ve barras futuras
+ni fabrica series semanales sin historial suficiente; `_find_trigger_bar` encuentra la primera
+confirmación y respeta su ventana; el replay completo registra un READY que dispara, uno que nunca
+dispara, deduplica una racha larga, ignora FORMING/TRIGGERED, y devuelve `[]` con historial
+insuficiente; la agregación calcula las siete métricas, clasifica la confianza en los tres niveles,
+segmenta por grado/régimen sin cruzarlos, y nunca fabrica estadísticas cuando nada disparó. Suite
+completa verde, ruff limpio.
