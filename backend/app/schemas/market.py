@@ -272,6 +272,30 @@ class PortfolioTodayResponse(BaseModel):
     opportunity_cost: list[OpportunityCostNoteResponse]
 
 
+class TimeframeCellResponse(BaseModel):
+    """Ver `app.services.multi_timeframe.TimeframeCell` - Parte 7 de la
+    biblioteca de setups del Radar. `bias`/`stage`/`price_vs_ma` son
+    deliberadamente más simples que las lecturas semanal/diaria que ya
+    alimentan el gate (`TimeframeReadResponse`, si existiera) - la mensual
+    en particular es EXCLUSIVAMENTE informativa, nunca entra en el gate, el
+    grado ni ningún gatillo."""
+
+    bias: str  # "bullish" | "neutral" | "bearish" | "unknown"
+    stage: str | None
+    price_vs_ma: str | None  # "above" | "below"
+    note: str
+
+
+class TimeframeStripResponse(BaseModel):
+    """Ver `app.services.multi_timeframe.TimeframeStrip`. `monthly` se
+    muestra atenuada en la interfaz (Parte 7.2, literal) - la propia API no
+    impone eso, es una convención de presentación en `RadarView.jsx`."""
+
+    monthly: TimeframeCellResponse
+    weekly: TimeframeCellResponse
+    daily: TimeframeCellResponse
+
+
 class SetupMatchResponse(BaseModel):
     """Ver `app.services.setups.types.SetupMatch` - una coincidencia de un
     detector de la biblioteca de setups del Radar (en curso,
@@ -332,6 +356,8 @@ class RadarItemResponse(BaseModel):
     # coincidencias hoy", el resultado normal para la mayoría de tickers la
     # mayoría de días; `None` solo para una fila anterior a esta columna.
     setups: list[SetupMatchResponse] | None = None
+    # Parte 7 (§28.x) - `None` solo para una fila anterior a esta columna.
+    timeframe_strip: TimeframeStripResponse | None = None
 
 
 class RadarResponse(BaseModel):

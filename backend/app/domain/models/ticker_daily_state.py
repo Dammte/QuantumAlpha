@@ -67,3 +67,10 @@ class TickerDailyState:
     # mismo criterio que `gate_conditions`. `None` solo para una fila
     # calculada antes de que esta columna existiera.
     setups: list[dict] | None = None
+    # Parte 7 de la biblioteca de setups: `multi_timeframe.TimeframeStrip`
+    # como dict plano (`multi_timeframe.timeframe_strip_to_dict`) - mismo
+    # criterio que `grade`, un valor terminal de solo lectura, sin
+    # contraparte `_from_dict` (nada aguas abajo lo recalcula ni lo
+    # redimensiona). `None` solo para una fila calculada antes de que esta
+    # columna existiera.
+    timeframe_strip: dict | None = None

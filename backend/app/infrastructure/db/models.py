@@ -232,6 +232,7 @@ class TickerDailyStateORM(Base):
     entry_geometry: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     grade: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     setups: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    timeframe_strip: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class TickerIntradayStateORM(Base):

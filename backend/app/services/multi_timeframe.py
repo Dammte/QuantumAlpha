@@ -360,3 +360,143 @@ def analyze_multi_timeframe(
         weekly=weekly, daily=daily, intraday=None, alignment=alignment, alignment_score=alignment_score,
         conflicts=conflicts,
     )
+
+
+# --- Tira de temporalidades (Parte 7 de la biblioteca de setups del Radar) --
+
+MONTHLY_RULE = "ME"
+MONTHLY_STAGE_MA_WINDOW = 10  # "MA10 mensual (~10 meses)" - Parte 7.1, literal
+# `classify_stage` reutiliza su propio `lookback=20` por defecto tal cual,
+# sin un parámetro mensual dedicado - mismo criterio que ya aplica
+# `_read_timeframe` al pasarle la MA SEMANAL sin ajustar ese `lookback` a
+# "20 semanas" a propósito (ver su código): esta función ya es
+# timeframe-agnóstica por construcción, se le da una serie a la resolución
+# que sea y ella decide la etapa sobre esa misma resolución. Eso exige
+# `len(sma.dropna()) > 20` para no devolver `None` siempre - con
+# MONTHLY_STAGE_MA_WINDOW=10 (9 NaN iniciales), hacen falta más de 29
+# cierres mensuales. 36 (3 años de historial diario) da margen real, mismo
+# espíritu que MIN_WEEKLY_BARS_FOR_STAGE=60 frente al lookback compartido.
+MIN_MONTHLY_BARS_FOR_STAGE = 36
+
+_STAGE_LABELS_ES = {
+    ta.Stage.STAGE_1: "Etapa 1 (base)",
+    ta.Stage.STAGE_2: "Etapa 2 (alcista)",
+    ta.Stage.STAGE_3: "Etapa 3 (techo)",
+    ta.Stage.STAGE_4: "Etapa 4 (bajista)",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class TimeframeCell:
+    """Lectura simplificada de una temporalidad para la tira de la Parte 7 -
+    a propósito mucho más simple que `TimeframeRead` (sin cruces/MACD/ADX):
+    la mensual es *solo informativa* (ver `build_timeframe_strip`), así que
+    no hace falta cargarla con el mismo detalle que el gate sí necesita."""
+
+    bias: str  # "bullish" | "neutral" | "bearish" | "unknown"
+    stage: ta.Stage | None
+    price_vs_ma: str | None  # "above" | "below", vs la MA de etapa propia de esta temporalidad
+    note: str  # texto corto en español para la interfaz
+
+
+@dataclass(frozen=True, slots=True)
+class TimeframeStrip:
+    """Parte 7 del encargo de la biblioteca de setups - "semanal y diaria
+    mandan, mensual se muestra". `monthly` es EXCLUSIVAMENTE informativo:
+    `evaluate_gate`/`compute_grade`/`compute_entry_geometry` ni siquiera
+    tienen un parámetro por el que esta lectura podría entrar - ver
+    `test_multi_timeframe.py`'s test de aislamiento (Parte 7.2) y
+    `docs/quant_methodology.md` §28.x."""
+
+    monthly: TimeframeCell
+    weekly: TimeframeCell
+    daily: TimeframeCell
+
+
+def _stage_bias(stage: ta.Stage | None) -> str:
+    """Definición DELIBERADAMENTE más simple que `timeframe_bias` (que
+    también mira `trend`): la Parte 7.1 solo pide "etapa de Weinstein sobre
+    esa media" para la mensual, ninguna clasificación de tendencia mensual
+    propia - no se fabrica una que nadie pidió."""
+    if stage is None:
+        return "unknown"
+    if stage == ta.Stage.STAGE_2:
+        return "bullish"
+    if stage == ta.Stage.STAGE_4:
+        return "bearish"
+    return "neutral"
+
+
+def _stage_cell(
+    close: pd.Series, stage_ma_window: int, min_bars: int, bias: str, stage: ta.Stage | None
+) -> TimeframeCell:
+    if len(close) < min_bars:
+        return TimeframeCell(bias="unknown", stage=None, price_vs_ma=None, note="Historial insuficiente.")
+    price_vs_ma = _price_vs(float(close.iloc[-1]), _last(ta.sma(close, stage_ma_window)))
+    note = _STAGE_LABELS_ES.get(stage, "Sin etapa determinada.") if stage else "Sin etapa determinada."
+    return TimeframeCell(bias=bias, stage=stage, price_vs_ma=price_vs_ma, note=note)
+
+
+def _monthly_cell(close: pd.Series) -> TimeframeCell:
+    if len(close) < MIN_MONTHLY_BARS_FOR_STAGE:
+        return TimeframeCell(bias="unknown", stage=None, price_vs_ma=None, note="Historial mensual insuficiente.")
+    stage = ta.classify_stage(float(close.iloc[-1]), ta.sma(close, MONTHLY_STAGE_MA_WINDOW))
+    return _stage_cell(close, MONTHLY_STAGE_MA_WINDOW, MIN_MONTHLY_BARS_FOR_STAGE, _stage_bias(stage), stage)
+
+
+def build_timeframe_strip(
+    daily_df: pd.DataFrame, multi: MultiTimeframeRead, now: datetime | None = None, cutoff: time | None = None
+) -> TimeframeStrip:
+    """Construye la tira de tres celdas de la Parte 7 a partir del mismo
+    `daily_df` que `analyze_multi_timeframe` ya recibió (cero llamadas de
+    red nuevas) y de su resultado ya calculado (`multi`) - reutiliza
+    `.weekly.stage`/`.daily.stage` en vez de volver a derivarlos por su
+    cuenta (mismo criterio de "no repitas ninguna pieza" que el resto de la
+    biblioteca), y solo recalcula la MA de cada temporalidad para el
+    `price_vs_ma`, que `TimeframeRead` no expone. La mensual es la única
+    lectura genuinamente nueva - no existía ningún camino previo para
+    calcularla."""
+    closed_daily = ta.closed_bars(daily_df, now=now, cutoff=cutoff)
+    daily_cell = _stage_cell(
+        closed_daily["close"], DAILY_STAGE_MA_WINDOW, MIN_DAILY_BARS_FOR_STAGE,
+        timeframe_bias(multi.daily), multi.daily.stage,
+    )
+
+    if multi.weekly is None:
+        weekly_cell = TimeframeCell(bias="unknown", stage=None, price_vs_ma=None, note="Historial insuficiente.")
+    else:
+        weekly_df = ta.resample_ohlcv(daily_df, WEEKLY_RULE, now=now)
+        weekly_cell = _stage_cell(
+            weekly_df["close"], WEEKLY_STAGE_MA_WINDOW, MIN_WEEKLY_BARS_FOR_STAGE,
+            timeframe_bias(multi.weekly), multi.weekly.stage,
+        )
+
+    monthly_df = ta.resample_ohlcv(daily_df, MONTHLY_RULE, now=now)
+    monthly_cell = _monthly_cell(monthly_df["close"])
+
+    return TimeframeStrip(monthly=monthly_cell, weekly=weekly_cell, daily=daily_cell)
+
+
+def _cell_to_dict(cell: TimeframeCell) -> dict:
+    return {
+        "bias": cell.bias,
+        "stage": cell.stage.value if cell.stage is not None else None,
+        "price_vs_ma": cell.price_vs_ma,
+        "note": cell.note,
+    }
+
+
+def timeframe_strip_to_dict(strip: TimeframeStrip) -> dict:
+    """Plain JSON-safe read of a `TimeframeStrip` - mismo patrón que
+    `trade_geometry.geometry_to_dict`/`setups.types.setup_match_to_dict`,
+    para que `scripts/daily_close.py` pueda persistir
+    `TickerDailyState.timeframe_strip` sin un mapeador propio de esquema.
+    Sin `_from_dict`: a diferencia de `setup_match_to_dict`, nada aguas
+    abajo necesita reconstruir un `TimeframeStrip` real desde su forma
+    persistida - es un valor terminal de solo lectura, mismo criterio que
+    `grade`."""
+    return {
+        "monthly": _cell_to_dict(strip.monthly),
+        "weekly": _cell_to_dict(strip.weekly),
+        "daily": _cell_to_dict(strip.daily),
+    }

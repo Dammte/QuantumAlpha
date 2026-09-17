@@ -291,3 +291,56 @@ def test_analyze_multi_timeframe_never_confirms_a_signal_off_the_unclosed_bar():
 
     after_close = mtf.analyze_multi_timeframe(df, now=datetime(2024, 6, 14, 22, 0, tzinfo=UTC))
     assert after_close.daily.price_vs_sma20 == "above"
+
+
+# --- build_timeframe_strip (Parte 7 de la biblioteca de setups del Radar) --
+# La celda mensual es la única lectura genuinamente nueva; semanal/diaria
+# solo reempaquetan lo que analyze_multi_timeframe ya calculó. El test de
+# que la mensual nunca entra en el gate/grado/gatillo vive en
+# test_levels_engine.py (comprobación estructural de firma, no de datos -
+# ver el comentario de ese test para el porqué).
+
+
+def test_build_timeframe_strip_unknown_cells_with_insufficient_history():
+    n = 100
+    df = _ohlcv_df(n, 100 + np.arange(n) * 0.1)
+    strip = mtf.build_timeframe_strip(df, mtf.analyze_multi_timeframe(df))
+
+    for cell in (strip.monthly, strip.weekly, strip.daily):
+        assert cell.bias == "unknown"
+        assert cell.stage is None
+        assert cell.price_vs_ma is None
+
+
+def test_build_timeframe_strip_all_bullish_on_a_long_clean_uptrend():
+    n = 1150  # ~4,5 años - suficiente para las tres temporalidades a la vez
+    df = _ohlcv_df(n, 100 + np.arange(n) * 0.15)
+    strip = mtf.build_timeframe_strip(df, mtf.analyze_multi_timeframe(df))
+
+    for cell in (strip.monthly, strip.weekly, strip.daily):
+        assert cell.bias == "bullish"
+        assert cell.stage == ta.Stage.STAGE_2
+        assert cell.price_vs_ma == "above"
+
+
+def test_build_timeframe_strip_all_bearish_on_a_long_clean_downtrend():
+    n = 1150
+    df = _ohlcv_df(n, 300 - np.arange(n) * 0.15)
+    strip = mtf.build_timeframe_strip(df, mtf.analyze_multi_timeframe(df))
+
+    for cell in (strip.monthly, strip.weekly, strip.daily):
+        assert cell.bias == "bearish"
+        assert cell.stage == ta.Stage.STAGE_4
+        assert cell.price_vs_ma == "below"
+
+
+def test_monthly_stage_bias_never_considers_trend_unlike_timeframe_bias():
+    # Asimetría deliberada (ver el comentario de _stage_bias): la mensual
+    # solo pide "etapa de Weinstein sobre esa media" (Parte 7.1) - a
+    # diferencia de timeframe_bias, no hay una clasificación de tendencia
+    # mensual que mirar, y no se fabrica una que nadie pidió.
+    assert mtf._stage_bias(ta.Stage.STAGE_2) == "bullish"
+    assert mtf._stage_bias(ta.Stage.STAGE_4) == "bearish"
+    assert mtf._stage_bias(ta.Stage.STAGE_1) == "neutral"
+    assert mtf._stage_bias(ta.Stage.STAGE_3) == "neutral"
+    assert mtf._stage_bias(None) == "unknown"

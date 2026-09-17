@@ -3307,3 +3307,60 @@ ruptura real para la ruptura fallida, más `apply_context_modifiers` completo: t
 los tres modificadores de subida simultáneos, ruptura fallida limitando a C incluso partiendo de A,
 no-op con grado `None`, y confirmación de que pocket pivot/secado de volumen nunca mueven el grado.
 Suite completa verde (859 en `tests/unit`), ruff limpio.
+
+### 28.13 Fase 8 (Parte 7): `TimeframeStrip` - la temporalidad mensual, solo informativa
+
+"Semanal y diaria mandan, mensual se muestra" (Parte 7, literal). `TimeframeStrip`/`TimeframeCell`
+(nuevos en `multi_timeframe.py`, junto a `MultiTimeframeRead`/`TimeframeRead` ya existentes, sin
+tocarlos) son deliberadamente mucho más simples que estos últimos - sin cruces, MACD, ADX ni DMI -
+porque la mensual no participa en ninguna decisión, solo se muestra. `build_timeframe_strip(daily_df,
+multi)` reutiliza `multi.weekly.stage`/`multi.daily.stage` (ya calculados por
+`analyze_multi_timeframe`, sin recalcularlos por su cuenta - mismo criterio de "no repitas ninguna
+pieza" que el resto de la biblioteca) y solo recalcula la MA propia de cada temporalidad para
+`price_vs_ma`, que `TimeframeRead` no expone. La mensual (remuestreo `ME` sobre el mismo `daily_df`
+ya en memoria, `ta.sma(close, 10)`, cero coste de red) es la única lectura genuinamente nueva.
+
+**Bug real encontrado antes de escribir el primer test**: `classify_stage` usa su propio
+`lookback=20`/`long_lookback=100` por defecto, EN LAS UNIDADES DE LA SERIE QUE RECIBE - el mismo
+criterio que ya aplicaba `_read_timeframe` al pasarle la MA semanal sin ajustar ese `lookback` a "20
+semanas" (la función ya es timeframe-agnóstica por construcción). Con `MONTHLY_STAGE_MA_WINDOW=10` y
+un primer intento de `MIN_MONTHLY_BARS_FOR_STAGE=15`, `classify_stage` exige
+`len(sma.dropna()) > lookback` para no devolver `None` siempre - con 15 cierres mensuales y 9 NaN
+iniciales de la propia MA10, `len(valid)=6`, muy por debajo de 20: la etapa mensual habría sido
+SIEMPRE `None`, para cualquier ticker, sin excepción. Subido a `MIN_MONTHLY_BARS_FOR_STAGE=36` (3
+años de historial diario) - `len(valid)=27`, ya por encima de 20, mismo espíritu que
+`MIN_WEEKLY_BARS_FOR_STAGE=60` frente al mismo `lookback` compartido.
+
+**`_stage_bias` es deliberadamente más simple que `timeframe_bias`**: la Parte 7.1 solo pide "etapa
+de Weinstein sobre esa media" para la mensual, ninguna clasificación de tendencia mensual propia (que
+exigiría EMA21/55/SMA200 mensuales que nadie pidió) - `_stage_bias` deriva `bullish`/`bearish`/
+`neutral`/`unknown` solo de la etapa, sin mirar ninguna tendencia. Asimetría documentada, no un
+descuido.
+
+**El test de aislamiento de la Parte 7.2 - "construye dos escenarios idénticos salvo por la lectura
+mensual" resultó impracticable de construir de verdad**, y se documenta el porqué en el propio test
+(`test_gate_grade_and_geometry_functions_never_accept_a_monthly_timeframe_reading`,
+`test_levels_engine.py`): `classify_stage` reutiliza el MISMO `lookback=20`/`long_lookback=100` para
+mensual y semanal, así que cualquier tramo de historial lo bastante antiguo para mover la etapa
+mensual (verificado con un script: hacen falta al menos ~30 meses de diferencia) también cae, con
+holgura, dentro del alcance de `long_lookback` de la etapa SEMANAL (100 semanas ≈ 500 sesiones) - no
+existe una construcción de "tramo reciente idéntico, tramo antiguo distinto" donde solo uno de los
+dos difiera. La garantía que sí se puede dar, y es más fuerte que la empírica que pedía el encargo,
+es estructural: `evaluate_gate`/`compute_grade`/`compute_entry_geometry`/`size_position` - las únicas
+cuatro funciones que deciden gate/grado/geometría/tamaño en todo el sistema - ni siquiera tienen un
+parámetro por el que `TimeframeStrip`/la celda mensual podrían entrar, comprobado sobre su firma real
+vía `inspect.signature`, mismo principio que `test_exit_engine_never_imports_recommendation_engine`
+aplicado a la firma en vez de a los imports.
+
+**Persistencia**: `TickerDailyState.timeframe_strip` (columna JSON nueva, migración `b4c8f3e2a7d1`,
+encadenada tras `e1297786f1da`) vía `multi_timeframe.timeframe_strip_to_dict` - mismo patrón que
+`grade`, un valor terminal de solo lectura sin `_from_dict` (nada aguas abajo lo recalcula).
+`scripts/daily_close.py` la calcula justo al lado de `weekly_stage`, con un comentario explícito de
+que ni `evaluate_gate` ni `compute_grade` la reciben. `GET /market/radar` la expone como
+`RadarItemResponse.timeframe_strip` (`TimeframeStripResponse`/`TimeframeCellResponse` nuevos en
+`schemas/market.py`, junto a `SetupMatchResponse`).
+
+**Tests**: 5 nuevos en `test_multi_timeframe.py` (historial insuficiente → las tres celdas
+`unknown`; tendencia alcista/bajista larga y limpia → las tres celdas de acuerdo; `_stage_bias` no
+mira tendencia) más el test de aislamiento estructural en `test_levels_engine.py`. Suite completa
+verde (864 en `tests/unit`), ruff limpio.

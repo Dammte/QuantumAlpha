@@ -123,6 +123,10 @@ def build_ticker_daily_state(
     # semanal genuino.
     multi_timeframe = mtf.analyze_multi_timeframe(df)
     weekly_stage = multi_timeframe.weekly.stage if multi_timeframe.weekly is not None else None
+    # Parte 7 (§28.x): puramente informativa - `evaluate_gate`/`compute_grade`
+    # de aquí abajo no reciben `timeframe_strip` como argumento, ni lo van a
+    # recibir nunca (ver el test de aislamiento en test_levels_engine.py).
+    timeframe_strip_dict = mtf.timeframe_strip_to_dict(mtf.build_timeframe_strip(df, multi_timeframe))
 
     # Divisa nativa, sin conversión a USD - misma simplificación documentada
     # en `ticker_analysis_service.compute_core_signals` (el universo dinámico
@@ -290,6 +294,7 @@ def build_ticker_daily_state(
         entry_geometry=geometry_to_dict(gate.entry_geometry) if gate.entry_geometry is not None else None,
         grade=grade_dict,
         setups=setups_list,
+        timeframe_strip=timeframe_strip_dict,
     )
 
 

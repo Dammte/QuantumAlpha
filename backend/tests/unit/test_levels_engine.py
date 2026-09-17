@@ -1,3 +1,4 @@
+import inspect
 from datetime import date
 
 import pytest
@@ -350,3 +351,28 @@ def test_apply_portfolio_grade_modifiers_is_a_noop_on_no_grade():
     result = le.apply_portfolio_grade_modifiers(base, max_correlation_with_open_position=0.9)
     assert result.grade is None
     assert result.reasons == ["geometría no viable"]
+
+
+def test_gate_grade_and_geometry_functions_never_accept_a_monthly_timeframe_reading():
+    """Parte 7.2 (biblioteca de setups, quant_methodology.md §28.x), literal:
+    "la celda mensual no entra en el gate, ni en el grado, ni en ningún
+    gatillo". El encargo pide un test que compare dos escenarios idénticos
+    salvo por la lectura mensual - pero eso resultó impracticable de
+    construir de verdad: `classify_stage` reutiliza el mismo `lookback=20`/
+    `long_lookback=100` (en unidades de la propia serie) para mensual Y
+    semanal, así que cualquier tramo de historial lo bastante antiguo para
+    mover la etapa mensual también cae dentro del alcance de
+    `long_lookback` de la etapa SEMANAL (verificado con un script) - no hay
+    forma de que solo uno de los dos difiera con una construcción simple de
+    "tramo reciente idéntico, tramo antiguo distinto". La garantía real y
+    verificable es estructural, no empírica: ninguna de estas cuatro
+    funciones - las únicas que deciden gate/grado/geometría/tamaño en todo
+    el sistema - tiene siquiera un parámetro por el que
+    `multi_timeframe.TimeframeStrip`/su celda mensual podría entrar. Mismo
+    principio que `test_exit_engine_never_imports_recommendation_engine`,
+    aplicado a la firma en vez de a los imports."""
+    for func in (le.evaluate_gate, le.compute_grade, tg.compute_entry_geometry, tg.size_position):
+        for name, param in inspect.signature(func).parameters.items():
+            assert "monthly" not in name.lower()
+            assert "timeframe_strip" not in name.lower()
+            assert "TimeframeStrip" not in str(param.annotation)

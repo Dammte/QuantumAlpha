@@ -36,6 +36,7 @@ def _to_domain(orm: TickerDailyStateORM) -> TickerDailyState:
         entry_geometry=orm.entry_geometry,
         grade=orm.grade,
         setups=orm.setups,
+        timeframe_strip=orm.timeframe_strip,
     )
 
 
@@ -77,6 +78,7 @@ class TickerDailyStateRepository(TickerDailyStateRepositoryPort):
             entry_geometry=state.entry_geometry,
             grade=state.grade,
             setups=state.setups,
+            timeframe_strip=state.timeframe_strip,
         )
         self.db.add(orm)
         self.db.commit()
