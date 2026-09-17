@@ -637,14 +637,54 @@ def test_linear_regression_fit_pure_noise_has_a_weak_t_stat():
     assert abs(fit.t_stat) < 2.0  # no hay tendencia genuina que declarar
 
 
-def test_linear_regression_fit_none_for_a_constant_series():
+def test_linear_regression_fit_flat_slope_for_a_constant_series():
+    # Una serie constante SÍ tiene un ajuste bien definido - pendiente 0,
+    # ajuste perfecto - no "nada que ajustar". Importa de verdad para
+    # setups/classic_patterns.py (Parte 5.4): el techo de un triángulo
+    # ascendente perfectamente plano es exactamente este caso.
     y = pd.Series([100.0] * 30)
-    assert ta.linear_regression_fit(y) is None
+    fit = ta.linear_regression_fit(y)
+    assert fit is not None
+    assert fit.slope == 0.0
+    assert fit.r_squared == 1.0
+    assert fit.t_stat == 0.0
+    assert fit.residual_std == 0.0
 
 
 def test_linear_regression_fit_none_with_fewer_than_three_points():
     y = pd.Series([100.0, 101.0])
     assert ta.linear_regression_fit(y) is None
+
+
+def test_linear_regression_fit_uses_explicit_x_positions_when_given():
+    # setups/classic_patterns.py (Parte 5.4, triángulos) ajusta sobre
+    # pivotes alternos, espaciados de forma irregular - la separación real
+    # entre ellos importa para la pendiente, no solo su orden secuencial.
+    x = [0.0, 10.0, 50.0]  # muy espaciados al final
+    y = pd.Series([100.0, 110.0, 150.0])
+    fit_with_x = ta.linear_regression_fit(y, x=x)
+    fit_default = ta.linear_regression_fit(y)  # x implícito: 0, 1, 2
+    assert fit_with_x is not None
+    assert fit_default is not None
+    assert fit_with_x.slope != pytest.approx(fit_default.slope)
+    # Pendiente esperada con las x reales: (150-100)/(50-0) = 1.0
+    assert fit_with_x.slope == pytest.approx(1.0, abs=0.15)
+
+
+def test_linear_regression_fit_none_when_x_length_does_not_match_y():
+    assert ta.linear_regression_fit(pd.Series([100.0, 101.0, 102.0]), x=[0.0, 1.0]) is None
+
+
+def test_indexed_fractal_pivots_keeps_the_bar_position_unlike_the_plain_version():
+    # `setups/vcp.py`/`setups/classic_patterns.py` necesitan la SECUENCIA
+    # cronológica de pivotes (posición, no solo precio) para reconstruir
+    # contracciones/patrones - `_fractal_pivots` (usada por `detect_levels`)
+    # sigue devolviendo solo precios, sin cambios, para su único consumidor.
+    close = pd.Series([100.0, 101.0, 102.0, 110.0, 103.0, 102.0, 101.0, 100.0])
+    indexed = ta.indexed_fractal_pivots(close, left=3, right=3, kind="high")
+    plain = ta._fractal_pivots(close, left=3, right=3, kind="high")
+    assert indexed == [(3, 110.0)]
+    assert plain == [110.0]
 
 
 # --- detect_fast_pair_bearish_veto: cuarta auditoría, Bloque B (B-1.3) ------

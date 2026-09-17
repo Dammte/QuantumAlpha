@@ -5,13 +5,12 @@ da el punto de entrada exacto que se forma al final de esa etapa.
 
 **La familia genuinamente cara de construir, documentado desde el propio
 plan de fases (§28.1)**: necesita la SECUENCIA cronológica de pivotes
-(máximo→mínimo→máximo...), no solo sus precios - `technical_analysis._fractal_pivots`
-(la primitiva compartida, usada por `detect_levels`) descarta la posición
-de cada pivote porque `detect_levels` no la necesita. `_indexed_fractal_pivots`
-reimplementa aquí la MISMA definición exacta de pivote (no una nueva regla),
-solo conservando también su índice - "no repitas piezas" se cumple a nivel
-de lógica, no de firma de función, cuando la firma compartida no puede dar
-lo que este detector necesita sin cambiar a todos los demás consumidores.
+(máximo→mínimo→máximo...), no solo sus precios -
+`technical_analysis.indexed_fractal_pivots` (compartida también con
+`setups/classic_patterns.py`, fase posterior, para doble suelo y
+triángulos) - "no repitas piezas" a nivel de lógica: misma regla exacta de
+pivote que `detect_levels` ya usaba, solo que esta variante conserva
+también la posición de cada uno.
 
 **Correcciones propias, incorporadas antes de escribir este detector** (ver
 quant_methodology.md §28.1): la tolerancia de "contracción decreciente" del
@@ -20,9 +19,9 @@ una secuencia 20%→22%→18% pasaba como "decreciente" pese a que el segundo
 tramo es más grande que el primero. Misma tolerancia corregida para el
 volumen decreciente."""
 
-import numpy as np
 import pandas as pd
 
+from app.services import technical_analysis as ta
 from app.services.setups.context import SetupContext
 from app.services.setups.types import SetupConfidence, SetupFamily, SetupMatch, SetupStage
 
@@ -39,20 +38,6 @@ VCP_TRIGGER_VOLUME_MULTIPLE = 1.4
 VCP_TRIGGER_VOLUME_WINDOW = 50
 VCP_FAILED_LOOKBACK_DAYS = 3
 VCP_TRIGGER_BUFFER_PCT = 0.002
-
-
-def _indexed_fractal_pivots(series: pd.Series, kind: str) -> list[tuple[int, float]]:
-    values = series.to_numpy()
-    left = right = VCP_PIVOT_LEFT_RIGHT
-    pivots = []
-    for i in range(left, len(values) - right):
-        window = values[i - left : i + right + 1]
-        center = values[i]
-        if kind == "high" and center == window.max() and np.count_nonzero(window == center) == 1:
-            pivots.append((i, float(center)))
-        elif kind == "low" and center == window.min() and np.count_nonzero(window == center) == 1:
-            pivots.append((i, float(center)))
-    return pivots
 
 
 def _alternating_pivots(
@@ -105,8 +90,8 @@ def detect(ctx: SetupContext) -> list[SetupMatch]:
     volume = ctx.volume.iloc[-VCP_LOOKBACK_BARS:].reset_index(drop=True)
     close = close.reset_index(drop=True)
 
-    highs = _indexed_fractal_pivots(close, "high")
-    lows = _indexed_fractal_pivots(close, "low")
+    highs = ta.indexed_fractal_pivots(close, VCP_PIVOT_LEFT_RIGHT, VCP_PIVOT_LEFT_RIGHT, "high")
+    lows = ta.indexed_fractal_pivots(close, VCP_PIVOT_LEFT_RIGHT, VCP_PIVOT_LEFT_RIGHT, "low")
     alternating = _alternating_pivots(highs, lows)
     contractions = _contractions(alternating)
     if not (VCP_MIN_CONTRACTIONS <= len(contractions) <= VCP_MAX_CONTRACTIONS):

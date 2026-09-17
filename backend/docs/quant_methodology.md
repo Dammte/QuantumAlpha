@@ -3114,3 +3114,53 @@ decrecen, el rechazo cuando el volumen crece en vez de decrecer, y dos casos de 
 insuficiente (sin datos de sobra, y con datos pero sin bares suficientes para ningún pivote).
 Presupuesto de latencia sigue en verde con el detector más caro ya registrado. Suite completa
 verde, ruff limpio.
+
+### 28.10 Fase 5 (interna, primera entrega): `classic_patterns.py` - doble suelo y triángulos
+
+Parte 5. `technical_analysis.indexed_fractal_pivots` (introducida en §28.9 para `vcp.py`) se
+confirma como primitiva de verdad compartida - segundo consumidor real, tal como su propio
+docstring ya anticipaba.
+
+**Ampliación de `linear_regression_fit` para aceptar `x` explícito**: los triángulos ajustan sobre
+pivotes alternos irregularmente espaciados en el tiempo (posiciones reales de barra, no 0,1,2...
+secuencial) - `channel.py` sigue sin pasar `x`, comportamiento sin cambios. Bug real encontrado al
+verificar el primer triángulo sintético (techo perfectamente plano, 4 toques todos en 150,0): la
+función devolvía `None` para una serie Y constante, asumiendo "pendiente indefinida" - pero una
+recta constante SÍ tiene un ajuste bien definido (pendiente 0, ajuste perfecto). `scipy.stats.linregress`
+ya calcula bien la pendiente en ese caso; solo su r²/error estándar salen `nan` (varianza total
+cero) - se rellenan a mano (r²=1, t=0, residuo=0) en vez de devolver `None`. Sin este fix, un techo
+de triángulo ascendente genuinamente plano - el caso más común, no un borde raro - nunca se
+detectaba. `test_linear_regression_fit_none_for_a_constant_series` (§28.7) se actualiza a
+`..._flat_slope_for_a_constant_series`, comportamiento nuevo documentado, no solo cambiado.
+
+**Doble suelo**: dos mínimos de swing (`indexed_fractal_pivots`) separados 15-90 sesiones,
+diferencia ≤4%, un máximo intermedio ≥8% por encima, y el segundo mínimo con menos volumen que el
+primero - "es lo que distingue un doble suelo real de una caída en dos tramos" (Parte 5.3, literal).
+
+**Triángulos**: `linear_regression_fit` con `x` real sobre los últimos altos/bajos alternos,
+clasificado por el signo de ambas pendientes (umbral de "plano" normalizado por ATR,
+`TRIANGLE_FLAT_SLOPE_ATR_FRACTION=0,05` - sin umbral numérico literal en el encargo para esto, a
+diferencia de casi todos los demás de esta biblioteca, así que es una elección propia documentada).
+Punto de convergencia calculado resolviendo dónde se cruzan las dos rectas ajustadas; fuera de
+`TRIANGLE_MAX_BARS_TO_APEX=60` sesiones futuras, se descarta como "dos rectas cualquiera, no un
+triángulo" (Parte 5.4, literal). Solo `ascending_triangle` dispara (`CLASSIC_PATTERNS_CAN_TRIGGER`,
+Parte 5.6) - los otros cuatro (descendente, simétrico, cuña ascendente, cuña descendente) se
+detectan y devuelven igual, con `trigger_price=None` por construcción.
+
+**Diseño distinto del resto de la biblioteca, documentado en el propio módulo**: `classic_patterns.detect`
+puede devolver MÁS de un match a la vez (p. ej. un doble suelo y un triángulo detectados
+simultáneamente son dos patrones genuinamente distintos, no dos etapas del mismo) - a diferencia de
+cada otra familia, que devuelve como mucho uno. La elección entre familias sigue siendo trabajo
+exclusivo de `arbitration.py`.
+
+**Tests**: 2 nuevos en `test_technical_analysis.py` para la ampliación de `linear_regression_fit`
+(x explícito da una pendiente distinta que x implícito sobre los mismos valores; `None` si `x` no
+tiene la misma longitud que `y`) más el test actualizado de serie constante; 1 para
+`indexed_fractal_pivots` (confirma que conserva la posición donde `_fractal_pivots` no lo hace); 8
+en `test_classic_patterns.py` - doble suelo con sus dos rechazos (volumen, diferencia de nivel),
+triángulo ascendente disparando, triángulo descendente nunca disparando, ruido puro sin ningún
+patrón, historial insuficiente, y que la lista blanca de disparo sigue siendo exactamente esas tres
+(bloquea que un patrón nuevo herede el disparo por accidente). Suite completa verde, ruff limpio.
+
+**Pendiente para una fase posterior**: taza con asa y hombro-cabeza-hombro (los dos patrones
+restantes de la Parte 5), en un commit propio dado el tamaño ya alcanzado por este.

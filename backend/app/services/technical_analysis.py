@@ -829,19 +829,37 @@ class RegressionFit:
     residual_std: float  # desviación típica de los residuos - la anchura de las bandas de un canal
 
 
-def linear_regression_fit(y: pd.Series) -> RegressionFit | None:
-    """`None` con menos de 3 puntos, o si la serie es constante (pendiente
-    indefinida - no hay nada que ajustar)."""
+def linear_regression_fit(y: pd.Series, x: list[float] | None = None) -> RegressionFit | None:
+    """`None` con menos de 3 puntos.
+
+    `x`, opcional: posiciones reales de cada punto de `y` (p. ej. índices de
+    barra de pivotes alternos, irregularmente espaciados) - por defecto
+    `0, 1, 2, ...` (barras consecutivas, lo que `setups/channel.py` ya usa
+    sobre una ventana de cierres). `setups/classic_patterns.py` (Parte 5.4,
+    triángulos) pasa las posiciones reales de los pivotes: la separación
+    real entre ellos importa para la pendiente, no solo su orden.
+
+    Una serie constante SÍ tiene un ajuste bien definido - pendiente 0,
+    ajuste perfecto (r²=1, sin residuos) - a diferencia de lo que una
+    primera versión de esta función asumía (`None`, "pendiente
+    indefinida"). Importa de verdad para `classic_patterns.py`: un techo de
+    triángulo ascendente perfectamente plano es exactamente ese caso, no
+    "nada que ajustar" - `scipy.stats.linregress` sí calcula bien la
+    pendiente (0.0) para Y constante, solo su r²/error estándar salen `nan`
+    (varianza total cero, división por cero en esa fórmula concreta), así
+    que esos dos campos se rellenan a mano en ese caso especial."""
     values = y.dropna()
     n = len(values)
     if n < 3:
         return None
     y_arr = values.to_numpy(dtype=float)
-    if np.allclose(y_arr, y_arr[0]):
+    x_arr = np.asarray(x, dtype=float) if x is not None else np.arange(n, dtype=float)
+    if len(x_arr) != n:
         return None
-    x = np.arange(n, dtype=float)
-    fit = _scipy_stats.linregress(x, y_arr)
-    predicted = fit.slope * x + fit.intercept
+    if np.allclose(y_arr, y_arr[0]):
+        return RegressionFit(slope=0.0, intercept=float(y_arr[0]), r_squared=1.0, t_stat=0.0, residual_std=0.0)
+    fit = _scipy_stats.linregress(x_arr, y_arr)
+    predicted = fit.slope * x_arr + fit.intercept
     residuals = y_arr - predicted
     dof = n - 2
     if dof <= 0:
@@ -977,15 +995,27 @@ class PriceLevel:
 def _fractal_pivots(series: pd.Series, left: int, right: int, kind: str) -> list[float]:
     """A bar is a pivot high if it's the max of its `left`+`right` neighborhood
     (mirror for pivot low) - the standard "fractal" swing-point definition."""
+    return [price for _, price in indexed_fractal_pivots(series, left, right, kind)]
+
+
+def indexed_fractal_pivots(series: pd.Series, left: int, right: int, kind: str) -> list[tuple[int, float]]:
+    """Misma definición exacta de pivote que `_fractal_pivots`, pero
+    conservando también la posición de cada uno - `detect_levels` (el
+    primer consumidor) nunca necesitó la posición, así que esa función se
+    quedó con la forma simple; `setups/vcp.py` (Parte 3) y
+    `setups/classic_patterns.py` (Parte 5, fase posterior) sí la necesitan,
+    para reconstruir la SECUENCIA cronológica de pivotes (máximo→mínimo→
+    máximo...), no solo sus precios sueltos. Una sola implementación de la
+    regla del pivote, dos formas de leer el resultado."""
     values = series.to_numpy()
     pivots = []
     for i in range(left, len(values) - right):
         window = values[i - left : i + right + 1]
         center = values[i]
         if kind == "high" and center == window.max() and np.count_nonzero(window == center) == 1:
-            pivots.append(float(center))
+            pivots.append((i, float(center)))
         elif kind == "low" and center == window.min() and np.count_nonzero(window == center) == 1:
-            pivots.append(float(center))
+            pivots.append((i, float(center)))
     return pivots
 
 

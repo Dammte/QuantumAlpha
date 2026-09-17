@@ -16,7 +16,7 @@ mismo ticker."""
 import logging
 from collections.abc import Callable
 
-from app.services.setups import breakout, channel, ma_cross, pullback, stage_transition, vcp
+from app.services.setups import breakout, channel, classic_patterns, ma_cross, pullback, stage_transition, vcp
 from app.services.setups.context import SetupContext
 from app.services.setups.types import SetupMatch
 
@@ -31,6 +31,7 @@ SETUP_DETECTORS: list[SetupDetector] = [
     pullback.detect,  # Parte 4.2 - retroceso en tendencia
     breakout.detect,  # Parte 4.1 - ruptura de nivel / caja de Darvas
     channel.detect,  # Parte 4.4 - canales por regresión lineal
+    classic_patterns.detect,  # Parte 5 - doble suelo, triángulos (primera entrega)
 ]
 
 
