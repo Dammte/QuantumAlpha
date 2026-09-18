@@ -3814,3 +3814,46 @@ etiqueta `'Setup listo'`.
 nuevos en `test_daily_close.py` (transición normal; ausente ayer; ya ready ayer no duplica; un ciclo
 completo ready→failed→ready vuelve a contar); 2 nuevos en `test_trigger_performance_service.py`
 (medido como su propio tipo; nunca se divide por `taken`). Suite completa, ruff y eslint limpios.
+
+### 28.23 Auditoría de la Parte 13.1/13.3 contra el texto literal - dos huecos reales cerrados
+
+Con el texto literal completo de la Parte 13 disponible de nuevo, se auditó cada caso obligatorio de
+la tabla 13.1 y cada escenario de la 13.3 contra la suite existente (un agente de exploración leyó
+los siete detectores y sus siete archivos de test completos, no solo `grep` de palabras clave). El
+resultado: **la Parte 13.1/13.2 ya estaba prácticamente completa** de fases anteriores de esta misma
+sesión - VCP (contracciones/volumen creciente rechazados), canal (ruido puro vs. tendencia limpia),
+taza con asa (V, asa abajo, asa subiendo), HCH (`trigger_price is None` verificado en 3 fixtures
+distintas), ruptura (ya extendida 1,5 ATR rechazada, con `BREAKOUT_MAX_EXTENSION_ATR=1.0` real), cruce
+rápido (convergencia por caída de la lenta rechazada) - y toda la 13.2 (mensual inerte, sin red por
+AST, presupuestos de latencia de detectores/Radar) ya tenían su test exacto de fases previas (§28.3,
+§28.18). Solo dos huecos genuinos, ambos cerrados aquí:
+
+- **VCP, "última contracción del 14% → no está listo"** (Parte 13.1): no existía un test en el
+  límite de `VCP_FINAL_CONTRACTION_MAX_PCT=0,10` (no 0,15 como se supuso al principio de la
+  auditoría - confirmado leyendo `vcp.py`) con 3+ contracciones presentes -
+  `test_vcp_forming_with_only_two_contractions` nunca llega a esa rama (decide por CUENTA de
+  contracciones, no por profundidad). `test_vcp_forming_when_the_last_contraction_is_still_too_deep_to_be_ready`
+  construye tres contracciones limpias y decrecientes (30%→20%→14%) - la última por encima del
+  umbral - y confirma `vcp_forming`, no `vcp_ready`.
+- **Los cinco subestados en orden** (Parte 13.3, escenario 1): existía un test por subestado por
+  separado, pero ninguno demostraba la PROGRESIÓN. `test_the_five_substages_are_reached_in_order_on_a_genuine_decline_to_breakout`
+  reutiliza los fixtures YA VERIFICADOS de cada test individual (nunca una serie nueva sin probar) -
+  la misma base de 12 semanas lateralizada (`_base_weekly_series`) alimentada con cada vez más
+  información (RS girando, precio acercándose al techo, ruptura semanal confirmada) - y verifica que
+  `detect()` devuelve los cinco nombres en el orden correcto.
+- **Bonus, verificado pero ya cubierto sin cambios**: el VCP de 3 contracciones 24/13/7 (escenario 2)
+  y el canal alcista tocando la banda inferior (escenario 5) ya usaban esos números/esa forma
+  exactos desde que se escribieron esos detectores - no hicieron falta tests nuevos.
+- **Caja de Darvas del 9% en 30 sesiones, "gatillo en el techo, anulación en el suelo"** (Parte
+  13.3, escenario 3): el test existente (`test_darvas_box_matches_a_tight_recent_range`) usaba un
+  rango del 5,7% y nunca ganó la ventana de 30 sesiones específicamente (una caja suelta de 40
+  sesiones demasiado estrecha dejaba que la ventana de 60 sesiones ganara igual) ni afirmaba
+  `trigger_price`/`invalidation_price` explícitamente. `test_darvas_box_9_percent_range_over_30_sessions_triggers_at_the_ceiling_invalidates_at_the_floor`
+  construye 40 sesiones sueltas deliberadamente ANCHAS (para que 40/50/60 sesiones queden
+  descartadas) seguidas de 30 apretadas en ~8,2% (bajo el 9% literal), y confirma
+  `evidence["window_sessions"] == 30` y `trigger_price == box_high` / `invalidation_price == box_low`.
+
+**Tests**: 3 nuevos (uno por hueco), verificados primero con un script de scratchpad antes de
+fijarlos (el VCP, ejecutando `vcp.detect` sobre la serie de contracciones 30/20/14% para confirmar
+`vcp_forming`; el Darvas, iterando el rango de la caja hasta que solo la ventana de 30 sesiones
+encajara). Suite completa (1082 tests) y ruff limpios.

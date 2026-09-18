@@ -90,6 +90,26 @@ def test_vcp_ready_with_three_decreasing_contractions_near_the_pivot():
     assert matches[0].evidence["depths_pct"] == [0.24, 0.1303, 0.0703]
 
 
+def test_vcp_forming_when_the_last_contraction_is_still_too_deep_to_be_ready():
+    # Parte 13.1, literal: "última contracción del 14% → no está listo".
+    # Tres contracciones limpias y decrecientes (30% -> 20% -> 14%), pero la
+    # última sigue por encima de VCP_FINAL_CONTRACTION_MAX_PCT=0,10 - sigue
+    # formándose, no está lista para el disparo todavía.
+    segments = [
+        (100, 140, 15), (140, 98, 15), (98, 130, 15), (130, 104, 15),
+        (104, 125, 15), (125, 107.5, 15), (107.5, 112, 8),
+    ]
+    volumes = [3_000_000.0, 3_000_000.0, 2_200_000.0, 2_200_000.0, 1_200_000.0, 1_200_000.0, 900_000.0]
+    close, volume = _build(segments, volumes)
+
+    matches = vcp.detect(_ctx(close, volume))
+
+    assert len(matches) == 1
+    assert matches[0].name == "vcp_forming"
+    assert matches[0].stage == SetupStage.FORMING
+    assert matches[0].evidence["depths_pct"] == [0.30, 0.20, 0.14]
+
+
 def test_vcp_forming_with_only_two_contractions():
     # [:5], no [:4]: el segundo mínimo necesita un tramo posterior que
     # vuelva a subir para poder confirmarse como pivote real (un mínimo en

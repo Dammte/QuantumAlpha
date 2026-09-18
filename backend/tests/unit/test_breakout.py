@@ -111,6 +111,30 @@ def test_darvas_box_matches_a_tight_recent_range():
     assert matches[0].name == "caja_de_darvas"
 
 
+def test_darvas_box_9_percent_range_over_30_sessions_triggers_at_the_ceiling_invalidates_at_the_floor():
+    # Parte 13.3, escenario 3, literal: "una caja de Darvas del 9% durante
+    # 30 sesiones -> gatillo en el techo, anulación en el suelo". 40 sesiones
+    # sueltas y anchas (para que las ventanas de 40/50/60 sesiones NO
+    # encajen, solo la de 30) seguidas de 30 sesiones apretadas en un rango
+    # de ~8,2% (< DARVAS_MAX_RANGE_PCT=0,12, cerca del 9% literal).
+    loose = 60 + np.arange(40) * 1.0
+    tight = 100 + np.sin(np.linspace(0, 6, 30)) * 4.3
+    close = np.concatenate([loose, tight])
+
+    matches = breakout.detect(_ctx(close))
+
+    assert len(matches) == 1
+    match = matches[0]
+    assert match.name == "caja_de_darvas"
+    assert match.evidence["window_sessions"] == 30
+    box_high = float(pd.Series(tight).max())
+    box_low = float(pd.Series(tight).min())
+    assert (box_high - box_low) / box_high < 0.09  # cerca del 9% literal, por debajo
+    # "gatillo en el techo, anulación en el suelo" - literal.
+    assert match.trigger_price == box_high
+    assert match.invalidation_price == box_low
+
+
 def test_darvas_box_rejected_when_range_is_too_wide():
     loose = 90 + np.arange(40) * 0.3
     wide = 90 + np.arange(30) * 1.0  # rango de 29 sobre un máximo de ~119 -> ~24%, > 12%

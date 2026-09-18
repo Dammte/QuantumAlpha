@@ -292,6 +292,73 @@ def test_stage2_confirmed_requires_ma30_slope_already_positive():
     assert st._check_stage2_confirmed(ctx, base, slope) is None
 
 
+def test_the_five_substages_are_reached_in_order_on_a_genuine_decline_to_breakout():
+    """Parte 13.3, escenario 1: "un valor que cae, se lateraliza 12 semanas,
+    la RS gira, y rompe con volumen -> recorre los cinco subestados en
+    orden". Reutiliza exactamente los fixtures ya verificados de cada test
+    individual de más arriba (misma caída/base/ruptura, no una serie nueva
+    sin probar) para demostrar que, a partir de la MISMA base de 12 semanas
+    lateralizada, `detect()` progresa por los cinco nombres en el orden
+    correcto según cuánta información adicional se le da."""
+    # 1) stage1_base_forming: la MA30 todavía declinando, pero aplanándose -
+    # el propio precursor de la base, antes de que exista una base confirmada.
+    decline_steep = np.linspace(200, 110, 40)
+    decline_gentle = np.linspace(110, 104, 16)
+    tight_tail = np.linspace(104, 102, 8)
+    forming_close = np.concatenate([decline_steep, decline_gentle, tight_tail])
+    forming_volume = np.full(len(forming_close), 1_000_000.0)
+    forming = st.detect(_ctx(forming_close, forming_volume))
+    assert [m.name for m in forming] == ["stage1_base_forming"]
+
+    # 2) stage1_base_confirmed: la caída se completa y se lateraliza 12
+    # semanas de verdad (`_base_weekly_series` - 40 semanas de caída + 45
+    # semanas planas con volumen secándose), sin RS todavía.
+    weekly_close, weekly_volume = _base_weekly_series()
+    confirmed = st.detect(_ctx(weekly_close, weekly_volume))
+    assert [m.name for m in confirmed] == ["stage1_base_confirmed"]
+
+    # 3) stage1_rs_turning: la MISMA base, pero la fuerza relativa cruza al
+    # alza sobre su propia MA10.
+    rng = np.random.default_rng(5)
+    flat_rs = -3 + rng.normal(0, 0.2, 27)
+    mansfield_rs = [*flat_rs.tolist(), 1.0]
+    rs_turning = st.detect(_ctx(weekly_close, weekly_volume, mansfield_rs=mansfield_rs))
+    assert [m.name for m in rs_turning] == ["stage1_rs_turning"]
+
+    # 4) stage2_breakout_imminent: la MISMA base, con el precio diario a
+    # menos de 1 ATR del techo y volumen relativo alto y subiendo.
+    base_high = float(pd.Series(weekly_close[-12:]).max())
+    daily_close = [base_high - 2.5, base_high - 2.0, base_high - 1.5, base_high - 0.8]
+    daily_volume = [400_000.0, 420_000.0, 450_000.0, 900_000.0]
+    imminent = st.detect(
+        _ctx(
+            weekly_close, weekly_volume, daily_close=daily_close, daily_volume=daily_volume,
+            atr14=1.0, relative_volume=1.3,
+        )
+    )
+    assert [m.name for m in imminent] == ["stage2_breakout_imminent"]
+
+    # 5) stage2_confirmed: la MISMA base, ahora con una ruptura semanal real
+    # por encima del techo y un repunte de volumen fuerte.
+    breakout_tail = np.linspace(weekly_close[-1], base_high * 1.06, 6)
+    weekly_close_breakout = np.concatenate([weekly_close, breakout_tail])
+    volume_tail = np.concatenate([np.full(5, 500_000.0), [2_500_000.0]])
+    weekly_volume_breakout = np.concatenate([weekly_volume, volume_tail])
+    confirmed_breakout = st.detect(_ctx(weekly_close_breakout, weekly_volume_breakout))
+    assert [m.name for m in confirmed_breakout] == ["stage2_confirmed"]
+
+    # El propio orden narrativo del recorrido, para que este test documente
+    # la secuencia y no solo cinco asserts sueltos.
+    order = [
+        forming[0].name, confirmed[0].name, rs_turning[0].name,
+        imminent[0].name, confirmed_breakout[0].name,
+    ]
+    assert order == [
+        "stage1_base_forming", "stage1_base_confirmed", "stage1_rs_turning",
+        "stage2_breakout_imminent", "stage2_confirmed",
+    ]
+
+
 def test_a_base_deeper_than_35_percent_is_rejected_as_a_genuine_base():
     # MA30 plana en promedio (zigzag simétrico alrededor de 100), pero el
     # rango real de precios dentro de esa "base" supera el 35% - Parte 2.3:
