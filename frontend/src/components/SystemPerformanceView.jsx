@@ -6,7 +6,11 @@ const VERDICT_LABELS = { comprar: 'Comprar', esperar: 'Esperar', evitar: 'Evitar
 
 // Reconstruction (2026-09), Fase 8: TriggerEvent's own event_type values -
 // see trigger_performance_service.py.
-const TRIGGER_EVENT_LABELS = { gate_passed: 'Gate aprobado', entry_triggered: 'Entrada disparada' }
+const TRIGGER_EVENT_LABELS = {
+  gate_passed: 'Gate aprobado',
+  entry_triggered: 'Entrada disparada',
+  setup_triggered: 'Setup disparado',
+}
 
 const MAX_FALSE_NEGATIVES_SHOWN = 25
 
@@ -127,7 +131,7 @@ function SystemPerformanceView() {
 
       <OutcomeTable
         title="Por evento del gate/disparador (Fase 8 - la lectura principal actual)"
-        hint="Retorno realizado a N sesiones desde cada cambio de estado que daily_close.py detectó (el gate pasó a aprobado, o el disparador de entrada se activó) - mide directamente si el gate nuevo tiene valor predictivo real, no lo asume. Para 'Entrada disparada', la columna '¿Comprado?' separa lo que de verdad se compró (dentro de los 10 días siguientes) de lo que no - Parte 13. Historial disponible solo desde que empezó a correr el cron de cierre diario."
+        hint="Retorno realizado a N sesiones desde cada cambio de estado que daily_close.py detectó (el gate pasó a aprobado, el disparador de entrada se activó, o un setup concreto de la biblioteca del Radar disparó) - mide directamente si el gate/la biblioteca de setups tienen valor predictivo real, no lo asume. Para 'Entrada disparada' y 'Setup disparado', la columna '¿Comprado?' separa lo que de verdad se compró (dentro de los 10 días siguientes) de lo que no - Parte 13. Historial disponible solo desde que empezó a correr el cron de cierre diario (y, para 'Setup disparado', solo desde que la biblioteca de setups quedó conectada)."
         kind="trigger"
         columnLabel="Evento"
         outcomes={triggerOutcomes}

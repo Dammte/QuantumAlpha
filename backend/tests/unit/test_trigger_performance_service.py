@@ -141,6 +141,43 @@ def test_compute_trigger_outcomes_splits_entry_triggered_by_taken():
     assert by_taken[("entry_triggered", 10, None)].n == 2
 
 
+def test_compute_trigger_outcomes_measures_setup_triggered_as_its_own_event_type():
+    close = _close_series("2024-01-01", [100.0] * 10 + [110.0] * 60)
+    when = datetime.combine(close.index[0].date(), datetime.min.time(), tzinfo=UTC)
+    events = [_event("AAPL", "setup_triggered", when)]
+
+    outcomes = tps.compute_trigger_outcomes(events, {"AAPL": close})
+
+    by_horizon = {o.horizon_days: o for o in outcomes if o.event_type == "setup_triggered"}
+    assert by_horizon[10].n == 1
+    assert by_horizon[10].hit_rate == 1.0
+    assert by_horizon[10].mean_return == pytest.approx(0.10)
+
+
+def test_compute_trigger_outcomes_splits_setup_triggered_by_taken():
+    # Biblioteca de setups, §28.1 Fase 10 interna: un `setup_triggered` es
+    # tan "accionable" como un `entry_triggered` - misma pregunta de la
+    # Parte 13 ("¿lo tomaste de verdad?"), reutilizando exactamente el mismo
+    # mecanismo, sin agregación nueva.
+    close = _close_series("2024-01-01", list(100.0 + i for i in range(80)))
+    trigger_date = close.index[0].date()
+    when = datetime.combine(trigger_date, datetime.min.time(), tzinfo=UTC)
+    events = [
+        _event("AAPL", "setup_triggered", when),
+        _event("MSFT", "setup_triggered", when),
+    ]
+    buy_dates = {"AAPL": [trigger_date + timedelta(days=3)]}
+
+    outcomes = tps.compute_trigger_outcomes(
+        events, {"AAPL": close, "MSFT": close}, buy_dates_by_ticker=buy_dates
+    )
+
+    by_taken = {(o.event_type, o.horizon_days, o.taken): o for o in outcomes}
+    assert by_taken[("setup_triggered", 10, True)].n == 1
+    assert by_taken[("setup_triggered", 10, False)].n == 1
+    assert by_taken[("setup_triggered", 10, None)].n == 2
+
+
 def test_compute_trigger_outcomes_never_splits_gate_passed_by_taken():
     # Parte 13: "taken" is only a coherent question for entry_triggered -
     # gate_passed is an earlier, less specific state nobody "acts on" directly.

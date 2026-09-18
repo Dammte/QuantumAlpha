@@ -386,6 +386,86 @@ def test_ticker_trigger_events_none_when_nothing_changed():
     assert dc.ticker_trigger_events(previous, new, datetime.now(UTC)) == []
 
 
+def test_ticker_trigger_events_setup_triggered_on_ready_to_triggered_transition():
+    previous = _ticker_state(
+        trade_date=date(2026, 9, 9), setups=[{"name": "vcp_3", "family": "vcp", "stage": "ready"}]
+    )
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10), setups=[{"name": "vcp_3", "family": "vcp", "stage": "triggered"}]
+    )
+    events = dc.ticker_trigger_events(previous, new, datetime.now(UTC))
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "setup_triggered"
+    assert event.previous_value == "ready"
+    assert event.new_value == "triggered"
+    assert event.details == {"price": new.price, "setup_name": "vcp_3", "family": "vcp"}
+
+
+def test_ticker_trigger_events_setup_triggered_absent_when_already_triggered_yesterday():
+    previous = _ticker_state(
+        trade_date=date(2026, 9, 9), setups=[{"name": "vcp_3", "family": "vcp", "stage": "triggered"}]
+    )
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10), setups=[{"name": "vcp_3", "family": "vcp", "stage": "triggered"}]
+    )
+    assert dc.ticker_trigger_events(previous, new, datetime.now(UTC)) == []
+
+
+def test_ticker_trigger_events_setup_triggered_when_setup_absent_yesterday():
+    previous = _ticker_state(trade_date=date(2026, 9, 9), setups=[])
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10), setups=[{"name": "vcp_3", "family": "vcp", "stage": "triggered"}]
+    )
+    events = dc.ticker_trigger_events(previous, new, datetime.now(UTC))
+    assert len(events) == 1
+    assert events[0].previous_value is None
+
+
+def test_ticker_trigger_events_setup_triggered_ignores_forming_and_failed():
+    previous = _ticker_state(
+        trade_date=date(2026, 9, 9),
+        setups=[
+            {"name": "a", "family": "vcp", "stage": "forming"},
+            {"name": "b", "family": "vcp", "stage": "ready"},
+        ],
+    )
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10),
+        setups=[
+            {"name": "a", "family": "vcp", "stage": "ready"},
+            {"name": "b", "family": "vcp", "stage": "failed"},
+        ],
+    )
+    assert dc.ticker_trigger_events(previous, new, datetime.now(UTC)) == []
+
+
+def test_ticker_trigger_events_setup_triggered_two_setups_same_day():
+    previous = _ticker_state(
+        trade_date=date(2026, 9, 9),
+        setups=[
+            {"name": "vcp_3", "family": "vcp", "stage": "ready"},
+            {"name": "breakout_darvas", "family": "breakout", "stage": "forming"},
+        ],
+    )
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10),
+        setups=[
+            {"name": "vcp_3", "family": "vcp", "stage": "triggered"},
+            {"name": "breakout_darvas", "family": "breakout", "stage": "triggered"},
+        ],
+    )
+    events = dc.ticker_trigger_events(previous, new, datetime.now(UTC))
+    assert {e.details["setup_name"] for e in events} == {"vcp_3", "breakout_darvas"}
+    assert all(e.event_type == "setup_triggered" for e in events)
+
+
+def test_ticker_trigger_events_setup_triggered_none_setups_does_not_crash():
+    previous = _ticker_state(trade_date=date(2026, 9, 9), setups=None)
+    new = _ticker_state(trade_date=date(2026, 9, 10), setups=None)
+    assert dc.ticker_trigger_events(previous, new, datetime.now(UTC)) == []
+
+
 # --- position_daily_state_from_risk --------------------------------------------
 
 

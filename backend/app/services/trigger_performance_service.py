@@ -7,14 +7,23 @@ Fase 8 forward pointer) - this module is the new primary read, built on
 `TriggerEvent` (Fase 2's own append-only "what changed" log) instead of a
 per-request "Analizar activo" audit trail.
 
-Two event types worth measuring separately, both hypotheses about whether
-the gate design has any real predictive value at all - not assumed true:
+Three event types worth measuring separately, all hypotheses about whether
+the gate/setup-library design has any real predictive value at all - not
+assumed true:
 
 - `gate_passed`: did price rise in the sessions after the gate flipped from
   failing to passing?
 - `entry_triggered`: did price rise in the sessions after the entry trigger
   price was actually crossed (a later, more specific moment than the gate
   merely turning on)?
+- `setup_triggered` (biblioteca de setups, §28.1's internal Fase 10 - "taken
+  derivado contra transacciones reales, nunca persistido, misma decisión que
+  este módulo ya tomó"): did price rise after a specific named setup
+  (`daily_close.ticker_trigger_events`) reached `SetupStage.TRIGGERED`? A
+  distinct, more granular question than `entry_triggered` - the gate's own
+  generic trigger vs. a specific pattern (VCP, breakout...) confirming -
+  answered here for free by reusing the exact same `TriggerEvent`/
+  `compute_trigger_outcomes` machinery, no new aggregation needed.
 
 `exit_urgency_changed` (position-level) is deliberately excluded - it's
 about an already-open position's own exit engine reacting, not a fresh
@@ -31,14 +40,15 @@ call across every distinct ticker.
 
 **Parte 13 - "qué pasó con lo que no compraste"**: `TriggerEvent` has no
 persisted `taken` flag the way the brief's own `trigger_history` schema
-does - whether an `entry_triggered` event was actually acted on is derived
-here instead, from the portfolios' own real `Transaction` history (a BUY of
-that ticker within `TAKEN_WINDOW_DAYS` of the trigger), rather than adding a
-column nothing else would ever write to. `buy_dates_by_ticker` is optional
-everywhere below (`None` skips the comparison entirely, same as before this
-existed) precisely so this stays meaningful only for `entry_triggered` - a
-mere `gate_passed` isn't something the propietario acts on directly, so
-"taken" isn't a coherent question to ask of it."""
+does - whether an `entry_triggered`/`setup_triggered` event was actually
+acted on is derived here instead, from the portfolios' own real
+`Transaction` history (a BUY of that ticker within `TAKEN_WINDOW_DAYS` of
+the trigger), rather than adding a column nothing else would ever write to.
+`buy_dates_by_ticker` is optional everywhere below (`None` skips the
+comparison entirely, same as before this existed) precisely so this stays
+meaningful only for `TAKEN_ELIGIBLE_EVENT_TYPES` - a mere `gate_passed`
+isn't something the propietario acts on directly, so "taken" isn't a
+coherent question to ask of it."""
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -53,7 +63,12 @@ from app.services.market_data_service import MarketDataService
 
 FORWARD_HORIZONS = (5, 10, 21, 63)  # trading sessions - same as signal_performance_service.py
 
-MEASURED_EVENT_TYPES = ("gate_passed", "entry_triggered")
+MEASURED_EVENT_TYPES = ("gate_passed", "entry_triggered", "setup_triggered")
+
+# De los tipos medidos, en cuáles tiene sentido preguntar "¿se tomó de
+# verdad?" (Parte 13) - un `gate_passed` es un estado, no una acción
+# concreta sobre la que el propietario decide comprar o no.
+TAKEN_ELIGIBLE_EVENT_TYPES = ("entry_triggered", "setup_triggered")
 
 # Calendar days, not trading sessions - a generous window past the primary
 # 5-session horizon (covers weekends/holidays) for "did a BUY follow this
@@ -100,11 +115,12 @@ def compute_trigger_outcomes(
 ) -> list[TriggerOutcomeStats]:
     """`buy_dates_by_ticker` (Parte 13, optional - `None` reproduces the
     exact pre-existing behavior, one combined row per event type/horizon)
-    additionally splits every `entry_triggered` row into a `taken=True` and
-    a `taken=False` row, each measured against only its own subset of
-    events - "did the triggers you actually acted on outperform the ones
-    you skipped" is a different, real question from the combined hit rate
-    above it, not a refinement of the same number."""
+    additionally splits every row whose event type is in
+    `TAKEN_ELIGIBLE_EVENT_TYPES` into a `taken=True` and a `taken=False`
+    row, each measured against only its own subset of events - "did the
+    triggers you actually acted on outperform the ones you skipped" is a
+    different, real question from the combined hit rate above it, not a
+    refinement of the same number."""
     by_key: dict[tuple[str, int, bool | None], list[float]] = defaultdict(list)
     for event in events:
         if event.entity_type != "ticker" or event.event_type not in MEASURED_EVENT_TYPES:
@@ -114,7 +130,7 @@ def compute_trigger_outcomes(
             continue
         event_date = event.occurred_at.date()
         taken = None
-        if buy_dates_by_ticker is not None and event.event_type == "entry_triggered":
+        if buy_dates_by_ticker is not None and event.event_type in TAKEN_ELIGIBLE_EVENT_TYPES:
             taken = _was_taken(event.entity_key, event_date, buy_dates_by_ticker, TAKEN_WINDOW_DAYS)
         for horizon in FORWARD_HORIZONS:
             ret = sps.forward_return(close, event_date, horizon)

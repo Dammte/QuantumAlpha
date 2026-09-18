@@ -74,7 +74,7 @@ from app.services.setups import arbitration as setups_arbitration
 from app.services.setups import context_modifiers as setups_context_modifiers
 from app.services.setups import registry as setups_registry
 from app.services.setups.context import SetupContext
-from app.services.setups.types import setup_match_to_dict
+from app.services.setups.types import SetupStage, setup_match_to_dict
 from app.services.ticker_analysis_service import MIN_BARS_REQUIRED
 from app.services.trade_geometry import geometry_to_dict
 
@@ -319,7 +319,17 @@ def ticker_trigger_events(
     state and today's - `[]` when there's nothing to compare against yet
     (the very first run ever tracking this ticker) or when `previous` is
     itself from today (a same-day retry, not a real day-over-day
-    transition)."""
+    transition).
+
+    `setup_triggered` (biblioteca de setups, Fase 10 interna del §28.1 -
+    "taken derivado contra transacciones reales, nunca persistido, misma
+    decisión que `trigger_performance_service.py` ya tomó") es un evento por
+    (ticker, nombre de setup) que llega a `SetupStage.TRIGGERED` desde
+    cualquier otro estado (o desde no existir ayer) - comparado por nombre,
+    no por posición en la lista, porque el orden de `setups` puede cambiar
+    de un día a otro (`arbitration.order_by_rank`). Reutiliza el mismo
+    `TriggerEvent`/`compute_trigger_outcomes` que ya mide `entry_triggered` -
+    ningún esquema ni agregación nuevos, ver `trigger_performance_service.py`."""
     if previous is None or previous.trade_date == new.trade_date:
         return []
     events: list[TriggerEvent] = []
@@ -347,6 +357,24 @@ def ticker_trigger_events(
                 new_value=new.entry_trigger_type,
                 occurred_at=now,
                 details={"price": new.price, "trigger_price": new.entry_trigger_price},
+            )
+        )
+    previous_setup_stage = {s["name"]: s.get("stage") for s in (previous.setups or [])}
+    for setup in new.setups or []:
+        if setup.get("stage") != SetupStage.TRIGGERED.value:
+            continue
+        if previous_setup_stage.get(setup["name"]) == SetupStage.TRIGGERED.value:
+            continue  # ya disparado ayer - no es una transición nueva
+        events.append(
+            TriggerEvent(
+                id=None,
+                entity_type="ticker",
+                entity_key=new.ticker,
+                event_type="setup_triggered",
+                previous_value=previous_setup_stage.get(setup["name"]),
+                new_value=SetupStage.TRIGGERED.value,
+                occurred_at=now,
+                details={"price": new.price, "setup_name": setup["name"], "family": setup.get("family")},
             )
         )
     return events

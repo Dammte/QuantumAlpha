@@ -3696,3 +3696,49 @@ colapsada y de la expandida, sin errores de consola.
 serializa siempre, mismo criterio que `distance_atr` en la Fase 9); 1 nuevo confirmando que una fila
 de `setup_performance` se adjunta correctamente al setup que corresponde. Suite completa verde, ruff
 y eslint limpios.
+
+### 28.20 Fase 10 interna (§28.1): `setup_triggered` - "taken" también para setups concretos
+
+El plan original de fases (§28.1) dejaba explícitamente pendiente una "Fase 10: `taken` derivado
+contra transacciones reales, nunca persistido, misma decisión que `trigger_performance_service.py`
+ya tomó" - la única pieza de ese plan que seguía sin implementar tras la §28.19. La pregunta de la
+Parte 13 ("qué pasó con lo que no compraste") ya se contesta para `entry_triggered` (el disparador
+genérico del gate, §26.9) pero nunca se había extendido al disparo de un setup concreto de esta
+biblioteca (VCP, ruptura, retroceso...) - una pregunta más específica y, en principio, más accionable
+que la genérica del gate.
+
+**Cero esquema nuevo, cero agregación nueva** - el mecanismo entero (`TriggerEvent`,
+`trigger_performance_service.compute_trigger_outcomes`, la ventana `TAKEN_WINDOW_DAYS` contra
+`Transaction`) ya era completamente genérico sobre `event_type`; lo único que faltaba era emitir el
+evento. `daily_close.ticker_trigger_events` gana una tercera comparación día-a-día, junto a
+`gate_passed`/`entry_triggered`: para cada nombre de setup presente en `new.setups` con
+`stage == "triggered"`, si ese mismo nombre no estaba ya en `"triggered"` ayer (comparado por
+nombre, no por posición en la lista - `arbitration.order_by_rank` puede reordenar la lista de un día
+a otro), emite un `TriggerEvent(event_type="setup_triggered", entity_key=ticker,
+previous_value=<etapa de ayer o None>, new_value="triggered", details={setup_name, family, price})`.
+`entity_key` es el ticker (no `"{ticker}:{setup_name}"`) a propósito - `compute_trigger_outcomes`
+indexa `buy_dates_by_ticker` por ticker, y una compra real no distingue por qué setup la motivó;
+mezclar varios setups triggered del mismo ticker en el mismo `entity_key` es correcto aquí, no una
+pérdida de información (el `details` de cada evento sigue llevando qué setup fue).
+
+`trigger_performance_service.py`: `MEASURED_EVENT_TYPES` gana `"setup_triggered"`;
+`TAKEN_ELIGIBLE_EVENT_TYPES = ("entry_triggered", "setup_triggered")` (nueva, sustituye el
+`if event.event_type == "entry_triggered"` literal de `compute_trigger_outcomes`) - un
+`setup_triggered` es tan accionable como un `entry_triggered`, la misma pregunta de "¿se tomó de
+verdad?" tiene sentido para ambos; `gate_passed` sigue excluido (un estado, no una acción concreta).
+`GET /system/signal-performance` no cambió - ya reenviaba genéricamente todos los `TriggerEvent`
+sin filtrar por tipo.
+
+**Frontend** (`SystemPerformanceView.jsx`): `TRIGGER_EVENT_LABELS` gana `setup_triggered: 'Setup
+disparado'` - la tabla de eventos del gate/disparador ya era genérica sobre `event_type`
+(`showTaken` ya activo), así que las filas nuevas aparecen solas, con su propia columna "¿Comprado?"
+sin cambio de componente. Texto de ayuda actualizado para nombrar el caso nuevo.
+
+**Tests**: 6 nuevos en `test_daily_close.py` (transición ready→triggered emite el evento; ya
+disparado ayer no duplica; ausente ayer y ya disparado hoy emite con `previous_value=None`; forming/
+failed nunca disparan el evento; dos setups distintos disparando el mismo día dan dos eventos; una
+lista `setups=None` en cualquiera de los dos lados no revienta); 2 nuevos en
+`test_trigger_performance_service.py` (`setup_triggered` medido como su propio `event_type`;
+`setup_triggered` se divide por `taken` exactamente igual que `entry_triggered`). Verificado antes de
+fijar los tests con un script de scratchpad reproduciendo los mismos cinco casos límite. Suite
+completa (1050+ tests) y ruff limpios.
