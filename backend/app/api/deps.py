@@ -15,6 +15,7 @@ from app.infrastructure.db.repositories.position_signal_snapshot_repository impo
     PositionSignalSnapshotRepository,
 )
 from app.infrastructure.db.repositories.recommendation_snapshot_repository import RecommendationSnapshotRepository
+from app.infrastructure.db.repositories.setup_performance_repository import SetupPerformanceRepository
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.infrastructure.db.repositories.trigger_event_repository import TriggerEventRepository
@@ -107,6 +108,10 @@ def get_position_signal_snapshot_repository(db: DbSession) -> PositionSignalSnap
 
 def get_ticker_daily_state_repository(db: DbSession) -> TickerDailyStateRepository:
     return TickerDailyStateRepository(db)
+
+
+def get_setup_performance_repository(db: DbSession) -> SetupPerformanceRepository:
+    return SetupPerformanceRepository(db)
 
 
 def get_position_daily_state_repository(db: DbSession) -> PositionDailyStateRepository:

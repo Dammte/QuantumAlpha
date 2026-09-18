@@ -9,11 +9,14 @@ from app.api.deps import (
     get_market_context_service,
     get_market_screener_service,
     get_portfolio_service,
+    get_setup_performance_repository,
     get_ticker_daily_state_repository,
     get_trade_plan_repository,
 )
+from app.domain.models.setup_performance import SetupPerformance
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.domain.models.ticker_snapshot import TickerSnapshot
+from app.infrastructure.db.repositories.setup_performance_repository import SetupPerformanceRepository
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.schemas.market import (
@@ -33,6 +36,7 @@ from app.schemas.market import (
     RelationshipMapResponse,
     SectorPeerResponse,
     SetupMatchResponse,
+    SetupPerformanceStatsResponse,
     StatisticalRelationResponse,
     StopAndTargetResponse,
     SupportResistanceResponse,
@@ -204,8 +208,29 @@ def _grade_dict_to_response(data: dict | None) -> GradeResponse | None:
     return GradeResponse(**data) if data is not None else None
 
 
-def _setups_list_to_response(data: list[dict] | None) -> list[SetupMatchResponse] | None:
-    return [SetupMatchResponse(**item) for item in data] if data is not None else None
+def _performance_stats_response(performance: SetupPerformance) -> SetupPerformanceStatsResponse:
+    return SetupPerformanceStatsResponse(
+        n_observations=performance.n_observations,
+        trigger_rate=performance.trigger_rate,
+        win_rate=performance.win_rate,
+        expectancy_r=performance.expectancy_r,
+        median_bars_held=performance.median_bars_held,
+        mae_p80_pct=performance.mae_p80_pct,
+        failure_rate_3d=performance.failure_rate_3d,
+    )
+
+
+def _setups_list_to_response(
+    data: list[dict] | None, performance_by_name: dict[str, SetupPerformance]
+) -> list[SetupMatchResponse] | None:
+    if data is None:
+        return None
+    matches = [SetupMatchResponse(**item) for item in data]
+    for match in matches:
+        performance = performance_by_name.get(match.name)
+        if performance is not None:
+            match.measured_stats = _performance_stats_response(performance)
+    return matches
 
 
 def _timeframe_strip_dict_to_response(data: dict | None) -> TimeframeStripResponse | None:
@@ -299,7 +324,9 @@ def _rank_and_cut_radar_items(items: list[RadarItemResponse]) -> list[RadarItemR
     return survivors[:RADAR_MAX_ITEMS]
 
 
-def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
+def _daily_state_to_radar_item(
+    state: TickerDailyState, performance_by_name: dict[str, SetupPerformance]
+) -> RadarItemResponse:
     return RadarItemResponse(
         ticker=state.ticker,
         region=state.region,
@@ -337,7 +364,7 @@ def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
         ),
         entry_geometry=_geometry_dict_to_response(state.entry_geometry),
         grade=_grade_dict_to_response(state.grade),
-        setups=_setups_list_to_response(state.setups),
+        setups=_setups_list_to_response(state.setups, performance_by_name),
         timeframe_strip=_timeframe_strip_dict_to_response(state.timeframe_strip),
         sector=state.sector,
         sector_rs_percentile=state.sector_rs_percentile,
@@ -347,6 +374,7 @@ def _daily_state_to_radar_item(state: TickerDailyState) -> RadarItemResponse:
 @router.get("/radar", response_model=RadarResponse)
 def get_radar(
     ticker_daily_state_repo: Annotated[TickerDailyStateRepository, Depends(get_ticker_daily_state_repository)],
+    setup_performance_repo: Annotated[SetupPerformanceRepository, Depends(get_setup_performance_repository)],
     portfolio_service: Annotated[PortfolioService, Depends(get_portfolio_service)],
     trade_plan_repo: Annotated[TradePlanRepository, Depends(get_trade_plan_repository)],
     region: str = RegionQuery,
@@ -366,10 +394,19 @@ def get_radar(
     has ever run for this region) - a caller-visible way to tell "empty
     because nothing qualifies right now" from "empty because there's no data
     at all"."""
+    # Parte 10.2/11.1 (§28.x): la foto completa de setup_performance, leída
+    # una sola vez por request - no por fila - y filtrada a la fila sin
+    # segmentar de cada nombre (ver `SetupMatchResponse.measured_stats`).
+    performance_by_name = {
+        row.setup_name: row
+        for row in setup_performance_repo.all()
+        if row.grade is None and row.market_regime is None
+    }
+
     states = ticker_daily_state_repo.latest_by_region(region)
     candidates = [s for s in states if s.gate_passes or s.entry_trigger_price is not None]
     computed_at = max((s.computed_at for s in states), default=None)
-    items = [_daily_state_to_radar_item(s) for s in candidates]
+    items = [_daily_state_to_radar_item(s, performance_by_name) for s in candidates]
     # Parte 8/9 (§28.x): descarta/ordena/recorta ANTES de dimensionar contra
     # una cartera concreta más abajo - no tiene sentido gastar ese trabajo
     # en filas que el propio corte va a descartar de todas formas.

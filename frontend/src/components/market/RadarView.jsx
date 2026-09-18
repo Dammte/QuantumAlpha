@@ -88,6 +88,25 @@ function SetupBadge({ setup }) {
   )
 }
 
+function SetupStatBadge({ stats }) {
+  // Parte 10.3/12.1: solo se muestra con muestra real detrás
+  // (n_observations viene siempre que exista una fila en setup_performance,
+  // pero win_rate/expectancy_r solo se rellenan una vez algo ha disparado -
+  // ver setup_replay.aggregate_setup_performance) - "sin muestra" se queda
+  // sin badge, nunca un "85% de probabilidad" fabricado.
+  if (!stats || stats.win_rate == null || stats.expectancy_r == null) return null
+  const sign = stats.expectancy_r >= 0 ? '+' : ''
+  return (
+    <span
+      className="watchlist-card__industry"
+      title={`Medido sobre ${stats.n_observations} disparos históricos - no es una promesa para el próximo trade.`}
+    >
+      {(stats.win_rate * 100).toFixed(0)}% · {sign}
+      {stats.expectancy_r.toFixed(2)}R
+    </span>
+  )
+}
+
 function RadarRow({ item, onNavigateToTicker }) {
   const [expanded, setExpanded] = useState(false)
   const setup = leadingSetup(item)
@@ -150,6 +169,7 @@ function RadarRow({ item, onNavigateToTicker }) {
             </span>
           )}
           <TrendBadge trend={item.trend} />
+          <SetupStatBadge stats={setup?.measured_stats} />
           <button type="button" className="timeframe-tab" onClick={() => setExpanded((v) => !v)}>
             {expanded ? 'Ocultar detalle' : 'Ver detalle'}
           </button>
@@ -171,6 +191,34 @@ function RadarRow({ item, onNavigateToTicker }) {
                   </span>
                 ))}
               </dl>
+            </div>
+          )}
+
+          {setup?.measured_stats && (
+            <div className="radar-row__detail-section">
+              <p className="radar-row__detail-title">Estadística medida del setup</p>
+              <div className="radar-row__trigger-invalidation">
+                <span className="radar-row__numeric">{setup.measured_stats.n_observations} observaciones</span>
+                {setup.measured_stats.trigger_rate != null && (
+                  <span className="radar-row__numeric">
+                    {(setup.measured_stats.trigger_rate * 100).toFixed(0)}% llegó a disparar
+                  </span>
+                )}
+                {setup.measured_stats.win_rate != null && (
+                  <span className="radar-row__numeric">
+                    {(setup.measured_stats.win_rate * 100).toFixed(0)}% tocó objetivo antes que stop
+                  </span>
+                )}
+                {setup.measured_stats.expectancy_r != null && (
+                  <span className="radar-row__numeric">
+                    Expectancy {setup.measured_stats.expectancy_r >= 0 ? '+' : ''}
+                    {setup.measured_stats.expectancy_r.toFixed(2)}R
+                  </span>
+                )}
+              </div>
+              <p className="radar-row__narrative">
+                Historia medida, no una promesa para el próximo trade.
+              </p>
             </div>
           )}
 

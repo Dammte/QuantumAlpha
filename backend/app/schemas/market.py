@@ -296,6 +296,23 @@ class TimeframeStripResponse(BaseModel):
     daily: TimeframeCellResponse
 
 
+class SetupPerformanceStatsResponse(BaseModel):
+    """Ver `app.domain.models.setup_performance.SetupPerformance` - siempre
+    la fila SIN segmentar (`grade`/`market_regime` en `None`) de un nombre
+    de setup, la única que `GET /market/radar` adjunta (Parte 10.2/11.1).
+    `None` en `SetupMatchResponse.measured_stats` cuando
+    `scripts/setup_replay_study.py` nunca corrió para este nombre - nunca
+    una medición fabricada."""
+
+    n_observations: int
+    trigger_rate: float | None
+    win_rate: float | None
+    expectancy_r: float | None
+    median_bars_held: float | None
+    mae_p80_pct: float | None
+    failure_rate_3d: float | None
+
+
 class SetupMatchResponse(BaseModel):
     """Ver `app.services.setups.types.SetupMatch` - una coincidencia de un
     detector de la biblioteca de setups del Radar (en curso,
@@ -317,6 +334,12 @@ class SetupMatchResponse(BaseModel):
     evidence: dict[str, float | int | str]
     narrative_es: str
     confidence: str  # "measured" | "thin" | "unvalidated"
+    # Parte 10.2/11.1 (§28.x) - adjuntado en el endpoint, no persistido
+    # junto al resto de este dict (ver `setup_performance`'s propio
+    # docstring: una sola fila por nombre de setup en toda la base de
+    # datos, no una copia por cada fila de `TickerDailyState` que lo
+    # muestre). `None` sin medición todavía.
+    measured_stats: SetupPerformanceStatsResponse | None = None
 
 
 class RadarItemResponse(BaseModel):

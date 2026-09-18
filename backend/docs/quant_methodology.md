@@ -3665,3 +3665,34 @@ cumple), pero sin ningún test que lo demostrara explícitamente con 4 setups re
 Los otros dos de la Parte 13.2 (mensual nunca altera gate/grado/gatillo; cortes por sector y por
 total respetados) ya tenían su propio test dedicado desde las Fases 8 y 9 respectivamente - no se
 repiten aquí. Suite completa verde, ruff limpio.
+
+### 28.19 Fase 13 (Parte 10.2/11.1): la estadística medida, visible en el Radar
+
+Con `setup_performance` ya poblada (§28.17), la última pieza que faltaba era mostrar de verdad "la
+estadística del setup" que la Parte 12.1 pedía en la fila colapsada y expandida - hasta ahora
+deliberadamente omitida (§28.15: "sin datos todavía"). Esta fase la conecta de punta a punta.
+
+**Una sola fila en toda la base de datos, nunca copiada en cada `TickerDailyState`** - a diferencia
+de `grade`/`setups`/`timeframe_strip` (que sí se recalculan y persisten por ticker cada noche),
+`setup_performance` es la misma medición para CUALQUIER ticker que muestre ese nombre de setup. Se
+adjunta en `GET /market/radar`, no en `daily_close.py`: `SetupMatchResponse.measured_stats` se
+rellena en el propio endpoint (`_setups_list_to_response`, con una nueva dependencia
+`get_setup_performance_repository`), leyendo la tabla UNA VEZ por request (no por fila) e indexando
+por nombre - el mismo patrón exacto que `daily_close.py` ya usa para `apply_measured_confidence`
+(§28.17), aplicado ahora en el lado de lectura en vez de en el de escritura. Sin esto, cada una de
+las miles de filas de `TickerDailyState` que mencionan `vcp_3_contracciones` tendría su propia copia
+de los mismos siete números, desincronizándose en cuanto el estudio se reejecutara sin que
+`daily_close.py` hubiera vuelto a correr todavía para ese ticker.
+
+**Frontend**: `SetupStatBadge` en la fila colapsada ("55% · +0,42R", con un `title` recordando que es
+histórico, no una promesa) y una sección "Estadística medida del setup" completa en el detalle
+expandido (observaciones, `trigger_rate`, `win_rate`, `expectancy_r`) - ambas se quedan en blanco sin
+`measured_stats` (`win_rate`/`expectancy_r` en `None`), nunca un "85% de probabilidad" fabricado
+(Parte 15, literal). Verificado en navegador real contra el Postgres local (backend + frontend
+levantados, un ticker sembrado con una fila de `setup_performance` real) - captura de la fila
+colapsada y de la expandida, sin errores de consola.
+
+**Tests**: 1 test corregido en `test_radar_exposes_the_persisted_setups` (`measured_stats: None` se
+serializa siempre, mismo criterio que `distance_atr` en la Fase 9); 1 nuevo confirmando que una fila
+de `setup_performance` se adjunta correctamente al setup que corresponde. Suite completa verde, ruff
+y eslint limpios.

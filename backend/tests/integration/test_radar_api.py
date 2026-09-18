@@ -229,7 +229,39 @@ def test_radar_exposes_the_persisted_setups(client: TestClient, db_session: Sess
     body = client.get("/api/v1/market/radar?region=us").json()
 
     nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
-    assert nvda["setups"] == [match]
+    # `measured_stats` (Parte 10.2/11.1) siempre se serializa - `None` sin
+    # ninguna fila de `setup_performance` para este nombre todavía.
+    assert nvda["setups"] == [{**match, "measured_stats": None}]
+
+
+def test_radar_attaches_measured_stats_from_setup_performance(client: TestClient, db_session: Session) -> None:
+    # Parte 10.2/11.1: la fila SIN segmentar de setup_performance (si
+    # scripts/setup_replay_study.py ya corrió para este nombre) se adjunta
+    # al setup correspondiente - una sola fila en toda la base de datos,
+    # nunca copiada dentro de cada TickerDailyState.
+    from app.domain.models.setup_performance import SetupPerformance
+    from app.infrastructure.db.repositories.setup_performance_repository import SetupPerformanceRepository
+
+    SetupPerformanceRepository(db_session).replace_all(
+        [
+            SetupPerformance(
+                id=None, setup_name="vcp_3_contracciones", family="vcp", grade=None, market_regime=None,
+                n_observations=35, trigger_rate=0.6, win_rate=0.55, expectancy_r=0.42,
+                median_bars_held=6.0, mae_p80_pct=-0.03, failure_rate_3d=0.1, confidence="measured",
+                computed_at=datetime.now(UTC),
+            )
+        ]
+    )
+    _seed_state(db_session, ticker="NVDA", setups=[_setup("ready", name="vcp_3_contracciones")])
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    stats = nvda["setups"][0]["measured_stats"]
+    assert stats is not None
+    assert stats["n_observations"] == 35
+    assert stats["win_rate"] == 0.55
+    assert stats["expectancy_r"] == 0.42
 
 
 def test_radar_sizes_the_entry_geometry_against_a_portfolios_capital(
