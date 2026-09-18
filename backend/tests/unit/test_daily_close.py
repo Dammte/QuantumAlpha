@@ -15,6 +15,7 @@ from app.domain.models.position_daily_state import PositionDailyState
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.domain.models.trade_plan import TradePlan
+from app.domain.models.trigger_event import TriggerEvent
 from app.services import exit_engine as ee
 from app.services import technical_analysis as ta
 from app.services.portfolio_risk_service import PositionRisk
@@ -526,6 +527,69 @@ def test_ticker_trigger_events_setup_triggered_none_setups_does_not_crash():
     previous = _ticker_state(trade_date=date(2026, 9, 9), setups=None)
     new = _ticker_state(trade_date=date(2026, 9, 10), setups=None)
     assert dc.ticker_trigger_events(previous, new, datetime.now(UTC)) == []
+
+
+# --- _today_trigger_counts (Auditoria del Radar, bloque B4) ------------------
+
+
+class _FakeTriggerEventRepo:
+    """Doble mínimo de `TriggerEventRepository` - solo `list_since` importa
+    aquí, `_today_trigger_counts` no toca nada más de la interfaz real."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def list_since(self, since, entity_type=None):
+        return [e for e in self._events if e.occurred_at >= since and e.entity_type == entity_type]
+
+
+def _trigger_event(event_type: str, occurred_at: datetime, entity_type: str = "ticker") -> TriggerEvent:
+    return TriggerEvent(
+        id=None, entity_type=entity_type, entity_key="AAPL", event_type=event_type,
+        previous_value=None, new_value=None, occurred_at=occurred_at, details={},
+    )
+
+
+def test_today_trigger_counts_counts_gate_passed_and_entry_triggered_separately():
+    trade_date = date(2026, 9, 10)
+    today = datetime(2026, 9, 10, 15, 0, tzinfo=UTC)
+    events = [
+        _trigger_event("gate_passed", today),
+        _trigger_event("gate_passed", today),
+        _trigger_event("entry_triggered", today),
+        _trigger_event("gate_failed", today),  # no cuenta para ninguno de los dos
+    ]
+    repo = _FakeTriggerEventRepo(events)
+
+    new_gate_passes, new_entry_triggers = dc._today_trigger_counts(repo, trade_date)
+
+    assert new_gate_passes == 2
+    assert new_entry_triggers == 1
+
+
+def test_today_trigger_counts_ignores_events_from_a_previous_day():
+    trade_date = date(2026, 9, 10)
+    yesterday = datetime(2026, 9, 9, 15, 0, tzinfo=UTC)
+    repo = _FakeTriggerEventRepo([_trigger_event("gate_passed", yesterday)])
+
+    new_gate_passes, new_entry_triggers = dc._today_trigger_counts(repo, trade_date)
+
+    assert new_gate_passes == 0
+    assert new_entry_triggers == 0
+
+
+def test_today_trigger_counts_is_stable_across_repeated_calls_same_day():
+    # El propio punto de B4: el mismo conteo sale sin importar cuántas veces
+    # se "reintente" - list_since nunca duplica (append-only), así que
+    # llamar dos veces con el mismo repo da el mismo resultado.
+    trade_date = date(2026, 9, 10)
+    today = datetime(2026, 9, 10, 15, 0, tzinfo=UTC)
+    repo = _FakeTriggerEventRepo([_trigger_event("entry_triggered", today)])
+
+    first = dc._today_trigger_counts(repo, trade_date)
+    second = dc._today_trigger_counts(repo, trade_date)
+
+    assert first == second == (0, 1)
 
 
 # --- position_daily_state_from_risk --------------------------------------------

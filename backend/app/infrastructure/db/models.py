@@ -191,6 +191,7 @@ class JobRunORM(Base):
     status: Mapped[str] = mapped_column(String(20))  # "running" | "success" | "failed"
     rows_processed: Mapped[int] = mapped_column(default=0)
     error_message: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class TickerDailyStateORM(Base):

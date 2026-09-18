@@ -19,3 +19,10 @@ class JobRun:
     status: str  # "running" | "success" | "failed"
     rows_processed: int
     error_message: str | None
+    # Resumen ejecutable del run (Auditoria del Radar, bloque C.1) - JSON
+    # libre, no un esquema fijo: `daily_close.py` guarda tickers procesados/
+    # fallidos (agrupados por tipo de error), cuantos pasan el gate, setups
+    # por familia y duracion; otros jobs pueden guardar lo que les sea util
+    # sin migrar este modelo cada vez. `None` para runs anteriores a este
+    # campo, o para jobs que no necesitan detalle estructurado.
+    detail: dict | None = None

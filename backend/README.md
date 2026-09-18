@@ -110,6 +110,41 @@ Basadas en las convenciones de librerías de referencia del ecosistema quant en 
 - Win rate
 - Beta y alfa de Jensen frente a un benchmark (opcional, vía `benchmark_ticker`, p. ej. `^GSPC`)
 
+## Operación en producción: jobs nocturnos (cron)
+
+`scripts/daily_close.py` es el único escritor de `ticker_daily_states` - la tabla que alimenta
+`GET /market/radar` y `GET /portfolios/{id}/today`. Sin él (o mientras el Render Cron Job que lo
+dispara todavía no está activado/pagado - ver el comentario de coste en `render.yaml`), esos
+endpoints se quedan vacíos indefinidamente, con el mensaje que explica por qué (nunca
+`message: null` en silencio).
+
+**Para rellenar la tabla ahora mismo, sin esperar a las 22:00**, desde la shell de Render del
+servicio `quantumalpha-api` (pestaña "Shell" del servicio en el dashboard - comparte el mismo
+`DATABASE_URL` que el cron, así que el resultado es idéntico a una ejecución programada):
+
+```bash
+cd backend  # si la shell no arranca ya en rootDir
+python -m scripts.daily_close                # ambas regiones
+python -m scripts.daily_close --region us    # solo una región, más rápido para probar
+```
+
+Alternativa sin shell: en la página del propio Cron Job (`quantumalpha-daily-close`) en el
+dashboard de Render hay un botón de disparo manual ("Trigger Run" o equivalente en la versión
+vigente de la interfaz) que ejecuta exactamente el mismo `startCommand` que la programación, contra
+la misma base de datos.
+
+El comando imprime un resumen ejecutable (tickers procesados/fallidos por tipo de error, cuántos
+pasan el gate, setups nuevos por familia, duración) - el mismo resumen queda además persistido en
+`job_runs.detail` para poder auditarlo después sin depender de los logs de Render, que no se
+retienen indefinidamente. Un ticker con datos corruptos o un fallo de red puntual no aborta el resto
+del universo (aislado por ticker); si el job entero falla por algo fuera de esos bucles, la fila de
+`job_runs` queda en `status="failed"` con el error, nunca colgada en `"running"`.
+
+Correrlo varias veces el mismo día es seguro: `ticker_daily_states`/`daily_briefs` se sobrescriben
+por (ticker, fecha)/(cartera, fecha) con el estado más reciente, y los contadores de disparos nuevos
+del día se derivan del propio log de eventos (`trigger_events`), no de un acumulador que se reinicia
+en cada intento - un reintento nunca "borra" los disparos ya detectados hoy.
+
 ## Roadmap (siguientes pasos sugeridos)
 
 1. **Persistencia de precios históricos**: cachear velas OHLCV en `price_bars` en vez de llamar a

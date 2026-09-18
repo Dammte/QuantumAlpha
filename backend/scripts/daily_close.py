@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -464,6 +465,27 @@ class DailyCloseResult:
     rows_processed: int
     new_gate_passes: int
     new_entry_triggers: int
+    detail: dict
+
+
+def _today_trigger_counts(trigger_repo: TriggerEventRepository, trade_date: date) -> tuple[int, int]:
+    """Auditoria del Radar, bloque B4: `new_gate_passes`/`new_entry_triggers`
+    ya NO se acumulan localmente mientras se recorre el universo - un
+    reintento del mismo día vería `ticker_trigger_events` devolver `[]` para
+    todos (la propia guarda de "previous.trade_date == new.trade_date"), así
+    que el acumulador local se leería en cero aunque los disparos reales ya
+    hubieran ocurrido en un intento anterior ese mismo día, machacando
+    `daily_briefs` con un resumen falso. En vez de eso, se cuenta desde el
+    propio log de `TriggerEvent` (append-only, nunca duplica - ver el
+    docstring de `TriggerEventRepositoryPort.record`) filtrado a hoy: el
+    mismo número sale independientemente de cuántas veces se haya corrido
+    `daily_close.py` hoy mismo, que es justo lo que "idempotente" significa
+    aquí."""
+    today_start = datetime.combine(trade_date, datetime.min.time(), tzinfo=UTC)
+    today_events = trigger_repo.list_since(today_start, entity_type="ticker")
+    new_gate_passes = sum(1 for e in today_events if e.event_type == "gate_passed")
+    new_entry_triggers = sum(1 for e in today_events if e.event_type == "entry_triggered")
+    return new_gate_passes, new_entry_triggers
 
 
 def run_daily_close(
@@ -472,6 +494,13 @@ def run_daily_close(
     screener: MarketScreenerService,
     regions: tuple[str, ...] = REGIONS,
 ) -> DailyCloseResult:
+    """Auditoria del Radar (bloque C), tras el diagnóstico del bloque A:
+    aisla cada ticker y cada cartera (B2/B3 - un fallo puntual nunca debe
+    tumbar el resto del universo ni dejar `job_runs` colgado en "running"),
+    fuerza el precio de verdad de cierre en vez de la caché durable de 3h
+    que puede llevar precios intradía (B1), y deja un resumen ejecutable
+    persistido en `job_runs.detail` (bloque C.1) - no solo en logs, que
+    Render no retiene indefinidamente."""
     job_repo = JobRunRepository(db)
     ticker_repo = TickerDailyStateRepository(db)
     position_repo = PositionDailyStateRepository(db)
@@ -484,9 +513,14 @@ def run_daily_close(
     job = job_repo.start("daily_close")
     trade_date = date.today()
     now = datetime.now(UTC)
+    started_monotonic = time.monotonic()
     rows_processed = 0
-    new_gate_passes = 0
-    new_entry_triggers = 0
+    tickers_processed = 0
+    tickers_failed_by_type: dict[str, int] = {}
+    gate_passes_today = 0
+    setups_by_family: dict[str, int] = {}
+    portfolios_processed = 0
+    portfolios_failed_by_type: dict[str, int] = {}
 
     # Parte 10.3 (§28.x): la foto completa de `setup_performance` (si
     # `scripts/setup_replay_study.py` ya corrió alguna vez), leída una sola
@@ -503,7 +537,12 @@ def run_daily_close(
     try:
         universe_snapshot: list[TickerSnapshot] = []
         for region in regions:
-            snapshot = screener.get_universe_snapshot(region, db=db)
+            # B1: `force_refresh=True` - este job es la propia definición de
+            # "el cierre". Sin esto, la caché durable de 3h (compartida con
+            # el servicio web vía `durable_cache.py`) puede colarle precios
+            # intradía de hace un par de horas como si fueran el cierre real,
+            # si algún usuario ya disparó un recálculo esta tarde.
+            snapshot = screener.get_universe_snapshot(region, force_refresh=True, db=db)
             universe_snapshot.extend(snapshot)
             ohlcv_by_ticker = screener.get_cached_ohlcv(region)
             # Biblioteca de setups del Radar (`stage1_rs_turning`, §28): el
@@ -516,65 +555,124 @@ def run_daily_close(
                 df = ohlcv_by_ticker.get(ts.ticker)
                 if df is None:
                     continue
-                # Parte 6.2's `no_event_risk` - one network call per ticker,
-                # accepted here (unlike in any live request path) because
-                # this job runs once a night, off the request path entirely
-                # (Parte 4.1) - the exact distinction CLAUDE.md's "no
-                # llamadas de red por ticker en los caminos calientes" rule
-                # draws between a job and an endpoint.
-                next_earnings_date = market_data.get_next_earnings_date(ts.ticker)
-                state = build_ticker_daily_state(
-                    ts, region, df, trade_date, now, next_earnings_date, benchmark_close,
-                    setup_performance_by_name,
-                )
-                if state is None:
-                    continue
-                previous = ticker_repo.latest_for_ticker(ts.ticker)
-                ticker_repo.upsert(state)
-                rows_processed += 1
-                for event in ticker_trigger_events(previous, state, now):
-                    trigger_repo.record(event)
-                    if event.event_type == "gate_passed":
-                        new_gate_passes += 1
-                    elif event.event_type == "entry_triggered":
-                        new_entry_triggers += 1
-
-        for portfolio in portfolio_repo.list_all():
-            transactions = portfolio_repo.get_transactions(portfolio.id)
-            tickers = sorted({tx.ticker for tx in transactions if tx.ticker is not None})
-            position_states: list[PositionDailyState] = []
-            if tickers:
-                previous_by_ticker = {s.ticker: s for s in position_repo.latest_for_portfolio(portfolio.id)}
-                risks = get_portfolio_positions_risk(
-                    tickers,
-                    market_data,
-                    universe_snapshot,
-                    portfolio_id=portfolio.id,
-                    transactions=transactions,
-                    trade_plan_repo=trade_plan_repo,
-                    position_signal_snapshot_repo=position_signal_snapshot_repo,
-                )
-                for risk in risks:
-                    state = position_daily_state_from_risk(risk, portfolio.id, trade_date, now)
+                # B2/B3: un ticker con un borde no cubierto (dato corrupto,
+                # una excepción numérica, un fallo de red puntual en
+                # `get_next_earnings_date`) no debe tumbar el resto del
+                # universo - misma disciplina que
+                # `portfolio_risk_service._safe_assess_position_risk` ya
+                # aplica un nivel más arriba. `db.rollback()` ANTES de seguir
+                # con el siguiente ticker: si el fallo dejó la sesión en un
+                # estado de transacción abortada (típico de un error de BD a
+                # mitad de `upsert`), cualquier lectura/escritura posterior
+                # en la misma sesión lanzaría `PendingRollbackError` en
+                # cascada sin este rollback - el mecanismo exacto por el que
+                # un solo ticker malo también podía inutilizar el `finally`
+                # de más abajo.
+                try:
+                    # Parte 6.2's `no_event_risk` - one network call per
+                    # ticker, accepted here (unlike in any live request path)
+                    # because this job runs once a night, off the request
+                    # path entirely (Parte 4.1) - the exact distinction
+                    # CLAUDE.md's "no llamadas de red por ticker en los
+                    # caminos calientes" rule draws between a job and an
+                    # endpoint.
+                    next_earnings_date = market_data.get_next_earnings_date(ts.ticker)
+                    state = build_ticker_daily_state(
+                        ts, region, df, trade_date, now, next_earnings_date, benchmark_close,
+                        setup_performance_by_name,
+                    )
                     if state is None:
                         continue
-                    previous = previous_by_ticker.get(risk.ticker)
-                    position_repo.upsert(state)
+                    previous = ticker_repo.latest_for_ticker(ts.ticker)
+                    ticker_repo.upsert(state)
                     rows_processed += 1
-                    position_states.append(state)
-                    for event in position_trigger_events(previous, state, now):
+                    tickers_processed += 1
+                    if state.gate_passes:
+                        gate_passes_today += 1
+                    for setup in state.setups or []:
+                        family = setup.get("family", "?")
+                        setups_by_family[family] = setups_by_family.get(family, 0) + 1
+                    for event in ticker_trigger_events(previous, state, now):
                         trigger_repo.record(event)
+                except Exception as ticker_exc:
+                    db.rollback()
+                    error_type = type(ticker_exc).__name__
+                    tickers_failed_by_type[error_type] = tickers_failed_by_type.get(error_type, 0) + 1
+                    logger.exception("daily_close: fallo procesando %s (%s)", ts.ticker, region)
 
-            brief = build_daily_brief(
-                portfolio.id, trade_date, now, position_states, new_entry_triggers, new_gate_passes
-            )
-            brief_repo.upsert(brief)
-            rows_processed += 1
+        # B4 (idempotencia): el conteo del día se deriva del log de eventos,
+        # no de un acumulador local - ver `_today_trigger_counts`.
+        new_gate_passes, new_entry_triggers = _today_trigger_counts(trigger_repo, trade_date)
 
-        finished = job_repo.finish(job.id, status="success", rows_processed=rows_processed, error_message=None)
-        return DailyCloseResult(finished, rows_processed, new_gate_passes, new_entry_triggers)
+        for portfolio in portfolio_repo.list_all():
+            # Mismo aislamiento que B2/B3 para el universo, aplicado aquí a
+            # cartera completa: una cartera con datos inconsistentes (un
+            # `TradePlan` huérfano, una transacción corrupta) no debe
+            # impedir que el resto de carteras reciban su brief de hoy.
+            try:
+                transactions = portfolio_repo.get_transactions(portfolio.id)
+                tickers = sorted({tx.ticker for tx in transactions if tx.ticker is not None})
+                position_states: list[PositionDailyState] = []
+                if tickers:
+                    previous_by_ticker = {s.ticker: s for s in position_repo.latest_for_portfolio(portfolio.id)}
+                    risks = get_portfolio_positions_risk(
+                        tickers,
+                        market_data,
+                        universe_snapshot,
+                        portfolio_id=portfolio.id,
+                        transactions=transactions,
+                        trade_plan_repo=trade_plan_repo,
+                        position_signal_snapshot_repo=position_signal_snapshot_repo,
+                    )
+                    for risk in risks:
+                        state = position_daily_state_from_risk(risk, portfolio.id, trade_date, now)
+                        if state is None:
+                            continue
+                        previous = previous_by_ticker.get(risk.ticker)
+                        position_repo.upsert(state)
+                        rows_processed += 1
+                        position_states.append(state)
+                        for event in position_trigger_events(previous, state, now):
+                            trigger_repo.record(event)
+
+                brief = build_daily_brief(
+                    portfolio.id, trade_date, now, position_states, new_entry_triggers, new_gate_passes
+                )
+                brief_repo.upsert(brief)
+                rows_processed += 1
+                portfolios_processed += 1
+            except Exception as portfolio_exc:
+                db.rollback()
+                error_type = type(portfolio_exc).__name__
+                portfolios_failed_by_type[error_type] = portfolios_failed_by_type.get(error_type, 0) + 1
+                logger.exception("daily_close: fallo procesando cartera %s", portfolio.id)
+
+        duration_seconds = round(time.monotonic() - started_monotonic, 1)
+        detail = {
+            "regions": list(regions),
+            "tickers_processed": tickers_processed,
+            "tickers_failed": tickers_failed_by_type,
+            "gate_passes_today": gate_passes_today,
+            "new_gate_passes_today": new_gate_passes,
+            "new_entry_triggers_today": new_entry_triggers,
+            "setups_by_family": setups_by_family,
+            "portfolios_processed": portfolios_processed,
+            "portfolios_failed": portfolios_failed_by_type,
+            "duration_seconds": duration_seconds,
+        }
+        finished = job_repo.finish(
+            job.id, status="success", rows_processed=rows_processed, error_message=None, detail=detail
+        )
+        return DailyCloseResult(finished, rows_processed, new_gate_passes, new_entry_triggers, detail)
     except Exception as exc:
         logger.exception("daily_close failed")
+        # B2/B3: rollback ANTES de `finish` - si la excepción no capturada
+        # (una fuera de los dos bucles aislados de arriba, p. ej. al listar
+        # el universo en sí) dejó la sesión en transacción abortada, `finish`
+        # (que hace `db.get` + `db.commit`) lanzaría `PendingRollbackError`
+        # en vez de persistir "failed", dejando la fila en "running" para
+        # siempre - el bug exacto que este rollback cierra.
+        db.rollback()
         job_repo.finish(job.id, status="failed", rows_processed=rows_processed, error_message=str(exc)[:2000])
         raise
 
@@ -592,9 +690,21 @@ def main() -> None:
     try:
         screener = MarketScreenerService(market_data)
         result = run_daily_close(db, market_data, screener, regions=regions)
+        d = result.detail
         print(
-            f"[daily_close] {result.job_run.status} - {result.rows_processed} filas procesadas, "
-            f"{result.new_gate_passes} gates nuevos, {result.new_entry_triggers} entradas disparadas"
+            f"[daily_close] {result.job_run.status} - {result.rows_processed} filas procesadas "
+            f"en {d['duration_seconds']}s"
+        )
+        print(
+            f"  tickers: {d['tickers_processed']} procesados, "
+            f"{sum(d['tickers_failed'].values())} fallidos {d['tickers_failed'] or '{}'}"
+        )
+        print(f"  gate: {d['gate_passes_today']} pasan hoy, {result.new_gate_passes} nuevos")
+        print(f"  entradas disparadas hoy: {result.new_entry_triggers}")
+        print(f"  setups por familia: {d['setups_by_family'] or '{}'}")
+        print(
+            f"  carteras: {d['portfolios_processed']} procesadas, "
+            f"{sum(d['portfolios_failed'].values())} fallidas {d['portfolios_failed'] or '{}'}"
         )
     finally:
         db.close()

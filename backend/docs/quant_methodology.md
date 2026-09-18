@@ -3857,3 +3857,107 @@ AST, presupuestos de latencia de detectores/Radar) ya tenían su test exacto de 
 fijarlos (el VCP, ejecutando `vcp.detect` sobre la serie de contracciones 30/20/14% para confirmar
 `vcp_forming`; el Darvas, iterando el rango de la caja hasta que solo la ventana de 30 sesiones
 encajara). Suite completa (1082 tests) y ruff limpios.
+
+## 29. Auditoría del Radar y del stop-loss de cartera (septiembre 2026)
+
+Encargo del propietario, verificado contra el repo en el commit `86729e1` (ya en `master` en ese
+momento): el Radar lleva meses sin mostrar nunca nada, y el stop-loss que el Dashboard recomienda
+para una posición abierta no corresponde a ningún nivel real del gráfico. Dos problemas distintos,
+cada uno con su propio diagnóstico verificado línea por línea contra el código antes de tocar nada
+- disciplina explícita que el propio encargo exigió ("verifica antes de escribir").
+
+### 29.1 Diagnóstico: confirmado contra el repo, sin ninguna discrepancia
+
+Cada afirmación del diagnóstico del propietario se verificó leyendo el código exacto, no de memoria:
+
+- `GET /market/radar` (`market.py`) es lectura pura sobre `ticker_daily_states` - sin
+  `MarketDataService`, sin fallback de cómputo en vivo. Con la tabla vacía, `computed_at` sale
+  `None`, y `message = RADAR_EMPTY_MESSAGE if not items and computed_at is not None else None`
+  nunca entra en su propia rama de mensaje - `message` se queda en `None` exactamente en el caso
+  "nunca ha corrido", que es justo el caso donde más falta hace explicarlo.
+- El único escritor de esa tabla, `daily_close.py`, nunca se ha ejecutado contra producción - los
+  tres Render Cron Jobs de `render.yaml` son, por sus propios comentarios, recursos facturados
+  aparte que declarar en YAML no activa ni paga.
+- Ocho bloqueadores confirmados en el propio `daily_close.py`, todos reales antes de este bloque:
+  reutiliza la caché durable de 3h sin `force_refresh` (puede persistir un precio intradía como si
+  fuera el cierre); un ticker que lanza excepción tumba el job entero, sin aislamiento; el `except`
+  final llama a `job_repo.finish` sin `db.rollback()` antes, así que una sesión ya abortada por el
+  fallo original lanza `PendingRollbackError` dentro del propio manejador y deja la fila de
+  `job_runs` colgada en `"running"` para siempre; `daily_briefs` no es idempotente (un reintento del
+  mismo día ve `ticker_trigger_events` devolver `[]` para todos - la propia guarda de "mismo
+  `trade_date`" - y sobrescribe el brief real con contadores en cero); nadie lee
+  `ticker_intraday_states`; no hay cron para `setup_replay_study.py` (todo setup se queda
+  `UNVALIDATED` para siempre); ningún cron aplica migraciones (`run_migrations_on_startup` solo lo
+  llama `app.main`, el ciclo de vida de FastAPI, que un cron nunca atraviesa); y no existe ningún
+  campo de horizonte corto/medio plazo en `SetupMatch`.
+- Lo único no verificable desde aquí: el estado real de la base de datos de producción y del panel
+  de Render (no hay acceso a ninguno de los dos desde este entorno) - se acepta la observación
+  directa del propietario (`GET .../radar` respondiendo vacío en vivo) porque el código explica
+  exactamente ese comportamiento y no hay otra vía por la que pudiera darse.
+
+**Decisión (A3)**: opción (ii) - arreglar `daily_close.py` Y añadir un fallback de cómputo en vivo
+acotado en el propio endpoint, con la advertencia explícita de que esto es una excepción deliberada
+a la regla de CLAUDE.md "sin cómputo en el propio request para Radar/Hoy" (la misma regla que existe
+porque `PortfolioRiskService` ya sufrió un incidente de latencia real por saltársela). Las
+salvaguardas del propio encargo (tope de N tickers por liquidez, caché de 15 min, timeout con
+resultado parcial, reutilización literal de los mismos servicios que `daily_close.py`, y una UI que
+señala sin ambigüedad cuándo el dato viene del fallback) son las que hacen defendible esta
+excepción - documentadas aquí mismo para que, dentro de seis meses, nadie lea la regla vieja de
+CLAUDE.md y confunda el fallback con un bug. El fallback es red de seguridad, no plan A: si el resto
+de este bloque (B1-B8) deja el cron funcionando y vigilado, debería activarse rara vez.
+
+### 29.2 `daily_close.py`: B1, B2, B3, B4, B8 - resiliencia operacional real
+
+**B1 (precio de cierre de verdad)**: `run_daily_close` ahora llama
+`screener.get_universe_snapshot(region, force_refresh=True, db=db)` - antes usaba el valor por
+defecto `force_refresh=False`, que consulta primero la caché durable de 3h (`durable_cache.py`,
+respaldada en BD, compartida de verdad entre el servicio web y el cron aunque sean procesos
+distintos, porque esa caché vive en la base de datos, no en memoria de proceso). Sin este cambio, si
+un usuario disparaba un recálculo a las 20:00, el cron de las 22:00 podía persistir ese precio
+intradía como si fuera el cierre.
+
+**B2/B3 (aislamiento y rollback)**: cada ticker del universo se procesa dentro de su propio
+`try/except` - un fallo (dato corrupto, una excepción numérica, un fallo puntual de red en
+`get_next_earnings_date`) se cuenta y se loguea, pero el resto del universo sigue. Crucialmente,
+`db.rollback()` se llama ANTES de seguir con el siguiente ticker: si el fallo dejó la sesión en
+transacción abortada (típico de un error a mitad de un `upsert`), cualquier lectura/escritura
+posterior en la misma sesión sin ese rollback lanzaría `PendingRollbackError` en cascada. La misma
+disciplina se extendió al bucle de carteras (no pedido literalmente para ahí, pero es exactamente la
+misma clase de bug con el mismo arreglo - una cartera con datos inconsistentes no debe impedir que
+el resto reciban su brief). El `except` de nivel superior también gana su propio `db.rollback()`
+antes de `job_repo.finish(..., status="failed")` - sin él, ese mismo `finish` podía fallar en
+cascada y dejar la fila en `"running"` para siempre, el bug exacto que B2/B3 reportaba.
+
+**B4 (idempotencia de `daily_briefs`)**: `new_gate_passes`/`new_entry_triggers` ya no se acumulan
+localmente mientras se recorre el universo (un reintento del mismo día los leía en cero, porque
+`ticker_trigger_events` no detecta "cambio" contra un estado que el propio reintento ya persistió
+hoy). Se derivan en su lugar de `TriggerEventRepository.list_since` filtrado a eventos de hoy - el
+log de `TriggerEvent` es append-only y nunca duplica (la propia guarda de `ticker_trigger_events`
+evita registrar el mismo cambio dos veces), así que el mismo número sale sin importar cuántas veces
+se haya corrido el job hoy. `_today_trigger_counts` es la función nueva, pura y testeada aparte.
+
+**B8 (migraciones en los crons)**: los tres `startCommand` de `render.yaml` ganan
+`alembic upgrade head &&` por delante - un Cron Job nunca pasa por `app.main`'s startup (donde vive
+`run_migrations_on_startup`), así que sin esto un cron podía correr contra un esquema desactualizado
+si se disparaba antes de que el servicio web hubiera reiniciado tras un deploy con migraciones
+nuevas.
+
+**Resumen ejecutable (`job_runs.detail`, columna JSON nueva, migración `c1d9e4b2f6a3`)**: cada
+corrida persiste `regions`, `tickers_processed`, `tickers_failed` (conteo por tipo de excepción),
+`gate_passes_today`, `new_gate_passes_today`, `new_entry_triggers_today`, `setups_by_family`,
+`portfolios_processed`, `portfolios_failed` y `duration_seconds` - no solo en logs de Render (que no
+se retienen indefinidamente), consultable después vía `JobRunRepository.latest("daily_close")`.
+`main()` imprime el mismo resumen por stdout.
+
+**Comando manual documentado** (`backend/README.md`, nueva sección "Operación en producción: jobs
+nocturnos"): cómo disparar `daily_close.py` a mano desde la shell de Render del servicio web (mismo
+`DATABASE_URL` que el cron) o desde el botón de disparo manual del propio Cron Job, sin esperar a la
+programación de las 22:00.
+
+**Tests**: 3 nuevos en `test_daily_close_job.py` (aislamiento con un ticker que lanza excepción y el
+job sigue en éxito con el resto procesado; una excepción fuera de los bucles aislados deja
+`job_runs` en `"failed"`, nunca `"running"`; correr el job dos veces el mismo día da el mismo
+`new_gate_passes`/`new_entry_triggers` y el brief no se machaca a cero) y 3 nuevos en
+`test_daily_close.py` (`_today_trigger_counts` aislado, con un doble mínimo de
+`TriggerEventRepository`). Suite completa y ruff limpios; build de producción del frontend
+verificado (sin cambios de frontend en este bloque).

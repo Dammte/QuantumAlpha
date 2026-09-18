@@ -16,7 +16,14 @@ class JobRunRepositoryPort(ABC):
         ...
 
     @abstractmethod
-    def finish(self, job_run_id: int, status: str, rows_processed: int, error_message: str | None) -> JobRun:
+    def finish(
+        self,
+        job_run_id: int,
+        status: str,
+        rows_processed: int,
+        error_message: str | None,
+        detail: dict | None = None,
+    ) -> JobRun:
         ...
 
     @abstractmethod

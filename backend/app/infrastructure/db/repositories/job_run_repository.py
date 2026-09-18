@@ -17,6 +17,7 @@ def _to_domain(orm: JobRunORM) -> JobRun:
         status=orm.status,
         rows_processed=orm.rows_processed,
         error_message=orm.error_message,
+        detail=orm.detail,
     )
 
 
@@ -38,7 +39,14 @@ class JobRunRepository(JobRunRepositoryPort):
         self.db.refresh(orm)
         return _to_domain(orm)
 
-    def finish(self, job_run_id: int, status: str, rows_processed: int, error_message: str | None) -> JobRun:
+    def finish(
+        self,
+        job_run_id: int,
+        status: str,
+        rows_processed: int,
+        error_message: str | None,
+        detail: dict | None = None,
+    ) -> JobRun:
         orm = self.db.get(JobRunORM, job_run_id)
         if orm is None:
             raise ValueError(f"No existe JobRun con id={job_run_id}")
@@ -46,6 +54,7 @@ class JobRunRepository(JobRunRepositoryPort):
         orm.status = status
         orm.rows_processed = rows_processed
         orm.error_message = error_message
+        orm.detail = detail
         self.db.commit()
         self.db.refresh(orm)
         return _to_domain(orm)

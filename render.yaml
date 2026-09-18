@@ -38,6 +38,17 @@ services:
   # above - creating this in the Render dashboard (or via `render blueprint
   # sync`) has a real cost; wiring it here in source control doesn't, so this
   # can be reviewed/adjusted before actually enabling it on Render.
+  # Auditoria del Radar, bloque B8: un Render Cron Job nunca pasa por el
+  # ciclo de vida de FastAPI (`app.main`'s startup, donde
+  # `run_migrations_on_startup` vive) - si este cron llega a correr antes de
+  # que el servicio web haya reiniciado tras un deploy con migraciones
+  # nuevas, se ejecutaria contra un esquema desactualizado y fallaria (o
+  # peor, escribiria mal). `alembic upgrade head &&` en el propio
+  # `startCommand` (no en `buildCommand`, cuyo momento de ejecucion exacto en
+  # Render no está garantizado que preceda a cada disparo programado) hace
+  # que cada ejecucion se asegure su propio esquema, sin depender del orden
+  # de deploy entre servicios. Es una operacion barata e idempotente cuando
+  # no hay nada pendiente.
   - name: quantumalpha-daily-close
     type: cron
     runtime: python
@@ -46,7 +57,7 @@ services:
     rootDir: backend
     schedule: "0 22 * * 1-5"
     buildCommand: pip install -r requirements.txt
-    startCommand: python -m scripts.daily_close
+    startCommand: alembic upgrade head && python -m scripts.daily_close
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -68,7 +79,8 @@ services:
     rootDir: backend
     schedule: "*/30 8-21 * * 1-5"
     buildCommand: pip install -r requirements.txt
-    startCommand: python -m scripts.intraday_refresh
+    # Bloque B8, mismo motivo que quantumalpha-daily-close arriba.
+    startCommand: alembic upgrade head && python -m scripts.intraday_refresh
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -98,7 +110,8 @@ services:
     rootDir: backend
     schedule: "0 5 1 * *"
     buildCommand: pip install -r requirements.txt
-    startCommand: python -m scripts.refresh_universe_membership
+    # Bloque B8, mismo motivo que quantumalpha-daily-close arriba.
+    startCommand: alembic upgrade head && python -m scripts.refresh_universe_membership
     envVars:
       - key: DATABASE_URL
         sync: false
