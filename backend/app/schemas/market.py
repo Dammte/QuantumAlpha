@@ -348,6 +348,12 @@ class SetupMatchResponse(BaseModel):
     evidence: dict[str, float | int | str]
     narrative_es: str
     confidence: str  # "measured" | "thin" | "unvalidated"
+    # Auditoria del Radar, bloque D - ver `setups/horizon.py` para el
+    # criterio. `horizon` puede ser `None` en filas persistidas antes de
+    # este bloque, hasta que `daily_close.py` vuelva a correr para ese
+    # ticker.
+    horizon: str | None = None  # "short" (2-10 sesiones) | "medium" (3-10 semanas)
+    expected_sessions_to_trigger: int | None = None
     # Parte 10.2/11.1 (§28.x) - adjuntado en el endpoint, no persistido
     # junto al resto de este dict (ver `setup_performance`'s propio
     # docstring: una sola fila por nombre de setup en toda la base de

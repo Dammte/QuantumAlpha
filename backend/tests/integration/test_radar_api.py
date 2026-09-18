@@ -229,10 +229,19 @@ def test_radar_exposes_the_persisted_setups(client: TestClient, db_session: Sess
     body = client.get("/api/v1/market/radar?region=us").json()
 
     nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
-    # `measured_stats`/`ticker_history` (Parte 10.2/11.1/11.2) siempre se
-    # serializan - `None` sin ninguna fila de `setup_performance`/
-    # `setup_ticker_history` para este (ticker, nombre) todavía.
-    assert nvda["setups"] == [{**match, "measured_stats": None, "ticker_history": None}]
+    # `measured_stats`/`ticker_history`/`horizon`/`expected_sessions_to_trigger`
+    # siempre se serializan - `None` sin ninguna fila de `setup_performance`/
+    # `setup_ticker_history`, o sin haber pasado por `assign_horizon` (este
+    # fixture siembra el dict directamente, sin pasar por `daily_close.py`).
+    assert nvda["setups"] == [
+        {
+            **match,
+            "horizon": None,
+            "expected_sessions_to_trigger": None,
+            "measured_stats": None,
+            "ticker_history": None,
+        }
+    ]
 
 
 def test_radar_attaches_measured_stats_from_setup_performance(client: TestClient, db_session: Session) -> None:

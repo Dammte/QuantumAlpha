@@ -73,6 +73,7 @@ from app.services.market_universe import benchmark_for_region
 from app.services.portfolio_risk_service import PositionRisk, get_portfolio_positions_risk
 from app.services.setups import arbitration as setups_arbitration
 from app.services.setups import context_modifiers as setups_context_modifiers
+from app.services.setups import horizon as setups_horizon
 from app.services.setups import registry as setups_registry
 from app.services.setups.context import SetupContext
 from app.services.setups.types import SetupStage, setup_match_to_dict
@@ -227,6 +228,10 @@ def build_ticker_daily_state(
     # UNVALIDATED, el mismo comportamiento honesto de antes de que esta
     # tabla existiera, nunca un error.
     ordered_setups = setup_replay.apply_measured_confidence(ordered_setups, setup_performance_by_name or {})
+    # Auditoria del Radar, bloque D: horizonte corto/medio plazo - paso
+    # posterior a la detección, igual que los dos de arriba, ver
+    # `setups/horizon.py` para el criterio completo.
+    ordered_setups = setups_horizon.assign_horizon(ordered_setups, setup_ctx)
     setups_list = [setup_match_to_dict(m) for m in ordered_setups]
 
     gate = le.evaluate_gate(

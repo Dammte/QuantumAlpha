@@ -68,6 +68,21 @@ class SetupMatch:
 
     confidence: SetupConfidence
 
+    # Auditoria del Radar, bloque D: `None` tal como sale de cada detector -
+    # ningún detector conoce su propio horizonte, lo asigna
+    # `setups/horizon.py` como paso posterior a la detección (mismo patrón
+    # que `arbitration.order_by_rank`/`context_modifiers.apply_context_modifiers`/
+    # `setup_replay.apply_measured_confidence`: transformaciones que corren
+    # DESPUÉS de `registry.detect_all`, nunca dentro de un detector). Nunca
+    # derivado de `timeframe` - ver el docstring de `horizon.py` para el
+    # porqué.
+    horizon: str | None = None  # "short" (2-10 sesiones) | "medium" (3-10 semanas)
+    # Estimación aproximada (distancia al gatillo en ATR ÷ recorrido medio
+    # diario en ATR) - `None` sin gatillo numérico o sin ATR disponible.
+    # Deliberadamente etiquetada como aproximada en la UI, nunca como una
+    # fecha real.
+    expected_sessions_to_trigger: int | None = None
+
 
 _SETUP_MATCH_PLAIN_FIELDS = (
     "name",
@@ -80,7 +95,15 @@ _SETUP_MATCH_PLAIN_FIELDS = (
     "invalidation_condition",
     "evidence",
     "narrative_es",
+    "horizon",
+    "expected_sessions_to_trigger",
 )
+
+# Auditoria del Radar, bloque D: campos añadidos DESPUÉS de que la primera
+# versión de `TickerDailyState.setups` empezara a persistirse - filas viejas
+# no los tienen. `setup_match_from_dict` los lee con `.get(...)`, nunca
+# `data[...]`, para no reventar contra una fila anterior a este bloque.
+_SETUP_MATCH_OPTIONAL_FIELDS = frozenset({"horizon", "expected_sessions_to_trigger"})
 
 
 def setup_match_to_dict(match: SetupMatch) -> dict:
@@ -100,8 +123,15 @@ def setup_match_to_dict(match: SetupMatch) -> dict:
 def setup_match_from_dict(data: dict) -> SetupMatch:
     """Inversa de `setup_match_to_dict` - reconstruye un `SetupMatch` real,
     no solo su forma de visualización, por si una fase futura necesita
-    reprocesarlo (p. ej. el replay de `setup_replay.py`)."""
-    fields = {field: data[field] for field in _SETUP_MATCH_PLAIN_FIELDS}
+    reprocesarlo (p. ej. el replay de `setup_replay.py`). `.get(...)` (no
+    `data[...]`) para `horizon`/`expected_sessions_to_trigger` - filas de
+    `ticker_daily_states.setups` persistidas antes de que estos dos campos
+    existieran no los tienen en su JSON, y su propio default (`None`) es
+    exactamente lo correcto para ese caso, no un error."""
+    fields = {
+        field: (data.get(field) if field in _SETUP_MATCH_OPTIONAL_FIELDS else data[field])
+        for field in _SETUP_MATCH_PLAIN_FIELDS
+    }
     return SetupMatch(
         family=SetupFamily(data["family"]),
         stage=SetupStage(data["stage"]),

@@ -291,6 +291,8 @@ def test_build_ticker_daily_state_setup_context_reaches_a_registered_detector(mo
             "narrative_es": "",
             "confidence": "unvalidated",
             "stage": "ready",
+            "horizon": "medium",
+            "expected_sessions_to_trigger": None,
         }
     ]
 

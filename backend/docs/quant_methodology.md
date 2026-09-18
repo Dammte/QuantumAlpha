@@ -3988,3 +3988,57 @@ disparos de hoy en sesión) esté implementado, pagarlo antes sería tirar el di
 Sin cambios de código Python en este bloque (solo `render.yaml`) - YAML validado con
 `yaml.safe_load`, suite de tests sin cambios (verde desde el bloque anterior), sin impacto en el
 build del frontend.
+
+### 29.4 Horizonte corto/medio plazo (`SetupMatch.horizon`, bloque D)
+
+"Yo opero posiciones de 2 a 10 sesiones, con entradas oportunistas... lo que a mí me importa es el
+tiempo esperado hasta la resolución del setup" - literal. `setups/horizon.py` (nuevo) añade
+`horizon: "short" | "medium" | None` y `expected_sessions_to_trigger: int | None` a `SetupMatch`,
+ambos con default `None` (ningún detector los conoce - los siete archivos de detectores no se
+tocan). Aplicado como paso posterior a la detección desde `daily_close.py`
+(`setups_horizon.assign_horizon`), justo después de `apply_measured_confidence` - mismo patrón
+exacto que `arbitration.order_by_rank`/`context_modifiers.apply_context_modifiers`, nunca dentro de
+un detector.
+
+**Deliberadamente NO derivado de `timeframe` como único criterio de familia** (el encargo proponía
+una lista de familias por horizonte, pero invitaba explícitamente a discutirla: "discútelo si tienes
+uno mejor"). El criterio implementado son dos señales objetivas, en este orden:
+
+1. `timeframe == "weekly"` -> siempre `medium` ("requiere confirmación semanal", literal).
+2. Si no: `stage == TRIGGERED` (ya disparado hoy) o distancia al gatillo <=
+   `HORIZON_SHORT_MAX_DISTANCE_ATR=1.0` -> `short`; cualquier otro caso (incluido no tener gatillo
+   numérico todavía) -> `medium`.
+
+Esto reproduce la tabla del encargo como CONSECUENCIA en vez de como una lista de familias que
+mantener actualizada cada vez que se añade un detector: `vcp_forming` (sin pivote definido) cae en
+`medium`; `vcp_ready`/`vcp_triggered` (`vcp.VCP_READY_MAX_DISTANCE_ATR=1.5`, casi siempre <= 1.0 en
+la práctica al llegar a READY) cae en `short`; `stage1_base_forming` (semanal, sin gatillo numérico)
+cae en `medium` por partida doble; `stage2_confirmed` (semanal, ya disparado) sigue en `medium` por
+vivir en temporalidad semanal - coherente con "la señal es semanal" del propio encargo, aunque ya
+haya confirmado. Se descartó explícitamente usar la duración de la base
+(`evidence["base_days"]`/`weeks_flat"`...) como tercera señal: cada familia guarda esa duración con
+una clave distinta en un `evidence` sin esquema común, así que parsearla de forma genérica acoplaría
+este módulo a los detalles internos de cada detector - la distancia al gatillo ya captura, en la
+práctica, casi la misma información.
+
+**`expected_sessions_to_trigger`**: distancia al gatillo en ATR dividida entre el recorrido medio
+diario reciente (`EXPECTED_SESSIONS_LOOKBACK=20` sesiones), también expresado en ATR - la fórmula
+literal del encargo, "distancia al disparador en ATR ÷ recorrido medio diario en ATR". `None` sin
+gatillo numérico o cuando el recorrido medio diario es cero (una serie sin movimiento no puede
+dividir de forma honesta - nunca un infinito fabricado).
+
+**Sin migración**: `horizon`/`expected_sessions_to_trigger` viven dentro del JSON ya existente de
+`TickerDailyState.setups` (uno por `SetupMatch`, no un valor único por ticker - un mismo ticker
+puede tener un setup `short` y otro `medium` a la vez) - no una columna SQL nueva.
+`setup_match_from_dict` los lee con `.get(...)`, no `data[...]`, porque filas persistidas antes de
+este bloque no los tienen en su JSON - `None` es exactamente su default correcto, no un error.
+`SetupMatchResponse` (schema) los expone con el mismo default. Frontend: pendiente para el bloque
+10, junto con el resto de la interfaz del Radar (dos listas, ficha del primario).
+
+**Tests**: 13 nuevos en `test_horizon.py`, incluidos los dos casos literales del bloque I ("un setup
+de VCP en formación cae en medium", "un breakout confirmado a 0.4 ATR cae en short"), el umbral
+exacto de 1.0 ATR, el caso semanal-siempre-medium incluso disparado, ATR inválido sin crashear, y
+`expected_sessions_to_trigger` escalando con la distancia (no plano). 2 tests existentes corregidos
+(`horizon`/`expected_sessions_to_trigger` ahora siempre se serializan, mismo patrón que
+`distance_atr`/`measured_stats`/`ticker_history` en fases anteriores). Suite completa y ruff
+limpios; sin cambios de frontend en este bloque.
