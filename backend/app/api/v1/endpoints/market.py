@@ -10,13 +10,16 @@ from app.api.deps import (
     get_market_screener_service,
     get_portfolio_service,
     get_setup_performance_repository,
+    get_setup_ticker_history_repository,
     get_ticker_daily_state_repository,
     get_trade_plan_repository,
 )
 from app.domain.models.setup_performance import SetupPerformance
+from app.domain.models.setup_ticker_history import SetupTickerHistory
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.domain.models.ticker_snapshot import TickerSnapshot
 from app.infrastructure.db.repositories.setup_performance_repository import SetupPerformanceRepository
+from app.infrastructure.db.repositories.setup_ticker_history_repository import SetupTickerHistoryRepository
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.schemas.market import (
@@ -37,6 +40,7 @@ from app.schemas.market import (
     SectorPeerResponse,
     SetupMatchResponse,
     SetupPerformanceStatsResponse,
+    SetupTickerHistoryResponse,
     StatisticalRelationResponse,
     StopAndTargetResponse,
     SupportResistanceResponse,
@@ -220,8 +224,22 @@ def _performance_stats_response(performance: SetupPerformance) -> SetupPerforman
     )
 
 
+def _ticker_history_response(history: SetupTickerHistory) -> SetupTickerHistoryResponse:
+    return SetupTickerHistoryResponse(
+        n_observations=history.n_observations,
+        n_triggered=history.n_triggered,
+        n_target_hit=history.n_target_hit,
+        first_ready_date=history.first_ready_date,
+        last_ready_date=history.last_ready_date,
+    )
+
+
 def _setups_list_to_response(
-    data: list[dict] | None, performance_by_name: dict[str, SetupPerformance]
+    data: list[dict] | None,
+    performance_by_name: dict[str, SetupPerformance],
+    ticker: str,
+    region: str,
+    history_by_ticker_and_name: dict[tuple[str, str, str], SetupTickerHistory],
 ) -> list[SetupMatchResponse] | None:
     if data is None:
         return None
@@ -230,6 +248,9 @@ def _setups_list_to_response(
         performance = performance_by_name.get(match.name)
         if performance is not None:
             match.measured_stats = _performance_stats_response(performance)
+        history = history_by_ticker_and_name.get((ticker, region, match.name))
+        if history is not None:
+            match.ticker_history = _ticker_history_response(history)
     return matches
 
 
@@ -325,7 +346,9 @@ def _rank_and_cut_radar_items(items: list[RadarItemResponse]) -> list[RadarItemR
 
 
 def _daily_state_to_radar_item(
-    state: TickerDailyState, performance_by_name: dict[str, SetupPerformance]
+    state: TickerDailyState,
+    performance_by_name: dict[str, SetupPerformance],
+    history_by_ticker_and_name: dict[tuple[str, str, str], SetupTickerHistory],
 ) -> RadarItemResponse:
     return RadarItemResponse(
         ticker=state.ticker,
@@ -364,7 +387,9 @@ def _daily_state_to_radar_item(
         ),
         entry_geometry=_geometry_dict_to_response(state.entry_geometry),
         grade=_grade_dict_to_response(state.grade),
-        setups=_setups_list_to_response(state.setups, performance_by_name),
+        setups=_setups_list_to_response(
+            state.setups, performance_by_name, state.ticker, state.region, history_by_ticker_and_name
+        ),
         timeframe_strip=_timeframe_strip_dict_to_response(state.timeframe_strip),
         sector=state.sector,
         sector_rs_percentile=state.sector_rs_percentile,
@@ -375,6 +400,9 @@ def _daily_state_to_radar_item(
 def get_radar(
     ticker_daily_state_repo: Annotated[TickerDailyStateRepository, Depends(get_ticker_daily_state_repository)],
     setup_performance_repo: Annotated[SetupPerformanceRepository, Depends(get_setup_performance_repository)],
+    setup_ticker_history_repo: Annotated[
+        SetupTickerHistoryRepository, Depends(get_setup_ticker_history_repository)
+    ],
     portfolio_service: Annotated[PortfolioService, Depends(get_portfolio_service)],
     trade_plan_repo: Annotated[TradePlanRepository, Depends(get_trade_plan_repository)],
     region: str = RegionQuery,
@@ -402,11 +430,17 @@ def get_radar(
         for row in setup_performance_repo.all()
         if row.grade is None and row.market_regime is None
     }
+    # Parte 11.2 (§28.x): mismo criterio de lectura - la foto completa de
+    # setup_ticker_history, una sola vez por request, indexada por
+    # (ticker, nombre de setup).
+    history_by_ticker_and_name = {
+        (row.ticker, row.region, row.setup_name): row for row in setup_ticker_history_repo.all()
+    }
 
     states = ticker_daily_state_repo.latest_by_region(region)
     candidates = [s for s in states if s.gate_passes or s.entry_trigger_price is not None]
     computed_at = max((s.computed_at for s in states), default=None)
-    items = [_daily_state_to_radar_item(s, performance_by_name) for s in candidates]
+    items = [_daily_state_to_radar_item(s, performance_by_name, history_by_ticker_and_name) for s in candidates]
     # Parte 8/9 (§28.x): descarta/ordena/recorta ANTES de dimensionar contra
     # una cartera concreta más abajo - no tiene sentido gastar ese trabajo
     # en filas que el propio corte va a descartar de todas formas.

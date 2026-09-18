@@ -313,6 +313,20 @@ class SetupPerformanceStatsResponse(BaseModel):
     failure_rate_3d: float | None
 
 
+class SetupTickerHistoryResponse(BaseModel):
+    """Ver `app.domain.models.setup_ticker_history.SetupTickerHistory`
+    (Parte 11.2) - "este valor ha formado 4 VCP en 5 años; 3 dispararon y 2
+    alcanzaron objetivo". Conteos literales de ESTE ticker, sin umbral de
+    muestra mínima (a diferencia de `SetupPerformanceStatsResponse`) - un
+    n=1 es un hecho honesto, no algo que ocultar."""
+
+    n_observations: int
+    n_triggered: int
+    n_target_hit: int
+    first_ready_date: date
+    last_ready_date: date
+
+
 class SetupMatchResponse(BaseModel):
     """Ver `app.services.setups.types.SetupMatch` - una coincidencia de un
     detector de la biblioteca de setups del Radar (en curso,
@@ -340,6 +354,10 @@ class SetupMatchResponse(BaseModel):
     # datos, no una copia por cada fila de `TickerDailyState` que lo
     # muestre). `None` sin medición todavía.
     measured_stats: SetupPerformanceStatsResponse | None = None
+    # Parte 11.2 - mismo criterio que measured_stats, pero por ticker
+    # concreto en vez de agregado sobre el universo. `None` sin historial
+    # todavía para este (ticker, nombre de setup).
+    ticker_history: SetupTickerHistoryResponse | None = None
 
 
 class RadarItemResponse(BaseModel):

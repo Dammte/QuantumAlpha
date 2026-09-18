@@ -229,9 +229,10 @@ def test_radar_exposes_the_persisted_setups(client: TestClient, db_session: Sess
     body = client.get("/api/v1/market/radar?region=us").json()
 
     nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
-    # `measured_stats` (Parte 10.2/11.1) siempre se serializa - `None` sin
-    # ninguna fila de `setup_performance` para este nombre todavía.
-    assert nvda["setups"] == [{**match, "measured_stats": None}]
+    # `measured_stats`/`ticker_history` (Parte 10.2/11.1/11.2) siempre se
+    # serializan - `None` sin ninguna fila de `setup_performance`/
+    # `setup_ticker_history` para este (ticker, nombre) todavía.
+    assert nvda["setups"] == [{**match, "measured_stats": None, "ticker_history": None}]
 
 
 def test_radar_attaches_measured_stats_from_setup_performance(client: TestClient, db_session: Session) -> None:
@@ -262,6 +263,64 @@ def test_radar_attaches_measured_stats_from_setup_performance(client: TestClient
     assert stats["n_observations"] == 35
     assert stats["win_rate"] == 0.55
     assert stats["expectancy_r"] == 0.42
+
+
+def test_radar_attaches_ticker_history_from_setup_ticker_history(client: TestClient, db_session: Session) -> None:
+    # Parte 11.2: "este valor ha formado 4 VCP en 5 años; 3 dispararon y 2
+    # alcanzaron objetivo" - la fila de setup_ticker_history para ESTE
+    # ticker (no la agregada sobre el universo) se adjunta al setup
+    # correspondiente.
+    from app.domain.models.setup_ticker_history import SetupTickerHistory
+    from app.infrastructure.db.repositories.setup_ticker_history_repository import SetupTickerHistoryRepository
+
+    SetupTickerHistoryRepository(db_session).replace_all(
+        [
+            SetupTickerHistory(
+                id=None, ticker="NVDA", region="us", setup_name="vcp_3_contracciones", family="vcp",
+                n_observations=4, n_triggered=3, n_target_hit=2,
+                first_ready_date=date(2020, 1, 1), last_ready_date=date(2024, 6, 1),
+                computed_at=datetime.now(UTC),
+            )
+        ]
+    )
+    _seed_state(db_session, ticker="NVDA", setups=[_setup("ready", name="vcp_3_contracciones")])
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    history = nvda["setups"][0]["ticker_history"]
+    assert history is not None
+    assert history["n_observations"] == 4
+    assert history["n_triggered"] == 3
+    assert history["n_target_hit"] == 2
+    assert history["first_ready_date"] == "2020-01-01"
+    assert history["last_ready_date"] == "2024-06-01"
+
+
+def test_radar_never_attaches_ticker_history_from_a_different_ticker(
+    client: TestClient, db_session: Session
+) -> None:
+    # La misma fila de setup_ticker_history para AAPL no debe "filtrarse" al
+    # mismo nombre de setup en NVDA - la clave es (ticker, region, nombre).
+    from app.domain.models.setup_ticker_history import SetupTickerHistory
+    from app.infrastructure.db.repositories.setup_ticker_history_repository import SetupTickerHistoryRepository
+
+    SetupTickerHistoryRepository(db_session).replace_all(
+        [
+            SetupTickerHistory(
+                id=None, ticker="AAPL", region="us", setup_name="vcp_3_contracciones", family="vcp",
+                n_observations=4, n_triggered=3, n_target_hit=2,
+                first_ready_date=date(2020, 1, 1), last_ready_date=date(2024, 6, 1),
+                computed_at=datetime.now(UTC),
+            )
+        ]
+    )
+    _seed_state(db_session, ticker="NVDA", setups=[_setup("ready", name="vcp_3_contracciones")])
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    assert nvda["setups"][0]["ticker_history"] is None
 
 
 def test_radar_sizes_the_entry_geometry_against_a_portfolios_capital(

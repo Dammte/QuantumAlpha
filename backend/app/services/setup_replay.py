@@ -393,6 +393,52 @@ def aggregate_setup_performance(observations: list[SetupReplayObservation]) -> l
     return stats
 
 
+@dataclass(frozen=True, slots=True)
+class SetupTickerHistoryStats:
+    """Una fila de la tabla `setup_ticker_history` (Parte 11.2 - "este valor
+    ha formado 4 VCP en 5 años; 3 dispararon y 2 alcanzaron objetivo").
+    Conteos literales, no una tasa - a diferencia de `SetupPerformanceStats`,
+    aquí no hay `confidence` ni umbral `MIN_SAMPLE_FOR_STATS`: la propia
+    honestidad de "lo ha hecho 2 veces" es el punto (Parte 15), no algo que
+    esconder hasta tener una muestra grande."""
+
+    ticker: str
+    region: str
+    setup_name: str
+    family: str
+    n_observations: int
+    n_triggered: int
+    n_target_hit: int
+    first_ready_date: date
+    last_ready_date: date
+
+
+def aggregate_setup_history_by_ticker(observations: list[SetupReplayObservation]) -> list[SetupTickerHistoryStats]:
+    """Parte 11.2: "del mismo replay de la Parte 10, filtrado por ticker" -
+    agrupa por (ticker, región, nombre de setup) en vez de por nombre solo
+    (`aggregate_setup_performance`). `n_triggered`/`n_target_hit` usan
+    exactamente la misma definición de "disparó"/"tocó objetivo" que
+    `_stats_for_group` (`triggered`/`exit_reason == "target"`) - el mismo
+    hecho, contado en vez de convertido a tasa."""
+    by_ticker: dict[tuple[str, str, str], list[SetupReplayObservation]] = {}
+    for obs in observations:
+        by_ticker.setdefault((obs.ticker, obs.region, obs.setup_name), []).append(obs)
+
+    history: list[SetupTickerHistoryStats] = []
+    for (ticker, region, name), obs_list in by_ticker.items():
+        triggered = [o for o in obs_list if o.triggered and o.label is not None and o.risk_pct]
+        target_hit = [o for o in triggered if o.label.exit_reason == "target"]
+        ready_dates = sorted(o.ready_date for o in obs_list)
+        history.append(
+            SetupTickerHistoryStats(
+                ticker=ticker, region=region, setup_name=name, family=obs_list[0].family,
+                n_observations=len(obs_list), n_triggered=len(triggered), n_target_hit=len(target_hit),
+                first_ready_date=ready_dates[0], last_ready_date=ready_dates[-1],
+            )
+        )
+    return history
+
+
 def apply_measured_confidence(
     matches: list[SetupMatch], performance_by_name: dict[str, SetupPerformance]
 ) -> list[SetupMatch]:

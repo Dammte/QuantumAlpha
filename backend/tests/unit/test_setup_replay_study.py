@@ -6,8 +6,10 @@ superior que solo pega piezas ya probadas por separado
 `test_setup_replay.py`, `resolve_universe_tickers` en
 `test_factor_ablation_study.py`) y que además descarga datos reales."""
 
+from datetime import date
+
 import scripts.setup_replay_study as srs
-from app.services.setup_replay import SetupPerformanceStats
+from app.services.setup_replay import SetupPerformanceStats, SetupTickerHistoryStats
 from app.services.setups.types import SetupConfidence
 
 
@@ -58,3 +60,35 @@ def test_stats_to_rows_preserves_none_fields_for_a_never_triggered_setup():
 
 def test_stats_to_rows_empty_input_returns_empty_list():
     assert srs._stats_to_rows([]) == []
+
+
+# --- _history_to_rows (Parte 11.2) -------------------------------------------
+
+
+def test_history_to_rows_maps_every_field():
+    stats = [
+        SetupTickerHistoryStats(
+            ticker="NVDA", region="us", setup_name="vcp_3_contracciones", family="vcp",
+            n_observations=4, n_triggered=3, n_target_hit=2,
+            first_ready_date=date(2020, 1, 1), last_ready_date=date(2024, 6, 1),
+        )
+    ]
+    rows = srs._history_to_rows(stats)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id is None
+    assert row.ticker == "NVDA"
+    assert row.region == "us"
+    assert row.setup_name == "vcp_3_contracciones"
+    assert row.family == "vcp"
+    assert row.n_observations == 4
+    assert row.n_triggered == 3
+    assert row.n_target_hit == 2
+    assert row.first_ready_date == date(2020, 1, 1)
+    assert row.last_ready_date == date(2024, 6, 1)
+    assert row.computed_at is not None
+
+
+def test_history_to_rows_empty_input_returns_empty_list():
+    assert srs._history_to_rows([]) == []

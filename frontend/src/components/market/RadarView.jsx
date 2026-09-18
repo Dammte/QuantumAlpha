@@ -26,12 +26,14 @@ function leadingSetup(item) {
 }
 
 // Chips de la Parte 12.1 con datos reales detrás. "Sin correlación con mi
-// cartera" y "Con muestra medida" se quedan fuera a propósito: la primera
-// no tiene hoy un campo estructurado en RadarItemResponse (solo aparece,
-// si acaso, como texto libre dentro de grade.reasons); la segunda
-// dependería de setup_replay.py (Parte 10), que todavía no existe - ningún
-// setup es hoy "measured", así que ese chip filtraría siempre a una lista
-// vacía. Ninguna de las dos se fabrica con datos que no hay.
+// cartera" se queda fuera a propósito: no tiene hoy un campo estructurado en
+// RadarItemResponse (`apply_portfolio_grade_modifiers` la calcula, pero solo
+// como texto libre dentro de `grade.reasons` - ver CLAUDE.md, "modificadores
+// de cartera... siguen sin consumidor" - un subsistema distinto de esta
+// biblioteca, no fabricado aquí). "Con muestra medida" SÍ tiene datos reales
+// desde la Fase 13 (`setup_performance` vía `measured_stats`) - filtra por
+// `confidence === 'measured'`, el mismo criterio binario de la Parte 10.3
+// (no "algo de historial", el umbral n>=30 ya decidido en setup_replay.py).
 const CHIPS = [
   { id: 'triggered', label: 'Solo disparados', test: (item) => leadingSetup(item)?.stage === 'triggered' },
   { id: 'grade_a', label: 'Solo grado A', test: (item) => item.grade?.grade === 'A' },
@@ -44,6 +46,11 @@ const CHIPS = [
   { id: 'breakout', label: 'Rupturas', test: (item) => (item.setups ?? []).some((s) => s.family === 'breakout') },
   { id: 'pullback', label: 'Retrocesos', test: (item) => (item.setups ?? []).some((s) => s.family === 'pullback') },
   { id: 'strong_sector', label: 'Sectores fuertes', test: (item) => (item.sector_rs_percentile ?? 0) >= 70 },
+  {
+    id: 'measured',
+    label: 'Con muestra medida',
+    test: (item) => leadingSetup(item)?.confidence === 'measured',
+  },
 ]
 
 function timeframeCellTone(cell) {
@@ -107,6 +114,23 @@ function SetupStatBadge({ stats }) {
   )
 }
 
+// Parte 11.2, literal: "este valor ha formado 4 VCP en 5 años; 3 dispararon
+// y 2 alcanzaron objetivo". Plantilla determinista sobre `ticker_history`
+// (conteos de ESTE ticker, sin Gemini) - nunca una probabilidad (Parte 15).
+function tickerHistorySentence(setup) {
+  const h = setup.ticker_history
+  const years = Math.max(
+    1,
+    Math.round((new Date(h.last_ready_date) - new Date(h.first_ready_date)) / (365.25 * 24 * 3600 * 1000))
+  )
+  const yearsLabel = years === 1 ? '1 año' : `${years} años`
+  const timesLabel = h.n_observations === 1 ? 'una vez' : `${h.n_observations} veces`
+  return (
+    `Este valor ha formado ${setup.label_es} ${timesLabel} en ${yearsLabel}; ` +
+    `${h.n_triggered} dispararon y ${h.n_target_hit} alcanzaron objetivo.`
+  )
+}
+
 function RadarRow({ item, onNavigateToTicker }) {
   const [expanded, setExpanded] = useState(false)
   const setup = leadingSetup(item)
@@ -148,7 +172,14 @@ function RadarRow({ item, onNavigateToTicker }) {
         <div className="radar-row__stats">
           {distanceAtr != null && <span className="radar-row__numeric">{distanceAtr.toFixed(2)} ATR</span>}
           {setup?.trigger_price != null && (
-            <span className="radar-row__numeric">{formatCurrency(setup.trigger_price, item.currency)}</span>
+            <span className="radar-row__numeric" title="Precio que confirma el setup">
+              disp. {formatCurrency(setup.trigger_price, item.currency)}
+            </span>
+          )}
+          {setup?.invalidation_price != null && (
+            <span className="radar-row__numeric" title="Precio que invalida el setup, tan visible como el disparo">
+              inv. {formatCurrency(setup.invalidation_price, item.currency)}
+            </span>
           )}
           {geometry?.stop_price != null && (
             <span className="radar-row__numeric">
@@ -191,34 +222,6 @@ function RadarRow({ item, onNavigateToTicker }) {
                   </span>
                 ))}
               </dl>
-            </div>
-          )}
-
-          {setup?.measured_stats && (
-            <div className="radar-row__detail-section">
-              <p className="radar-row__detail-title">Estadística medida del setup</p>
-              <div className="radar-row__trigger-invalidation">
-                <span className="radar-row__numeric">{setup.measured_stats.n_observations} observaciones</span>
-                {setup.measured_stats.trigger_rate != null && (
-                  <span className="radar-row__numeric">
-                    {(setup.measured_stats.trigger_rate * 100).toFixed(0)}% llegó a disparar
-                  </span>
-                )}
-                {setup.measured_stats.win_rate != null && (
-                  <span className="radar-row__numeric">
-                    {(setup.measured_stats.win_rate * 100).toFixed(0)}% tocó objetivo antes que stop
-                  </span>
-                )}
-                {setup.measured_stats.expectancy_r != null && (
-                  <span className="radar-row__numeric">
-                    Expectancy {setup.measured_stats.expectancy_r >= 0 ? '+' : ''}
-                    {setup.measured_stats.expectancy_r.toFixed(2)}R
-                  </span>
-                )}
-              </div>
-              <p className="radar-row__narrative">
-                Historia medida, no una promesa para el próximo trade.
-              </p>
             </div>
           )}
 
@@ -291,6 +294,37 @@ function RadarRow({ item, onNavigateToTicker }) {
                   </span>
                 ))}
               </div>
+            </div>
+          )}
+
+          {(setup?.measured_stats || setup?.ticker_history) && (
+            <div className="radar-row__detail-section">
+              <p className="radar-row__detail-title">Estadística del setup e historial en este valor</p>
+              {setup.measured_stats && (
+                <div className="radar-row__trigger-invalidation">
+                  <span className="radar-row__numeric">{setup.measured_stats.n_observations} observaciones</span>
+                  {setup.measured_stats.trigger_rate != null && (
+                    <span className="radar-row__numeric">
+                      {(setup.measured_stats.trigger_rate * 100).toFixed(0)}% llegó a disparar
+                    </span>
+                  )}
+                  {setup.measured_stats.win_rate != null && (
+                    <span className="radar-row__numeric">
+                      {(setup.measured_stats.win_rate * 100).toFixed(0)}% tocó objetivo antes que stop
+                    </span>
+                  )}
+                  {setup.measured_stats.expectancy_r != null && (
+                    <span className="radar-row__numeric">
+                      Expectancy {setup.measured_stats.expectancy_r >= 0 ? '+' : ''}
+                      {setup.measured_stats.expectancy_r.toFixed(2)}R
+                    </span>
+                  )}
+                </div>
+              )}
+              {setup.ticker_history && (
+                <p className="radar-row__narrative">{tickerHistorySentence(setup)}</p>
+              )}
+              <p className="radar-row__narrative">Historia medida, no una promesa para el próximo trade.</p>
             </div>
           )}
         </div>

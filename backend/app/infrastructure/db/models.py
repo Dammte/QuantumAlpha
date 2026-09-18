@@ -363,3 +363,26 @@ class SetupPerformanceORM(Base):
     failure_rate_3d: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
     confidence: Mapped[str] = mapped_column(String(20))
     computed_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
+
+
+class SetupTickerHistoryORM(Base):
+    """Parte 11.2 de la biblioteca de setups del Radar - ver
+    `app.domain.models.setup_ticker_history.SetupTickerHistory` para el
+    porqué de que esta tabla guarde conteos literales (no una tasa con
+    umbral de confianza) y de que tampoco declare una restricción UNIQUE
+    (misma foto-completa-reemplazada-entera que `setup_performance`)."""
+
+    __tablename__ = "setup_ticker_history"
+    __table_args__ = (Index("ix_setup_ticker_history_ticker_region", "ticker", "region"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(20))
+    region: Mapped[str] = mapped_column(String(20))
+    setup_name: Mapped[str] = mapped_column(String(60))
+    family: Mapped[str] = mapped_column(String(30))
+    n_observations: Mapped[int] = mapped_column()
+    n_triggered: Mapped[int] = mapped_column()
+    n_target_hit: Mapped[int] = mapped_column()
+    first_ready_date: Mapped[date] = mapped_column()
+    last_ready_date: Mapped[date] = mapped_column()
+    computed_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))

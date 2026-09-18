@@ -21,14 +21,19 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.domain.models.setup_performance import SetupPerformance  # noqa: E402
+from app.domain.models.setup_ticker_history import SetupTickerHistory  # noqa: E402
 from app.infrastructure.db.repositories.setup_performance_repository import (
     SetupPerformanceRepository,  # noqa: E402
+)
+from app.infrastructure.db.repositories.setup_ticker_history_repository import (
+    SetupTickerHistoryRepository,  # noqa: E402
 )
 from app.infrastructure.db.session import SessionLocal  # noqa: E402
 from app.services import setup_replay as sr  # noqa: E402
@@ -37,11 +42,20 @@ from scripts.factor_ablation_study import download_universe_ohlcv  # noqa: E402
 MIN_BARS_REQUIRED = sr.REPLAY_WARMUP_BARS + 100  # margen sobre el mínimo real, igual que factor_ablation_study.py
 
 
-def run_setup_replay_study(regions: list[str]) -> list[SetupPerformance]:
+@dataclass(frozen=True, slots=True)
+class SetupReplayStudyResult:
+    performance: list[SetupPerformance]
+    ticker_history: list[SetupTickerHistory]  # Parte 11.2
+
+
+def run_setup_replay_study(regions: list[str]) -> SetupReplayStudyResult:
     """Descarga el universo, reproduce los siete detectores punto-en-el-
-    tiempo sobre cada ticker, y agrega el resultado - sin tocar la base de
-    datos (eso es tarea de `main`, para que esta función se pueda probar/
-    invocar sin persistir nada)."""
+    tiempo sobre cada ticker, y agrega el resultado dos veces sobre el mismo
+    conjunto de observaciones - una cruzada por nombre de setup
+    (`setup_performance`, Parte 10.2) y otra por ticker concreto
+    (`setup_ticker_history`, Parte 11.2) - sin tocar la base de datos (eso es
+    tarea de `main`, para que esta función se pueda probar/invocar sin
+    persistir nada)."""
     ohlcv_by_ticker, benchmark_ticker_by_ticker, _vix_close, ticker_region = download_universe_ohlcv(regions)
 
     all_observations: list[sr.SetupReplayObservation] = []
@@ -59,7 +73,30 @@ def run_setup_replay_study(regions: list[str]) -> list[SetupPerformance]:
         all_observations.extend(observations)
 
     print(f"\nTotal: {len(all_observations)} observaciones sobre {len(ticker_region)} tickers")
-    return _stats_to_rows(sr.aggregate_setup_performance(all_observations))
+    return SetupReplayStudyResult(
+        performance=_stats_to_rows(sr.aggregate_setup_performance(all_observations)),
+        ticker_history=_history_to_rows(sr.aggregate_setup_history_by_ticker(all_observations)),
+    )
+
+
+def _history_to_rows(stats: list[sr.SetupTickerHistoryStats]) -> list[SetupTickerHistory]:
+    now = datetime.now(UTC)
+    return [
+        SetupTickerHistory(
+            id=None,
+            ticker=s.ticker,
+            region=s.region,
+            setup_name=s.setup_name,
+            family=s.family,
+            n_observations=s.n_observations,
+            n_triggered=s.n_triggered,
+            n_target_hit=s.n_target_hit,
+            first_ready_date=s.first_ready_date,
+            last_ready_date=s.last_ready_date,
+            computed_at=now,
+        )
+        for s in stats
+    ]
 
 
 def _stats_to_rows(stats: list[sr.SetupPerformanceStats]) -> list[SetupPerformance]:
@@ -90,18 +127,20 @@ def main() -> None:
     parser.add_argument("--regions", nargs="+", default=["us", "europe"])
     args = parser.parse_args()
 
-    rows = run_setup_replay_study(args.regions)
+    result = run_setup_replay_study(args.regions)
 
     db = SessionLocal()
     try:
-        SetupPerformanceRepository(db).replace_all(rows)
+        SetupPerformanceRepository(db).replace_all(result.performance)
+        SetupTickerHistoryRepository(db).replace_all(result.ticker_history)
     finally:
         db.close()
-    print(f"\nPersistidas {len(rows)} filas en setup_performance.")
+    print(f"\nPersistidas {len(result.performance)} filas en setup_performance.")
+    print(f"Persistidas {len(result.ticker_history)} filas en setup_ticker_history.")
 
     # Parte 10.3: solo la fila sin segmentar de cada nombre - las filas por
     # grado/régimen son para el análisis, no para este resumen de consola.
-    overall = [r for r in rows if r.grade is None and r.market_regime is None]
+    overall = [r for r in result.performance if r.grade is None and r.market_regime is None]
     measured = [r for r in overall if r.confidence == "measured"]
     print(f"\n{len(measured)}/{len(overall)} setups alcanzaron MEASURED (>= {sr.MIN_SAMPLE_FOR_STATS} disparos):")
     for r in sorted(measured, key=lambda row: row.expectancy_r or 0.0, reverse=True):

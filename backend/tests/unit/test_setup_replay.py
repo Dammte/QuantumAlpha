@@ -54,10 +54,11 @@ def _obs(
     bars_held: int | None = None, mae_pct: float = 0.0, grade: str | None = "A",
     regime: str | None = "market_above_sma200", risk_pct: float | None = 0.05,
     setup_name: str = "vcp_3_contracciones", family: str = "vcp",
+    ticker: str = "X", ready_date: date = date(2020, 1, 1),
 ) -> sr.SetupReplayObservation:
     label = _label(exit_reason, return_pct, bars_held or 1, mae_pct) if triggered and exit_reason else None
     return sr.SetupReplayObservation(
-        ticker="X", region="us", setup_name=setup_name, family=family, ready_date=date(2020, 1, 1),
+        ticker=ticker, region="us", setup_name=setup_name, family=family, ready_date=ready_date,
         grade=grade, market_regime=regime, triggered=triggered,
         risk_pct=risk_pct if triggered else None, label=label,
     )
@@ -277,6 +278,73 @@ def test_aggregate_never_fabricates_stats_when_nothing_triggered():
     assert overall.median_bars_held is None
     assert overall.mae_p80_pct is None
     assert overall.failure_rate_3d is None
+
+
+# --- aggregate_setup_history_by_ticker (Parte 11.2) -------------------------
+
+
+def test_aggregate_setup_history_by_ticker_matches_the_literal_example():
+    # "Este valor ha formado 4 VCP en 5 años; 3 dispararon y 2 alcanzaron
+    # objetivo" - el ejemplo literal de la Parte 11.2.
+    observations = [
+        _obs(True, "target", 0.10, 5, ticker="NVDA", ready_date=date(2020, 1, 1)),
+        _obs(True, "stop", -0.05, 2, ticker="NVDA", ready_date=date(2021, 1, 1)),
+        _obs(True, "target", 0.08, 4, ticker="NVDA", ready_date=date(2023, 1, 1)),
+        _obs(False, ticker="NVDA", ready_date=date(2024, 6, 1)),
+    ]
+    history = sr.aggregate_setup_history_by_ticker(observations)
+
+    assert len(history) == 1
+    row = history[0]
+    assert row.ticker == "NVDA"
+    assert row.setup_name == "vcp_3_contracciones"
+    assert row.family == "vcp"
+    assert row.n_observations == 4
+    assert row.n_triggered == 3
+    assert row.n_target_hit == 2
+    assert row.first_ready_date == date(2020, 1, 1)
+    assert row.last_ready_date == date(2024, 6, 1)
+
+
+def test_aggregate_setup_history_by_ticker_never_groups_two_tickers_together():
+    observations = [
+        _obs(True, "target", 0.05, 5, ticker="NVDA"),
+        _obs(True, "target", 0.05, 5, ticker="AAPL"),
+    ]
+    history = sr.aggregate_setup_history_by_ticker(observations)
+    by_ticker = {row.ticker: row.n_observations for row in history}
+    assert by_ticker == {"NVDA": 1, "AAPL": 1}
+
+
+def test_aggregate_setup_history_by_ticker_never_groups_two_setup_names_together():
+    observations = [
+        _obs(True, "target", 0.05, 5, ticker="NVDA", setup_name="vcp_3_contracciones", family="vcp"),
+        _obs(True, "target", 0.05, 5, ticker="NVDA", setup_name="ruptura_darvas", family="breakout"),
+    ]
+    history = sr.aggregate_setup_history_by_ticker(observations)
+    by_name = {row.setup_name: row.n_observations for row in history}
+    assert by_name == {"vcp_3_contracciones": 1, "ruptura_darvas": 1}
+
+
+def test_aggregate_setup_history_by_ticker_never_gates_by_sample_size():
+    # A diferencia de aggregate_setup_performance, un solo READY histórico
+    # es un conteo honesto, no algo que ocultar hasta MIN_SAMPLE_FOR_STATS.
+    observations = [_obs(True, "target", 0.05, 5, ticker="NVDA")]
+    history = sr.aggregate_setup_history_by_ticker(observations)
+    assert history[0].n_observations == 1
+    assert not hasattr(history[0], "confidence")
+
+
+def test_aggregate_setup_history_by_ticker_counts_never_triggered_as_zero_not_none():
+    observations = [_obs(False, ticker="NVDA"), _obs(False, ticker="NVDA")]
+    history = sr.aggregate_setup_history_by_ticker(observations)
+    assert history[0].n_observations == 2
+    assert history[0].n_triggered == 0
+    assert history[0].n_target_hit == 0
+
+
+def test_aggregate_setup_history_by_ticker_empty_input_returns_empty_list():
+    assert sr.aggregate_setup_history_by_ticker([]) == []
 
 
 # --- apply_measured_confidence ----------------------------------------------
