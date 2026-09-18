@@ -321,15 +321,20 @@ def ticker_trigger_events(
     itself from today (a same-day retry, not a real day-over-day
     transition).
 
-    `setup_triggered` (biblioteca de setups, Fase 10 interna del §28.1 -
-    "taken derivado contra transacciones reales, nunca persistido, misma
-    decisión que `trigger_performance_service.py` ya tomó") es un evento por
-    (ticker, nombre de setup) que llega a `SetupStage.TRIGGERED` desde
-    cualquier otro estado (o desde no existir ayer) - comparado por nombre,
-    no por posición en la lista, porque el orden de `setups` puede cambiar
-    de un día a otro (`arbitration.order_by_rank`). Reutiliza el mismo
-    `TriggerEvent`/`compute_trigger_outcomes` que ya mide `entry_triggered` -
-    ningún esquema ni agregación nuevos, ver `trigger_performance_service.py`."""
+    `setup_ready`/`setup_triggered` (biblioteca de setups, Parte 11.4 -
+    "registra los que alcanzaron READY, si dispararon, si el propietario
+    entró, y cómo acabaron") son un evento por (ticker, nombre de setup) que
+    llega a `SetupStage.READY`/`TRIGGERED` desde cualquier otro estado (o
+    desde no existir ayer) - comparados por nombre, no por posición en la
+    lista, porque el orden de `setups` puede cambiar de un día a otro
+    (`arbitration.order_by_rank`). `setup_ready` es el análogo de
+    `gate_passed` (un estado más temprano, no algo que el propietario "actúa"
+    sobre directamente - por eso no es elegible para `taken` en
+    `trigger_performance_service.py`); `setup_triggered` es el análogo de
+    `entry_triggered` (el momento accionable, sí elegible para `taken`).
+    Reutiliza el mismo `TriggerEvent`/`compute_trigger_outcomes` que ya mide
+    `gate_passed`/`entry_triggered` - ningún esquema ni agregación nuevos,
+    ver `trigger_performance_service.py`."""
     if previous is None or previous.trade_date == new.trade_date:
         return []
     events: list[TriggerEvent] = []
@@ -361,18 +366,20 @@ def ticker_trigger_events(
         )
     previous_setup_stage = {s["name"]: s.get("stage") for s in (previous.setups or [])}
     for setup in new.setups or []:
-        if setup.get("stage") != SetupStage.TRIGGERED.value:
+        stage = setup.get("stage")
+        prior_stage = previous_setup_stage.get(setup["name"])
+        if stage not in (SetupStage.READY.value, SetupStage.TRIGGERED.value):
             continue
-        if previous_setup_stage.get(setup["name"]) == SetupStage.TRIGGERED.value:
-            continue  # ya disparado ayer - no es una transición nueva
+        if prior_stage == stage:
+            continue  # ya estaba en ese mismo estado ayer - no es una transición nueva
         events.append(
             TriggerEvent(
                 id=None,
                 entity_type="ticker",
                 entity_key=new.ticker,
-                event_type="setup_triggered",
-                previous_value=previous_setup_stage.get(setup["name"]),
-                new_value=SetupStage.TRIGGERED.value,
+                event_type="setup_ready" if stage == SetupStage.READY.value else "setup_triggered",
+                previous_value=prior_stage,
+                new_value=stage,
                 occurred_at=now,
                 details={"price": new.price, "setup_name": setup["name"], "family": setup.get("family")},
             )

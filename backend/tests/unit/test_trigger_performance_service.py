@@ -178,6 +178,35 @@ def test_compute_trigger_outcomes_splits_setup_triggered_by_taken():
     assert by_taken[("setup_triggered", 10, None)].n == 2
 
 
+def test_compute_trigger_outcomes_measures_setup_ready_as_its_own_event_type():
+    # Parte 11.4: el análogo de gate_passed para un setup concreto - "los
+    # que alcanzaron READY" es una hipótesis medible por sí sola.
+    close = _close_series("2024-01-01", [100.0] * 10 + [110.0] * 60)
+    when = datetime.combine(close.index[0].date(), datetime.min.time(), tzinfo=UTC)
+    events = [_event("AAPL", "setup_ready", when)]
+
+    outcomes = tps.compute_trigger_outcomes(events, {"AAPL": close})
+
+    by_horizon = {o.horizon_days: o for o in outcomes if o.event_type == "setup_ready"}
+    assert by_horizon[10].n == 1
+    assert by_horizon[10].hit_rate == 1.0
+
+
+def test_compute_trigger_outcomes_never_splits_setup_ready_by_taken():
+    # Igual que gate_passed: READY no es algo que el propietario "actúa"
+    # sobre directamente (todavía falta el disparo) - "tomado" no es una
+    # pregunta coherente para hacerle.
+    close = _close_series("2024-01-01", list(100.0 + i for i in range(80)))
+    trigger_date = close.index[0].date()
+    when = datetime.combine(trigger_date, datetime.min.time(), tzinfo=UTC)
+    events = [_event("AAPL", "setup_ready", when)]
+    buy_dates = {"AAPL": [trigger_date + timedelta(days=1)]}
+
+    outcomes = tps.compute_trigger_outcomes(events, {"AAPL": close}, buy_dates_by_ticker=buy_dates)
+
+    assert all(o.taken is None for o in outcomes)
+
+
 def test_compute_trigger_outcomes_never_splits_gate_passed_by_taken():
     # Parte 13: "taken" is only a coherent question for entry_triggered -
     # gate_passed is an earlier, less specific state nobody "acts on" directly.

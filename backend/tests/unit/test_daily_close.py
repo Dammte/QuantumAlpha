@@ -422,7 +422,10 @@ def test_ticker_trigger_events_setup_triggered_when_setup_absent_yesterday():
     assert events[0].previous_value is None
 
 
-def test_ticker_trigger_events_setup_triggered_ignores_forming_and_failed():
+def test_ticker_trigger_events_setup_triggered_never_fires_from_forming_or_failed_transitions():
+    # "a" pasa de forming a ready (dispara setup_ready, no setup_triggered);
+    # "b" pasa de ready a failed (ningún evento - fallar no está entre los
+    # tipos que este mecanismo registra).
     previous = _ticker_state(
         trade_date=date(2026, 9, 9),
         setups=[
@@ -437,7 +440,66 @@ def test_ticker_trigger_events_setup_triggered_ignores_forming_and_failed():
             {"name": "b", "family": "vcp", "stage": "failed"},
         ],
     )
+    events = dc.ticker_trigger_events(previous, new, datetime.now(UTC))
+    assert len(events) == 1
+    assert events[0].event_type == "setup_ready"
+    assert events[0].details["setup_name"] == "a"
+    assert not any(e.event_type == "setup_triggered" for e in events)
+
+
+# --- ticker_trigger_events: setup_ready (Parte 11.4) -------------------------
+
+
+def test_ticker_trigger_events_setup_ready_on_forming_to_ready_transition():
+    previous = _ticker_state(
+        trade_date=date(2026, 9, 9), setups=[{"name": "vcp_3", "family": "vcp", "stage": "forming"}]
+    )
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10), setups=[{"name": "vcp_3", "family": "vcp", "stage": "ready"}]
+    )
+    events = dc.ticker_trigger_events(previous, new, datetime.now(UTC))
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "setup_ready"
+    assert event.previous_value == "forming"
+    assert event.new_value == "ready"
+    assert event.details == {"price": new.price, "setup_name": "vcp_3", "family": "vcp"}
+
+
+def test_ticker_trigger_events_setup_ready_when_setup_absent_yesterday():
+    previous = _ticker_state(trade_date=date(2026, 9, 9), setups=[])
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10), setups=[{"name": "vcp_3", "family": "vcp", "stage": "ready"}]
+    )
+    events = dc.ticker_trigger_events(previous, new, datetime.now(UTC))
+    assert len(events) == 1
+    assert events[0].event_type == "setup_ready"
+    assert events[0].previous_value is None
+
+
+def test_ticker_trigger_events_setup_ready_absent_when_already_ready_yesterday():
+    previous = _ticker_state(
+        trade_date=date(2026, 9, 9), setups=[{"name": "vcp_3", "family": "vcp", "stage": "ready"}]
+    )
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10), setups=[{"name": "vcp_3", "family": "vcp", "stage": "ready"}]
+    )
     assert dc.ticker_trigger_events(previous, new, datetime.now(UTC)) == []
+
+
+def test_ticker_trigger_events_setup_ready_fires_again_after_a_failed_cycle():
+    # Un ciclo completo (ready -> failed -> ready otra vez) es una NUEVA
+    # formación - debe volver a contar, no quedarse silenciado para siempre.
+    previous = _ticker_state(
+        trade_date=date(2026, 9, 9), setups=[{"name": "vcp_3", "family": "vcp", "stage": "failed"}]
+    )
+    new = _ticker_state(
+        trade_date=date(2026, 9, 10), setups=[{"name": "vcp_3", "family": "vcp", "stage": "ready"}]
+    )
+    events = dc.ticker_trigger_events(previous, new, datetime.now(UTC))
+    assert len(events) == 1
+    assert events[0].event_type == "setup_ready"
+    assert events[0].previous_value == "failed"
 
 
 def test_ticker_trigger_events_setup_triggered_two_setups_same_day():

@@ -7,7 +7,7 @@ Fase 8 forward pointer) - this module is the new primary read, built on
 `TriggerEvent` (Fase 2's own append-only "what changed" log) instead of a
 per-request "Analizar activo" audit trail.
 
-Three event types worth measuring separately, all hypotheses about whether
+Four event types worth measuring separately, all hypotheses about whether
 the gate/setup-library design has any real predictive value at all - not
 assumed true:
 
@@ -16,14 +16,16 @@ assumed true:
 - `entry_triggered`: did price rise in the sessions after the entry trigger
   price was actually crossed (a later, more specific moment than the gate
   merely turning on)?
-- `setup_triggered` (biblioteca de setups, §28.1's internal Fase 10 - "taken
-  derivado contra transacciones reales, nunca persistido, misma decisión que
-  este módulo ya tomó"): did price rise after a specific named setup
-  (`daily_close.ticker_trigger_events`) reached `SetupStage.TRIGGERED`? A
-  distinct, more granular question than `entry_triggered` - the gate's own
-  generic trigger vs. a specific pattern (VCP, breakout...) confirming -
-  answered here for free by reusing the exact same `TriggerEvent`/
-  `compute_trigger_outcomes` machinery, no new aggregation needed.
+- `setup_ready`/`setup_triggered` (biblioteca de setups, Parte 11.4 -
+  "registra los que alcanzaron READY, si dispararon, si el propietario
+  entró, y cómo acabaron"): the same two-stage question `gate_passed`/
+  `entry_triggered` already answers for the gate, asked again for a specific
+  named setup (`daily_close.ticker_trigger_events`) reaching
+  `SetupStage.READY`/`TRIGGERED` - a distinct, more granular hypothesis than
+  the gate's own generic one (a specific pattern - VCP, breakout... -
+  confirming, not just "the gate turned on"). Answered here for free by
+  reusing the exact same `TriggerEvent`/`compute_trigger_outcomes` machinery,
+  no new aggregation needed.
 
 `exit_urgency_changed` (position-level) is deliberately excluded - it's
 about an already-open position's own exit engine reacting, not a fresh
@@ -63,7 +65,7 @@ from app.services.market_data_service import MarketDataService
 
 FORWARD_HORIZONS = (5, 10, 21, 63)  # trading sessions - same as signal_performance_service.py
 
-MEASURED_EVENT_TYPES = ("gate_passed", "entry_triggered", "setup_triggered")
+MEASURED_EVENT_TYPES = ("gate_passed", "entry_triggered", "setup_ready", "setup_triggered")
 
 # De los tipos medidos, en cuáles tiene sentido preguntar "¿se tomó de
 # verdad?" (Parte 13) - un `gate_passed` es un estado, no una acción

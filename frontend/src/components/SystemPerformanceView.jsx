@@ -9,6 +9,7 @@ const VERDICT_LABELS = { comprar: 'Comprar', esperar: 'Esperar', evitar: 'Evitar
 const TRIGGER_EVENT_LABELS = {
   gate_passed: 'Gate aprobado',
   entry_triggered: 'Entrada disparada',
+  setup_ready: 'Setup listo',
   setup_triggered: 'Setup disparado',
 }
 

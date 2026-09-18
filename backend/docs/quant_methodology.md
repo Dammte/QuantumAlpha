@@ -3742,3 +3742,75 @@ lista `setups=None` en cualquiera de los dos lados no revienta); 2 nuevos en
 `setup_triggered` se divide por `taken` exactamente igual que `entry_triggered`). Verificado antes de
 fijar los tests con un script de scratchpad reproduciendo los mismos cinco casos límite. Suite
 completa (1050+ tests) y ruff limpios.
+
+### 28.21 Parte 11.2/11.3/12.1: historial por ticker, anulación visible, chip de muestra medida
+
+El propietario pasó de nuevo el texto literal de la Parte 11/12 completa para continuar sin
+ambigüedad sobre qué faltaba. Tres huecos concretos, cada uno con evidencia literal exacta:
+
+**Parte 11.2** - "del mismo replay de la Parte 10, filtrado por ticker": "este valor ha formado 4
+VCP en 5 años; 3 dispararon y 2 alcanzaron objetivo". Mismo motor (`setup_replay.py`), agregación
+NUEVA (`aggregate_setup_history_by_ticker`) sobre las mismas `SetupReplayObservation` que ya produce
+`replay_setups_for_ticker` - agrupada por `(ticker, region, setup_name)` en vez de por nombre solo.
+Deliberadamente sin `confidence`/`MIN_SAMPLE_FOR_STATS`: a diferencia de `setup_performance` (una
+TASA que necesita muestra grande para no ser ruido), aquí son CONTEOS literales de un ticker
+concreto - "lo ha hecho 2 veces" es un hecho, no algo que ocultar hasta n=30 (Parte 15, aplicado
+también a esto, no solo a `setup_performance`). Tabla `setup_ticker_history` (migración
+`a3f8d1c2e5b7`), mismo patrón exacto de `setup_performance` (foto completa reemplazada, sin UNIQUE);
+`scripts/setup_replay_study.py` agrega y persiste ambas tablas en la misma corrida sobre el mismo
+`all_observations` (`SetupReplayStudyResult` sustituye el `list[SetupPerformance]` suelto que
+devolvía antes - ambos consumidores comparten el coste de descarga/replay, no lo duplican).
+`GET /market/radar` la lee una vez por request (mismo criterio que `measured_stats`, §28.19),
+indexada por `(ticker, region, setup_name)` - la clave incluye región a propósito, un mismo símbolo
+de ticker en US y Europa no debe cruzar historiales. Frontend: `tickerHistorySentence` genera la
+frase exacta del ejemplo literal con una plantilla determinista (Parte 15: nunca Gemini) a partir de
+conteos + fechas; la sección se reordenó al final del detalle expandido, junto con la estadística
+medida - la Parte 12.1 los lista como un solo punto ("la estadística del setup y su historial en ese
+ticker"), no dos secciones separadas.
+
+**Parte 11.3** - "cada fila muestra las dos cifras: el precio que confirma y el precio que invalida
+- hoy el sistema es flojo diciendo cuándo se acabó la idea antes de entrar". Cierto: la fila
+colapsada mostraba `setup.trigger_price` pero nunca `setup.invalidation_price` (un campo que ya
+existía desde la Fase 1, simplemente nunca llegaba a esta vista - `geometry.stop_price` no es lo
+mismo, es el stop de la operación ya dimensionada, no el nivel estructural que invalida el propio
+patrón). Ahora ambos números viven uno junto al otro, misma clase `radar-row__numeric`, mismo peso
+visual.
+
+**Parte 12.1** - el chip "Con muestra medida" se había excluido a propósito en la Fase 10
+(`RadarView.jsx`, antes de que `setup_replay.py` existiera - ningún setup podía ser `"measured"`
+todavía). Ahora sí hay datos reales detrás (`confidence === "measured"`, el mismo criterio binario
+de la Parte 10.3) - el comentario que lo excluía había quedado obsoleto sin que nadie lo revisara.
+"Sin correlación con mi cartera" sigue fuera: es un subsistema distinto
+(`apply_portfolio_grade_modifiers`, CLAUDE.md - "modificadores de cartera... siguen sin consumidor"),
+no una omisión de esta biblioteca.
+
+**Tests**: 5 nuevos en `test_setup_ticker_history_repository.py`, 5 nuevos en `test_setup_replay.py`
+(incluido el ejemplo literal exacto: n=4, triggered=3, target_hit=2), 2 nuevos en
+`test_setup_replay_study.py`, 2 nuevos en `test_radar_api.py` (adjuntado correcto + aislamiento por
+`(ticker, region)`), 1 corregido. Suite completa (1073 tests), ruff y eslint limpios; build de
+producción del frontend verificado (`npm run build`) - sin verificación en navegador en vivo para
+este incremento concreto, a diferencia de la Fase 13 (§28.19): son bloques condicionales con guarda
+`null` idénticos en forma a los ya verificados ahí, y sin servidores de desarrollo ya levantados en
+este momento de la sesión.
+
+### 28.22 Parte 11.4 (resto): `setup_ready` - "los que alcanzaron READY"
+
+El plan interno (§28.1) solo cubría la mitad de la Parte 11.4 con `setup_triggered` (§28.20):
+"registra los que alcanzaron READY, **si dispararon**, si el propietario entró, y cómo acabaron" -
+la primera cláusula ("alcanzaron READY") no tenía todavía su propio evento. `setup_ready` es el
+análogo exacto de `gate_passed` para un setup concreto, igual que `setup_triggered` ya es el análogo
+de `entry_triggered`: mismo `ticker_trigger_events`, comparando por nombre de setup si la etapa de
+hoy es `READY` y la de ayer no lo era (`forming`, `failed`, ausente, o - tras un ciclo completo -
+`triggered` de una formación anterior; un READY tras un `failed` cuenta como una NUEVA formación, no
+se silencia para siempre). Igual que `gate_passed`, deliberadamente NO elegible para `taken`
+(`TAKEN_ELIGIBLE_EVENT_TYPES` sin cambios) - READY todavía no tiene un precio confirmado sobre el
+que el propietario pueda actuar, "tomado" no es una pregunta coherente para ese estado.
+
+Cero esquema y cero agregación nuevos otra vez - `setup_ready` se suma a `MEASURED_EVENT_TYPES` y
+queda medido con el mismo `compute_trigger_outcomes` genérico. `SystemPerformanceView.jsx` gana la
+etiqueta `'Setup listo'`.
+
+**Tests**: 1 test existente corregido (forming→ready ahora SÍ emite `setup_ready`, ya no `[]`) + 4
+nuevos en `test_daily_close.py` (transición normal; ausente ayer; ya ready ayer no duplica; un ciclo
+completo ready→failed→ready vuelve a contar); 2 nuevos en `test_trigger_performance_service.py`
+(medido como su propio tipo; nunca se divide por `taken`). Suite completa, ruff y eslint limpios.
