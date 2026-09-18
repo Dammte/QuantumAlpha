@@ -3961,3 +3961,30 @@ job sigue en éxito con el resto procesado; una excepción fuera de los bucles a
 `test_daily_close.py` (`_today_trigger_counts` aislado, con un doble mínimo de
 `TriggerEventRepository`). Suite completa y ruff limpios; build de producción del frontend
 verificado (sin cambios de frontend en este bloque).
+
+### 29.3 Cron de `setup_replay_study.py` (bloque B7/C.3) y comentario de costes
+
+Sin este cron, todo lo construido en §28.16-28.21 (el motor de replay, `setup_performance`,
+`setup_ticker_history`) nunca se ejecuta en producción - la medición existe en código desde hace
+fases, pero nadie la dispara, así que `confidence` de cada setup se queda en `"unvalidated"` para
+siempre y el Radar nunca muestra `measured_stats`/`ticker_history` reales. `quantumalpha-setup-
+replay-study` (nuevo, `render.yaml`) corre domingo 06:00 UTC - semanal basta (la muestra histórica
+agregada no cambia de forma apreciable día a día, correrlo más a menudo pagaría más sin medir nada
+distinto), después del cierre del viernes con margen de fin de semana. Invocado como `python
+scripts/setup_replay_study.py` (no `-m scripts...`, a diferencia de los otros tres crons) porque el
+propio script está escrito para ejecutarse como script directo (`sys.path.insert` manual al principio
+del archivo, documentado en su propio uso) - se respeta esa convención existente en vez de forzarla
+a la de los demás.
+
+**Comentario de costes** (`render.yaml`, bloque C.4, al principio del archivo): estimación
+orientativa, explícitamente marcada como no verificada contra el precio vigente de Render en el
+momento de la lectura (Render factura los Cron Jobs por tiempo de cómputo real al ritmo del plan,
+no una cuota fija) - nunca una cifra inventada presentada como exacta. Recomendación de prioridad:
+`daily-close` y `refresh-universe-membership`, imprescindibles y baratos; `setup-replay-study`,
+recomendado (el más caro por corrida individual, pero solo 4 veces al mes); `intraday-refresh`, NO
+activar todavía - bloque B5, sin consumidor real hasta que el bloque E5 (marcar en el Radar los
+disparos de hoy en sesión) esté implementado, pagarlo antes sería tirar el dinero.
+
+Sin cambios de código Python en este bloque (solo `render.yaml`) - YAML validado con
+`yaml.safe_load`, suite de tests sin cambios (verde desde el bloque anterior), sin impacto en el
+build del frontend.

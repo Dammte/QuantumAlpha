@@ -1,3 +1,44 @@
+# Auditoria del Radar, bloque C.4: coste mensual estimado de los Render Cron
+# Jobs declarados abajo, y cuáles recomiendo pagar. Cifras ORIENTATIVAS, no
+# verificadas contra la página de precios vigente de Render en el momento en
+# que se lea esto - Render factura los Cron Jobs por el tiempo de cómputo
+# real de cada ejecución al ritmo del plan elegido (aquí "starter" en todos,
+# igual que el propio servicio web), no una cuota fija mensual como un
+# servicio siempre encendido. Verifica el precio/minuto vigente antes de
+# decidir - esto es una guía de prioridad, no una factura.
+#
+#   quantumalpha-daily-close (22:00 UTC, L-V, ~22 corridas/mes):
+#     Imprescindible - es el único escritor de `ticker_daily_states`, la
+#     tabla que alimenta el Radar/Hoy. Sin él, ambos se quedan vacíos por
+#     diseño (el fallback en vivo del bloque B es una red de seguridad, no
+#     un sustituto). Duración estimada: 1-3 min/corrida (universo ya
+#     cacheado en lotes, sin descarga repetida). RECOMENDADO, activar ya.
+#
+#   quantumalpha-refresh-universe-membership (05:00 UTC, día 1 de cada mes,
+#   ~1 corrida/mes):
+#     Barato por diseño (mensual, no diario) - amplía el universo curado de
+#     ~217 tickers al universo dinámico real (S&P 500/400 + STOXX 600).
+#     Duración estimada: varios minutos, una vez al mes. RECOMENDADO.
+#
+#   quantumalpha-setup-replay-study (domingo, después del cierre del
+#   viernes, ~4 corridas/mes):
+#     Sin él, `confidence` de todo setup se queda en "unvalidated" para
+#     siempre y el Radar nunca muestra `measured_stats`/`ticker_history`
+#     (bloque B7). Es el cron más caro por corrida individual (descarga ~10
+#     años de histórico de todo el universo y reproduce 7 detectores en una
+#     rejilla punto-en-el-tiempo - "varios minutos" según su propio
+#     docstring, plausiblemente 10-20 min), pero corre solo 4 veces al mes.
+#     RECOMENDADO si te importa que el Radar tenga evidencia medida detrás,
+#     no solo geometría - que es justo lo que pediste.
+#
+#   quantumalpha-intraday-refresh (cada 30 min, 08:00-21:00 UTC, L-V, ~570
+#   corridas/mes):
+#     El más caro AGREGADO, por pura frecuencia, aunque cada corrida es
+#     corta (solo re-consulta tickers con disparador ya activo). Bloque B5:
+#     hoy NO tiene consumidor (nadie lee `ticker_intraday_states`) - pagarlo
+#     ahora sería tirar el dinero. NO ACTIVAR todavía; revisar esta
+#     recomendación cuando el bloque E5 (marcar en el Radar los disparos de
+#     hoy en sesión) esté implementado y esta tabla tenga un lector real.
 services:
   - name: quantumalpha-api
     type: web
@@ -112,6 +153,33 @@ services:
     buildCommand: pip install -r requirements.txt
     # Bloque B8, mismo motivo que quantumalpha-daily-close arriba.
     startCommand: alembic upgrade head && python -m scripts.refresh_universe_membership
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: MARKET_DATA_PROVIDER
+        value: yfinance
+
+  # Auditoria del Radar, bloque B7/C.3: sin este cron, `setup_replay.
+  # aggregate_setup_performance`/`aggregate_setup_history_by_ticker` nunca
+  # se ejecutan contra el universo real, así que todo setup se queda en
+  # `confidence="unvalidated"` para siempre y el Radar nunca muestra
+  # `measured_stats`/`ticker_history` (§28.16-28.21) - la medición existe
+  # desde hace fases, pero nadie la dispara en producción. Domingo 06:00
+  # UTC (después del cierre del viernes, con margen de fin de semana antes
+  # de que el lunes vuelva a operar) - semanal basta: la muestra histórica
+  # que agrega no cambia de forma apreciable de un día para otro, y correrlo
+  # más a menudo solo pagaría más sin medir nada distinto. Mismo "recurso
+  # facturado aparte" que los tres crons anteriores.
+  - name: quantumalpha-setup-replay-study
+    type: cron
+    runtime: python
+    region: frankfurt
+    plan: starter
+    rootDir: backend
+    schedule: "0 6 * * 0"
+    buildCommand: pip install -r requirements.txt
+    # Bloque B8, mismo motivo que quantumalpha-daily-close arriba.
+    startCommand: alembic upgrade head && python scripts/setup_replay_study.py
     envVars:
       - key: DATABASE_URL
         sync: false
