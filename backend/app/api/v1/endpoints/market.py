@@ -1,6 +1,6 @@
 import statistics
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,8 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.api.deps import (
     DbSession,
     get_market_context_service,
+    get_market_data_service,
     get_market_screener_service,
     get_portfolio_service,
+    get_radar_fallback_service,
     get_setup_performance_repository,
     get_setup_ticker_history_repository,
     get_ticker_daily_state_repository,
@@ -36,6 +38,7 @@ from app.schemas.market import (
     NewsArticleResponse,
     PriceLevelResponse,
     ProximityItemResponse,
+    RadarCoverageResponse,
     RadarItemResponse,
     RadarResponse,
     RadarScoreResponse,
@@ -57,6 +60,7 @@ from app.schemas.market import (
 )
 from app.services import portfolio_construction_service as pcs
 from app.services.market_context_service import MarketContextService, assess_market_regime
+from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import (
     MarketScreenerService,
     ScreenerFilters,
@@ -67,6 +71,7 @@ from app.services.market_screener_service import (
 )
 from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of, sector_of
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
+from app.services.radar_fallback_service import RadarFallbackService, is_stale
 from app.services.relationship_map_service import build_relationship_map
 from app.services.setups import scoring as radar_scoring
 from app.services.setups import thesis as radar_thesis
@@ -276,6 +281,19 @@ RADAR_MAX_PER_SECTOR = 4
 # sería la misma pieza dos veces.
 RADAR_DROP_FORMING_BELOW_GRADE = "B"  # los FORMING de grado C no se muestran
 RADAR_EMPTY_MESSAGE = "Ningún setup cumple los criterios hoy. Es un resultado normal en esta operativa."
+# Auditoria del Radar, bloque B.7: los otros dos motivos honestos de un
+# Radar vacío, distintos del anterior (que sí es un resultado normal).
+RADAR_MESSAGE_NO_CLOSE_DATA = (
+    "Todavía no hay datos de cierre para esta región, y el cálculo en vivo no ha podido "
+    "completarse. Vuelve a intentarlo en unos minutos."
+)
+
+
+def _stale_fallback_failed_message(stale_since: datetime) -> str:
+    return (
+        f"El cierre diario no ha corrido desde el {stale_since:%Y-%m-%d} y el cálculo en vivo "
+        "tampoco ha podido completarse esta vez."
+    )
 
 # Auditoria del Radar, bloque E3: las dos listas de horizonte, cada una con
 # su propio tope - "no quiero que un sector caliente me ocupe media lista"
@@ -538,23 +556,32 @@ def get_radar(
     ],
     portfolio_service: Annotated[PortfolioService, Depends(get_portfolio_service)],
     trade_plan_repo: Annotated[TradePlanRepository, Depends(get_trade_plan_repository)],
+    market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
+    screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
+    radar_fallback: Annotated[RadarFallbackService, Depends(get_radar_fallback_service)],
     region: str = RegionQuery,
     portfolio_id: int | None = None,
 ) -> RadarResponse:
     """Reconstruction (2026-09), Fase 5: "qué está a punto de disparar una
     entrada" (Parte 0, pregunta 2) - a pure read over `daily_close.py`'s own
-    precomputed `ticker_daily_states`, never a live universe scan. Every
-    ticker whose gate passes and/or already has an active entry trigger, as
-    of the last nightly run - not the whole universe. `watchlist_service.py`'s
-    own cheap-rule filter (2026-09, Fase 5 retirement) was retired outright
-    once this endpoint existed to answer the same question with real
-    evidence behind it - see docs/quant_methodology.md §25.
+    precomputed `ticker_daily_states` en el caso normal. Every ticker whose
+    gate passes and/or already has an active entry trigger, as of the last
+    nightly run - not the whole universe. `watchlist_service.py`'s own
+    cheap-rule filter (2026-09, Fase 5 retirement) was retired outright once
+    this endpoint existed to answer the same question with real evidence
+    behind it - see docs/quant_methodology.md §25.
+
+    Auditoria del Radar, bloque B: cuando esa lectura está vacía o
+    demasiado vieja, cae a `RadarFallbackService` - un cómputo en vivo
+    acotado, la única excepción documentada a la regla de "sin cómputo en
+    el propio request" (§29.1). `source`/`coverage`/`partial` en la
+    respuesta dicen sin ambigüedad de dónde salió el resultado.
 
     `computed_at` is the *latest* of the returned rows' own timestamps
     (`None` when there's nothing to show yet, e.g. before `daily_close.py`
-    has ever run for this region) - a caller-visible way to tell "empty
-    because nothing qualifies right now" from "empty because there's no data
-    at all"."""
+    has ever run for this region AND el fallback tampoco produjo nada) - a
+    caller-visible way to tell "empty because nothing qualifies right now"
+    from "empty because there's no data at all"."""
     # Parte 10.2/11.1 (§28.x): la foto completa de setup_performance, leída
     # una sola vez por request - no por fila - y filtrada a la fila sin
     # segmentar de cada nombre (ver `SetupMatchResponse.measured_stats`).
@@ -571,6 +598,33 @@ def get_radar(
     }
 
     states = ticker_daily_state_repo.latest_by_region(region)
+    original_computed_at = max((s.computed_at for s in states), default=None)
+    now = datetime.now(UTC)
+
+    # Auditoria del Radar, bloque B: fallback en vivo cuando no hay datos de
+    # cierre o son demasiado viejos - ver `radar_fallback_service.py` para
+    # las salvaguardas (tope de tickers, timeout, aislamiento por ticker,
+    # caché de 15 min). `source`/`partial`/`coverage_universe` viajan tal
+    # cual en la respuesta, sin ambigüedad sobre de dónde salió el dato.
+    source = "daily_close"
+    partial = False
+    coverage_universe = len(states)
+    # `fallback_attempted` es DISTINTO de `source != "live_fallback"` tras
+    # el bloque de abajo: ambos casos ("nunca hizo falta intentarlo, los
+    # datos están frescos" y "se intentó pero no produjo nada") dejan
+    # `source == "daily_close"` - sin esta bandera propia, el mensaje de
+    # abajo no podría distinguir "datos frescos, nada que puntúe hoy" (un
+    # resultado normal) de "esto está viejo y el fallback tampoco funcionó"
+    # (un aviso real). Bug encontrado escribiendo el test de este bloque.
+    fallback_attempted = not states or is_stale(original_computed_at, now)
+    if fallback_attempted:
+        fallback_snapshot = radar_fallback.get_or_compute(region, market_data, screener, performance_by_name)
+        if fallback_snapshot.states:
+            states = fallback_snapshot.states
+            source = "live_fallback"
+            partial = fallback_snapshot.partial
+            coverage_universe = fallback_snapshot.universe
+
     candidates = [s for s in states if s.gate_passes or s.entry_trigger_price is not None]
     computed_at = max((s.computed_at for s in states), default=None)
     all_items = [
@@ -655,7 +709,25 @@ def get_radar(
             )
             item.entry_geometry = TradeGeometryResponse(**geometry_to_dict(narrowed))
 
-    message = RADAR_EMPTY_MESSAGE if not items and computed_at is not None else None
+    # Auditoria del Radar, bloque B.7: "el estado vacío deja de ser mudo" -
+    # tres motivos distintos para un `items` vacío, nunca `message: None` en
+    # silencio cuando de verdad no hay nada que mostrar:
+    #   1. Nunca hubo cierre Y el fallback tampoco produjo nada.
+    #   2. Hubo cierre, pero está viejo, Y el fallback tampoco produjo nada
+    #      (se sigue sirviendo esa foto vieja - mejor un dato viejo real que
+    #      ninguno - pero el mensaje deja claro que no es de hoy).
+    #   3. Hay datos frescos (de `daily_close.py` o del fallback) y
+    #      sencillamente ningún candidato pasa el filtro hoy - un resultado
+    #      legítimo, el único caso que usa `RADAR_EMPTY_MESSAGE`.
+    message = None
+    if not items:
+        fallback_failed = fallback_attempted and source != "live_fallback"
+        if original_computed_at is None and fallback_failed:
+            message = RADAR_MESSAGE_NO_CLOSE_DATA
+        elif original_computed_at is not None and fallback_failed:
+            message = _stale_fallback_failed_message(original_computed_at)
+        else:
+            message = RADAR_EMPTY_MESSAGE
     return RadarResponse(
         items=items,
         computed_at=computed_at,
@@ -665,6 +737,9 @@ def get_radar(
         medium_term=medium_term,
         short_term_message=short_term_message,
         medium_term_message=medium_term_message,
+        source=source,
+        coverage=RadarCoverageResponse(analyzed=len(states), universe=coverage_universe),
+        partial=partial,
     )
 
 

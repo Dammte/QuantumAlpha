@@ -454,6 +454,18 @@ class RadarItemResponse(BaseModel):
     thesis: str | None = None
 
 
+class RadarCoverageResponse(BaseModel):
+    """Auditoria del Radar, bloque B/G: "nota de cobertura, al pie y siempre
+    visible: cuántos valores se han analizado, sobre cuántos del universo".
+    `analyzed` puede ser menor que `universe` tanto en lectura normal (nunca
+    ocurre hoy, `daily_close.py` analiza el universo completo) como, sobre
+    todo, en `live_fallback` (acotado a `RADAR_FALLBACK_MAX_TICKERS` o
+    cortado por el timeout)."""
+
+    analyzed: int
+    universe: int
+
+
 class RadarResponse(BaseModel):
     items: list[RadarItemResponse]
     # `None` when `daily_close.py` hasn't run for this region yet (a fresh
@@ -485,6 +497,25 @@ class RadarResponse(BaseModel):
     # (literal) - `None` cuando la lista SÍ llega a 10, nunca relleno.
     short_term_message: str | None = None
     medium_term_message: str | None = None
+    # Auditoria del Radar, bloque B: procedencia sin ambigüedad - "la
+    # respuesta debe marcar la procedencia sin ambigüedad" (literal).
+    # "daily_close": lectura pura de `ticker_daily_states`, como siempre.
+    # "live_fallback": `ticker_daily_states` estaba vacía o su
+    # `computed_at` superaba las 36 horas de antigüedad, y este request
+    # calculó en vivo sobre un subconjunto acotado del universo (ver
+    # `radar_fallback_service.py`).
+    source: str = "daily_close"
+    # "coverage": {"analyzed": N, "universe": M} - cuántos tickers se
+    # analizaron de verdad (que puede ser < universe por el tope del
+    # fallback, o por el propio timeout) sobre el tamaño real del universo
+    # de la región. Con `source == "daily_close"`, `universe` coincide con
+    # `total_analyzed` arriba (todo el universo se analiza siempre en el
+    # cron nocturno, sin tope).
+    coverage: RadarCoverageResponse = RadarCoverageResponse(analyzed=0, universe=0)
+    # `True` solo cuando `source == "live_fallback"` y el timeout cortó la
+    # corrida antes de terminar el subconjunto acotado - "nunca dejes al
+    # usuario mirando un spinner eterno, dilo en la UI" (literal).
+    partial: bool = False
 
 
 class CorrelationWarningResponse(BaseModel):

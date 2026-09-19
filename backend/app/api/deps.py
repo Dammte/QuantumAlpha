@@ -28,6 +28,7 @@ from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import MarketScreenerService
 from app.services.portfolio_risk_service import PortfolioRiskService
 from app.services.portfolio_service import PortfolioService
+from app.services.radar_fallback_service import RadarFallbackService
 from app.services.ticker_analysis_service import TickerAnalysisService
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -66,6 +67,15 @@ def get_market_screener_service(
     result cache (see CACHE_TTL in market_screener_service.py), which only helps
     if the same instance is reused across requests."""
     return MarketScreenerService(market_data)
+
+
+@lru_cache
+def get_radar_fallback_service() -> RadarFallbackService:
+    """Cacheado como singleton por el mismo motivo que
+    `get_market_screener_service` arriba - `RadarFallbackService` guarda su
+    propio caché de 15 minutos por región (bloque B), que solo sirve de
+    algo si la misma instancia sobrevive entre requests."""
+    return RadarFallbackService()
 
 
 @lru_cache

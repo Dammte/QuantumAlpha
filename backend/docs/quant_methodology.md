@@ -4171,3 +4171,90 @@ ANTES de llegar a puntuarse - el test de "sin primario por debajo del umbral" tu
 en vez de `FORMING` para probar de verdad "puntúa bajo", no "se descarta antes de puntuar" (dos
 causas distintas para el mismo síntoma superficial de "no aparece"). Suite completa y ruff limpios;
 build de producción del frontend verificado (sin cambios de frontend en este bloque).
+
+### 29.7 Fallback de cómputo en vivo (bloque B) - el Radar nunca vuelve a estar mudo
+
+Cierra la causa raíz del diagnóstico (§29.1): sin `daily_close.py` corriendo, `GET /market/radar`
+era lectura pura sobre una tabla vacía, para siempre, sin decir por qué. `RadarFallbackService`
+(nuevo, `app/services/radar_fallback_service.py`) es la excepción DELIBERADA y documentada a la
+regla de CLAUDE.md "sin cómputo en el propio request para Radar/Hoy" - la propia decisión A3 del
+diagnóstico, con las salvaguardas que la hacen defendible:
+
+- **Acotado**: máximo `DEFAULT_MAX_TICKERS=120` tickers, elegidos por liquidez real (dollar volume
+  medio de 20 sesiones, calculado sobre el OHLCV ya descargado en lote por
+  `MarketScreenerService.get_universe_snapshot`/`get_cached_ohlcv` - nunca una descarga nueva por
+  ticker). Nunca el universo completo.
+- **Cero lógica duplicada**: `build_ticker_daily_state` se EXTRAJO de `scripts/daily_close.py` a
+  `app/services/ticker_daily_state_builder.py` (nuevo) - un `service` no puede importar un
+  `script` sin invertir la dirección de dependencias que CLAUDE.md establece
+  (`domain → services → infrastructure → api`, con `scripts/` como capa de entrada externa que
+  depende de todas las demás, nunca al revés). `daily_close.py` ahora importa esa misma función en
+  vez de definirla - mismo patrón ya establecido de "re-exportar sin cambiar el comportamiento"
+  (`trade_manager.py`/`portfolio_construction_service.py`/etc. ya lo hacen con
+  `trading_params.py`), verificado con la suite existente sin tocar un solo test (incluido el
+  `monkeypatch.setattr(dc, "build_ticker_daily_state", ...)` del bloque 2, que sigue funcionando
+  porque sigue siendo un atributo del módulo `dc`, solo que definido en otro sitio).
+- **Aislado por ticker**: mismo B2/B3 que `daily_close.py` - un ticker malo no tumba el resto.
+- **Con timeout** (`DEFAULT_TIMEOUT_SECONDS=25`): si se agota, devuelve lo que tenga con
+  `partial=True` - nunca un spinner eterno.
+- **Cacheado 15 minutos por región** (`RadarFallbackService._cache`, en memoria).
+- **Nunca persiste nada** en `ticker_daily_states` - confundiría la señal de "¿corrió
+  `daily_close.py` de verdad?" que esa tabla existe para responder.
+
+**Limitación deliberada y documentada, no un hueco silencioso**: el fallback NUNCA llama
+`MarketDataService.get_next_earnings_date` por ticker - esa sí sería la llamada de red por ticker en
+el camino caliente que CLAUDE.md prohíbe sin excepción (a diferencia del OHLCV, ya descargado en un
+solo lote). Con 120 tickers, 120 llamadas secuenciales agotarían el presupuesto de 25s por sí solas.
+Consecuencia real: `no_event_risk` no se evalúa para los candidatos del fallback
+(`next_earnings_date=None` siempre), y la penalización de earnings del score tampoco puede aplicar -
+documentado en el propio docstring del módulo, no descubierto por sorpresa.
+
+**"36 horas hábiles" (literal) se aproxima a 36 horas de reloj** (`STALE_AFTER`) - cubre un ciclo
+normal de refresco (~24h) con margen y también un fin de semana largo sin que el cron haya corrido,
+que es justo cuando esta red de seguridad debe activarse.
+
+**Bug real encontrado en integración, no solo en el motor**: `TickerDailyStateORM.computed_at` no
+declara `DateTime(timezone=True)` - tanto Postgres como SQLite devuelven un `datetime` *naive* al
+leerlo de vuelta, aunque se escribió con `datetime.now(UTC)` (aware). La primera versión de
+`is_stale` restaba directamente contra `datetime.now(UTC)` y reventaba con
+`TypeError: can't subtract offset-naive and offset-aware datetimes` en CUALQUIER test que sembrara
+un estado - no un caso raro, el 100% de la suite de integración del Radar. Arreglado normalizando
+ambos lados a UTC-aware dentro de la propia `is_stale`, documentando la causa en su docstring.
+
+**Segundo bug real, de aislamiento entre tests**: `get_radar_fallback_service()` es `@lru_cache` sin
+argumentos - a diferencia de `get_market_screener_service` (cuyo argumento `market_data` cambia de
+identidad en cada request de test y por tanto ya fuerza una instancia nueva sin que nadie lo diseñara
+a propósito), esto lo convierte en un singleton real para TODO el proceso de pytest. Su caché interno
+de 15 minutos filtraba resultados de un test a otro - un test que corría antes con
+`timeout_seconds=0.0` (para forzar `partial=True`) dejaba una `LiveRadarSnapshot` vacía cacheada que
+el siguiente test recibía sin haber pedido nada parecido. Arreglado en `tests/integration/conftest.py`
+con un override de `get_radar_fallback_service` que devuelve una instancia nueva por test client,
+igual que ya se hace con `get_market_data_provider`.
+
+**Tercer bug real, de lógica del mensaje**: la primera versión de la decisión de `message` usaba
+`source != "live_fallback"` como proxy de "el fallback falló" - pero esa condición TAMBIÉN es
+verdadera cuando el fallback ni siquiera se intentó (datos frescos, `is_stale` devuelve `False`).
+Un ticker sembrado con `computed_at` fresco pero `gate_passes=False` (nada que cumpla hoy) mostraba
+el mensaje de "cierre viejo" en vez de `RADAR_EMPTY_MESSAGE`, porque `source` se quedaba en
+`"daily_close"` en AMBOS casos por razones opuestas. Arreglado con una bandera explícita
+(`fallback_attempted`) que registra si el fallback se intentó de verdad, independiente de si tuvo
+éxito - encontrado escribiendo el test que lo prueba
+(`test_radar_shows_a_clear_message_when_nothing_qualifies_after_the_cuts`, ya existente, empezó a
+fallar con el mensaje equivocado).
+
+**Respuesta**: `RadarResponse` gana `source` ("daily_close" | "live_fallback"),
+`coverage: {analyzed, universe}` y `partial: bool`. El mensaje de vacío (bloque B.7) ahora distingue
+tres causas honestas, nunca `message: null` en silencio: (1) nunca hubo cierre y el fallback también
+falló, (2) hubo cierre pero está viejo y el fallback también falló (se sigue sirviendo la foto vieja,
+con aviso), (3) datos frescos (de cualquiera de las dos fuentes) y sencillamente nada cumple hoy - el
+único caso que sigue usando `RADAR_EMPTY_MESSAGE`.
+
+**Tests**: 11 nuevos en `test_radar_fallback_service.py` (produce estados sobre el universo real de
+prueba; nunca llama a `get_next_earnings_date`; respeta el tope de tickers; `partial=True` con
+timeout agotado; caché dentro/fuera de la ventana de 15 min; caché separado por región; aislamiento
+por ticker) + 6 nuevos/reescritos en `test_radar_api.py` (el caso exacto del bug reportado -
+`ticker_daily_states` vacía produce resultados reales, nunca `{items: [], message: null}`; los tres
+mensajes honestos del bloque B.7 probados por separado, dos de ellos forzando el fallo del fallback
+con `monkeypatch` porque `FakeMarketDataProvider` por sí solo siempre tiene éxito; refresco exitoso
+desde datos viejos). Suite completa y ruff limpios; build de producción del frontend verificado (la
+UI que avisa de `source == "live_fallback"` llega en el bloque 10).

@@ -3,12 +3,13 @@
 universe scan. See docs/quant_methodology.md §25 and the endpoint's own
 docstring."""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.api.v1.endpoints import market
 from app.core.trading_params import RISK_PER_TRADE_PCT
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
@@ -118,10 +119,23 @@ def test_radar_excludes_a_ticker_with_no_trigger_and_a_failing_gate(
     assert "XYZ" not in tickers
 
 
-def test_radar_computed_at_is_none_when_nothing_has_run_yet(client: TestClient) -> None:
+def test_radar_falls_back_to_live_computation_when_nothing_has_run_yet(client: TestClient) -> None:
+    # Auditoria del Radar, bloque B/bloque I, literal: "con
+    # ticker_daily_states vacía, el endpoint devuelve o bien resultados del
+    # fallback o bien un message explicativo no nulo. Nunca
+    # {items: [], message: null}" - este es exactamente el bug reportado.
+    # Con el `FakeMarketDataProvider` (determinista, sin red) de por medio,
+    # el fallback SÍ produce resultados reales - el caso más honesto de
+    # probar, no un mock que finja que "algo" pasó.
     body = client.get("/api/v1/market/radar?region=us").json()
-    assert body["items"] == []
-    assert body["computed_at"] is None
+
+    assert body["computed_at"] is not None
+    assert body["source"] == "live_fallback"
+    assert body["coverage"]["universe"] > 0
+    assert body["coverage"]["analyzed"] > 0
+    assert body["coverage"]["analyzed"] <= body["coverage"]["universe"]
+    # Nunca la combinación muda que reportó el bug original.
+    assert not (body["items"] == [] and body["message"] is None)
 
 
 def test_radar_is_scoped_by_region(client: TestClient, db_session: Session) -> None:
@@ -712,12 +726,75 @@ def test_radar_shows_a_clear_message_when_nothing_qualifies_after_the_cuts(
     assert body["message"] == "Ningún setup cumple los criterios hoy. Es un resultado normal en esta operativa."
 
 
-def test_radar_computed_at_none_never_shows_the_empty_setups_message(client: TestClient) -> None:
-    # Distingue "todavía no hay datos" (computed_at=None) de "hoy no hay
-    # nada que cumpla" (Parte 9.2) - no son el mismo mensaje.
+def test_radar_shows_the_no_close_data_message_when_the_fallback_also_fails(
+    client: TestClient, monkeypatch
+) -> None:
+    # Auditoria del Radar, bloque B.7, caso 1: nunca hubo cierre Y el
+    # fallback tampoco produjo nada - distinto de "hoy no hay nada que
+    # cumpla" (Parte 9.2, que sí tiene datos frescos detrás). Forzado con
+    # monkeypatch porque `FakeMarketDataProvider` por sí solo SIEMPRE
+    # produce algo - este es el caso "todo falló", no el camino feliz.
+    from app.services.radar_fallback_service import LiveRadarSnapshot, RadarFallbackService
+
+    def _empty_fallback(self, *args, **kwargs):
+        return LiveRadarSnapshot(states=[], analyzed=0, universe=0, partial=False, computed_at=datetime.now(UTC))
+
+    monkeypatch.setattr(RadarFallbackService, "get_or_compute", _empty_fallback)
+
     body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["items"] == []
     assert body["computed_at"] is None
-    assert body["message"] is None
+    assert body["message"] == market.RADAR_MESSAGE_NO_CLOSE_DATA
+    assert body["source"] == "daily_close"  # el fallback no llegó a producir nada, no hubo cambio de fuente
+
+
+def test_radar_shows_the_stale_message_when_old_data_exists_and_the_fallback_also_fails(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    # Bloque B.7, caso 2: SÍ hubo un cierre, pero es viejo (> 36h), y el
+    # fallback tampoco produjo nada - se sigue sirviendo esa foto vieja
+    # (mejor un dato real viejo que ninguno), pero el mensaje aclara que no
+    # es de hoy - distinto tanto del caso 1 (nunca hubo nada) como del caso
+    # 3 (fresco, simplemente nada cumple).
+    from app.services.radar_fallback_service import LiveRadarSnapshot, RadarFallbackService
+
+    stale_at = datetime.now(UTC) - timedelta(hours=48)
+    _seed_state(
+        db_session, ticker="OLD", gate_passes=False, entry_trigger_type=None, entry_trigger_price=None,
+        stop_loss=None, take_profit=None, take_profit_method=None, risk_reward=None, computed_at=stale_at,
+    )
+
+    def _empty_fallback(self, *args, **kwargs):
+        return LiveRadarSnapshot(states=[], analyzed=0, universe=0, partial=False, computed_at=datetime.now(UTC))
+
+    monkeypatch.setattr(RadarFallbackService, "get_or_compute", _empty_fallback)
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["items"] == []
+    assert body["source"] == "daily_close"
+    assert body["message"] is not None
+    assert body["message"] != market.RADAR_EMPTY_MESSAGE
+    assert body["message"] != market.RADAR_MESSAGE_NO_CLOSE_DATA
+
+
+def test_radar_refreshes_via_fallback_when_the_daily_close_data_is_stale(
+    client: TestClient, db_session: Session
+) -> None:
+    # Bloque B: datos viejos (> 36h) SÍ disparan el fallback, y si éste
+    # tiene éxito (aquí, con el FakeMarketDataProvider real), la respuesta
+    # pasa a `source == "live_fallback"` con un `computed_at` fresco -
+    # nunca se queda pegada a la foto vieja si hay una alternativa mejor.
+    stale_at = datetime.now(UTC) - timedelta(hours=48)
+    _seed_state(db_session, ticker="OLD", computed_at=stale_at)
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["source"] == "live_fallback"
+    assert body["computed_at"] is not None
+    refreshed_at = datetime.fromisoformat(body["computed_at"])
+    assert refreshed_at > stale_at
 
 
 def test_radar_exposes_sector_and_sector_rs_percentile(client: TestClient, db_session: Session) -> None:
@@ -769,7 +846,20 @@ def test_radar_total_analyzed_counts_every_row_before_the_gate_trigger_filter(
     assert body["total_analyzed"] == 2  # pero ambos contaron como analizados
 
 
-def test_radar_total_analyzed_is_zero_when_nothing_has_run_yet(client: TestClient) -> None:
+def test_radar_total_analyzed_is_zero_when_nothing_has_run_and_the_fallback_also_fails(
+    client: TestClient, monkeypatch
+) -> None:
+    # Antes del bloque B, "nada ha corrido" implicaba `total_analyzed == 0`
+    # sin condiciones. Ahora eso solo es cierto si el fallback TAMBIÉN
+    # falla - si tiene éxito, `total_analyzed` refleja lo que sí analizó
+    # (ver `test_radar_falls_back_to_live_computation_when_nothing_has_run_yet`).
+    from app.services.radar_fallback_service import LiveRadarSnapshot, RadarFallbackService
+
+    def _empty_fallback(self, *args, **kwargs):
+        return LiveRadarSnapshot(states=[], analyzed=0, universe=0, partial=False, computed_at=datetime.now(UTC))
+
+    monkeypatch.setattr(RadarFallbackService, "get_or_compute", _empty_fallback)
+
     body = client.get("/api/v1/market/radar?region=us").json()
     assert body["total_analyzed"] == 0
 

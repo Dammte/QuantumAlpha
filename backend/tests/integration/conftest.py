@@ -28,6 +28,7 @@ from app.api.deps import (  # noqa: E402
     get_asset_repository,
     get_market_data_provider,
     get_portfolio_repository,
+    get_radar_fallback_service,
     get_recommendation_snapshot_repository,
 )
 from app.domain.interfaces.market_data_provider import MarketDataProvider  # noqa: E402
@@ -42,6 +43,7 @@ from app.infrastructure.db.repositories.recommendation_snapshot_repository impor
 )
 from app.infrastructure.db.session import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services.radar_fallback_service import RadarFallbackService  # noqa: E402
 
 
 class FakeMarketDataProvider(MarketDataProvider):
@@ -177,6 +179,14 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
         db_session
     )
     app.dependency_overrides[get_market_data_provider] = lambda: FakeMarketDataProvider()
+    # `get_radar_fallback_service` es `@lru_cache` con CERO argumentos (a
+    # diferencia de `get_market_screener_service`, cuyo argumento
+    # `market_data` cambia de identidad en cada request y por tanto ya
+    # fuerza una instancia nueva) - sin este override, sería un único
+    # singleton para TODO el proceso de pytest, y su caché interno de 15
+    # minutos (bloque B) filtraría resultados de un test a otro. Una
+    # instancia nueva por test client, igual que el proveedor de arriba.
+    app.dependency_overrides[get_radar_fallback_service] = lambda: RadarFallbackService()
     # Every endpoint that takes a `DbSession` directly (not just through one of the
     # repository overrides above - see the durable-cache reads/writes added in
     # `durable_cache.py`) must also be pinned to this same isolated SQLite session,
