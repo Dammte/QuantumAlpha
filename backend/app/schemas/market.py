@@ -366,6 +366,22 @@ class SetupMatchResponse(BaseModel):
     ticker_history: SetupTickerHistoryResponse | None = None
 
 
+class RadarScoreResponse(BaseModel):
+    """Ver `app.services.setups.scoring.RadarScoreBreakdown` - cada
+    componente ya multiplicado por su peso (`app.core.trading_params.RADAR_SCORE_WEIGHT_*`)
+    y cada penalización ya en negativo. `total` es la suma de todo,
+    recortada a [0, 100]."""
+
+    total: float
+    setup_quality: float
+    relative_strength: float
+    trigger_proximity: float
+    geometry_quality: float
+    volume_confirmation: float
+    earnings_penalty: float
+    high_atr_penalty: float
+
+
 class RadarItemResponse(BaseModel):
     """Reconstruction (2026-09), Fase 5: one row of `TickerDailyStateORM`,
     read as-is - no live computation behind this response at all, unlike
@@ -410,6 +426,21 @@ class RadarItemResponse(BaseModel):
     # fila anterior a esta columna, o un ticker sin sector conocido.
     sector: str | None = None
     sector_rs_percentile: int | None = None
+    # Auditoria del Radar, bloque E2: entradas del score compuesto,
+    # persistidas por `daily_close.py` desde datos que ya calculaba para
+    # otros fines (nunca cómputo nuevo en el propio request). `None` para
+    # filas anteriores a este bloque.
+    relative_volume: float | None = None
+    next_earnings_date: date | None = None
+    atr_pct: float | None = None
+    # Auditoria del Radar, bloque E2: "necesito saber por qué un valor está
+    # el primero, viendo el desglose del score" - calculado en el propio
+    # endpoint (`app.services.setups.scoring`), nunca persistido (depende
+    # del resto de candidatos del día vía `atr_pct_p90_in_universe`, así que
+    # no tiene un valor estable por sí solo fuera de un request concreto).
+    # `None` solo si el ticker no tiene ningún setup ni geometría con la que
+    # construir un score en absoluto.
+    score: RadarScoreResponse | None = None
 
 
 class RadarResponse(BaseModel):

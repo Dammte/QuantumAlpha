@@ -315,6 +315,9 @@ def build_ticker_daily_state(
         timeframe_strip=timeframe_strip_dict,
         sector=snapshot.sector,
         sector_rs_percentile=snapshot.sector_rs_percentile,
+        relative_volume=snapshot.relative_volume,
+        next_earnings_date=next_earnings_date,
+        atr_pct=(atr14 / snapshot.price) if atr14 and snapshot.price else None,
     )
 
 

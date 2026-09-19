@@ -399,7 +399,16 @@ def _grade(value: str, distance_atr: float | None = None) -> dict:
 # --- Parte 8/9 (§28.x): ordenación, agrupación por sector y cortes --------
 
 
-def test_radar_sorts_triggered_before_ready_before_forming(client: TestClient, db_session: Session) -> None:
+def test_radar_no_longer_sorts_by_stage_alone_ties_go_alphabetical(
+    client: TestClient, db_session: Session
+) -> None:
+    # Auditoria del Radar, bloque E2: la tupla lexicográfica vieja ordenaba
+    # SIEMPRE triggered < ready < forming, aunque el resto de la fila fuera
+    # idéntico - el score compuesto lo sustituye. Con todo lo demás igual
+    # (sin relative_volume, que es lo único que distinguiría la etapa en el
+    # score), las tres puntúan exactamente igual, así que el desempate es
+    # alfabético por ticker, no la etapa - un TRIGGERED no adelanta a un
+    # FORMING solo por estar disparado si no aporta nada más.
     _seed_state(db_session, ticker="FORM", setups=[_setup("forming")], grade=_grade("A"))
     _seed_state(db_session, ticker="TRIG", setups=[_setup("triggered")], grade=_grade("A"))
     _seed_state(db_session, ticker="RDY", setups=[_setup("ready")], grade=_grade("A"))
@@ -407,7 +416,26 @@ def test_radar_sorts_triggered_before_ready_before_forming(client: TestClient, d
     body = client.get("/api/v1/market/radar?region=us").json()
 
     order = [item["ticker"] for item in body["items"]]
-    assert order.index("TRIG") < order.index("RDY") < order.index("FORM")
+    assert order == ["FORM", "RDY", "TRIG"]
+
+
+def test_radar_sorts_by_score_descending_when_volume_confirms_a_trigger(
+    client: TestClient, db_session: Session
+) -> None:
+    # Con relative_volume real, un TRIGGERED con volumen fuerte SÍ puntúa
+    # más alto que un FORMING sin ese dato - la etapa influye a través del
+    # score (componente de confirmación de volumen), no como un rango aparte.
+    _seed_state(
+        db_session, ticker="QUIET_FORM", setups=[_setup("forming")], grade=_grade("A"), relative_volume=1.0,
+    )
+    _seed_state(
+        db_session, ticker="LOUD_TRIG", setups=[_setup("triggered")], grade=_grade("A"), relative_volume=3.0,
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    order = [item["ticker"] for item in body["items"]]
+    assert order.index("LOUD_TRIG") < order.index("QUIET_FORM")
 
 
 def test_radar_sorts_by_grade_within_the_same_stage(client: TestClient, db_session: Session) -> None:
@@ -447,6 +475,69 @@ def test_radar_sorts_by_distance_atr_ascending_as_the_final_tiebreak(
 
     order = [item["ticker"] for item in body["items"]]
     assert order.index("NEAR") < order.index("FAR")
+
+
+# --- Auditoria del Radar, bloque E2: score compuesto -----------------------
+
+
+def test_radar_exposes_a_score_breakdown_for_a_full_candidate(client: TestClient, db_session: Session) -> None:
+    _seed_state(
+        db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A", distance_atr=0.3),
+        setups=[_setup("triggered")], relative_volume=2.0, rs_rating=90, sector_rs_percentile=85,
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    assert nvda["score"] is not None
+    assert 0.0 <= nvda["score"]["total"] <= 100.0
+    # El desglose viaja completo - "sin desglose, esto vuelve a ser una caja
+    # negra" (literal, bloque E2).
+    assert set(nvda["score"].keys()) == {
+        "total", "setup_quality", "relative_strength", "trigger_proximity", "geometry_quality",
+        "volume_confirmation", "earnings_penalty", "high_atr_penalty",
+    }
+    assert nvda["score"]["setup_quality"] > 0  # grado A, aunque unvalidated
+
+
+def test_radar_score_is_none_for_a_candidate_with_nothing_to_score(
+    client: TestClient, db_session: Session
+) -> None:
+    # Un candidato que entra al Radar solo por gate_passes, sin grado, sin
+    # geometría y sin ningún setup de la biblioteca - no hay nada con lo que
+    # construir un score real, y `None` es honesto (nunca un cero fabricado
+    # indistinguible de un score real bajo).
+    _seed_state(db_session, ticker="BARE")
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    bare = next(item for item in body["items"] if item["ticker"] == "BARE")
+    assert bare["score"] is None
+
+
+def test_radar_high_atr_penalty_applies_relative_to_todays_candidates(
+    client: TestClient, db_session: Session
+) -> None:
+    # El percentil 90 se mide sobre los propios candidatos del día - con
+    # varios valores tranquilos y uno mucho más volátil, ese último debe
+    # llevar la penalización y los demás no. Sectores distintos para que el
+    # tope por sector (RADAR_MAX_PER_SECTOR) no interfiera con el score.
+    for i in range(9):
+        _seed_state(
+            db_session, ticker=f"CALM{i}", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("B"),
+            setups=[_setup("ready")], atr_pct=0.02, sector=f"Sector{i}",
+        )
+    _seed_state(
+        db_session, ticker="WILD", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("B"),
+        setups=[_setup("ready")], atr_pct=0.40, sector="SectorWild",
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    wild = next(item for item in body["items"] if item["ticker"] == "WILD")
+    calm = next(item for item in body["items"] if item["ticker"] == "CALM0")
+    assert wild["score"]["high_atr_penalty"] < 0
+    assert calm["score"]["high_atr_penalty"] == 0
 
 
 def test_radar_drops_a_forming_setup_graded_c(client: TestClient, db_session: Session) -> None:

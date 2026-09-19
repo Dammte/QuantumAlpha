@@ -83,3 +83,13 @@ class TickerDailyState:
     # p. ej. "Tecnología") - ninguna traducción nueva que mantener.
     sector: str | None = None
     sector_rs_percentile: int | None = None
+    # Auditoria del Radar, bloque E2: tres números que `daily_close.py` ya
+    # calculaba/recibía para otros fines (el propio gate, la geometría, el
+    # criterio `no_event_risk`) pero nunca persistía - el score compuesto los
+    # necesita en el momento de LEER el Radar, no de recalcularlos ahí (la
+    # misma regla de "nada de cómputo en el propio request" de siempre).
+    # Ningún coste nuevo de red ni de cómputo, solo persistir lo que ya
+    # existía en memoria. `None` para filas anteriores a este bloque.
+    relative_volume: float | None = None  # volumen de hoy / su propia media reciente
+    next_earnings_date: date | None = None  # ya se pedía para `no_event_risk`, nunca se guardaba
+    atr_pct: float | None = None  # ATR14 / precio - "qué tan volátil es este valor en concreto"

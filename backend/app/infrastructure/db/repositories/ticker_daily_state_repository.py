@@ -39,6 +39,9 @@ def _to_domain(orm: TickerDailyStateORM) -> TickerDailyState:
         timeframe_strip=orm.timeframe_strip,
         sector=orm.sector,
         sector_rs_percentile=orm.sector_rs_percentile,
+        relative_volume=float(orm.relative_volume) if orm.relative_volume is not None else None,
+        next_earnings_date=orm.next_earnings_date,
+        atr_pct=float(orm.atr_pct) if orm.atr_pct is not None else None,
     )
 
 
@@ -83,6 +86,9 @@ class TickerDailyStateRepository(TickerDailyStateRepositoryPort):
             timeframe_strip=state.timeframe_strip,
             sector=state.sector,
             sector_rs_percentile=state.sector_rs_percentile,
+            relative_volume=state.relative_volume,
+            next_earnings_date=state.next_earnings_date,
+            atr_pct=state.atr_pct,
         )
         self.db.add(orm)
         self.db.commit()

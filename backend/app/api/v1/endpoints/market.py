@@ -1,3 +1,4 @@
+import statistics
 from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Annotated
@@ -36,6 +37,7 @@ from app.schemas.market import (
     ProximityItemResponse,
     RadarItemResponse,
     RadarResponse,
+    RadarScoreResponse,
     RelationshipMapResponse,
     SectorPeerResponse,
     SetupMatchResponse,
@@ -65,6 +67,7 @@ from app.services.market_screener_service import (
 from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of, sector_of
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
 from app.services.relationship_map_service import build_relationship_map
+from app.services.setups import scoring as radar_scoring
 from app.services.trade_geometry import geometry_from_dict, geometry_to_dict, size_position
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -272,7 +275,6 @@ RADAR_MAX_PER_SECTOR = 4
 RADAR_DROP_FORMING_BELOW_GRADE = "B"  # los FORMING de grado C no se muestran
 RADAR_EMPTY_MESSAGE = "Ningún setup cumple los criterios hoy. Es un resultado normal en esta operativa."
 
-_SETUP_STAGE_SORT_RANK = {"triggered": 0, "ready": 1, "forming": 2}
 _GRADE_SORT_RANK = {"A": 0, "B": 1, "C": 2}
 
 
@@ -281,6 +283,68 @@ def _leading_setup(item: RadarItemResponse) -> SetupMatchResponse | None:
     `arbitration.order_by_rank` ("el mejor gana, los demás son contexto") -
     esto solo LEE esa posición, nunca vuelve a elegir entre setups."""
     return item.setups[0] if item.setups else None
+
+
+def _atr_pct_p90_in_universe(items: list[RadarItemResponse]) -> float | None:
+    """Percentil 90 de `atr_pct` entre los candidatos del día - "de su
+    universo" (bloque E2) se interpreta como el propio conjunto de
+    candidatos del Radar, no el universo completo (~400-1000 tickers) que
+    ni siquiera llega a este endpoint. `None` sin al menos dos valores (un
+    percentil sobre 0-1 puntos no es un percentil real)."""
+    values = sorted(item.atr_pct for item in items if item.atr_pct is not None)
+    if len(values) < 2:
+        return None
+    return statistics.quantiles(values, n=100)[89]
+
+
+def _score_input_for_item(
+    item: RadarItemResponse, atr_pct_p90: float | None, as_of: date
+) -> radar_scoring.RadarScoreInput | None:
+    leading = _leading_setup(item)
+    geometry = item.entry_geometry
+    if leading is None and item.grade is None and geometry is None:
+        return None  # nada que puntuar en absoluto - ni setup, ni grado, ni geometría
+    return radar_scoring.RadarScoreInput(
+        grade=item.grade.grade if item.grade is not None else None,
+        setup_confidence=leading.confidence if leading is not None else None,
+        rs_rating=item.rs_rating,
+        sector_rs_percentile=item.sector_rs_percentile,
+        distance_atr=item.grade.distance_atr if item.grade is not None else None,
+        risk_reward_net=geometry.risk_reward_net if geometry is not None else None,
+        entry_type=geometry.entry_type if geometry is not None else None,
+        relative_volume=item.relative_volume,
+        setup_stage=leading.stage if leading is not None else None,
+        horizon=leading.horizon if leading is not None else None,
+        next_earnings_date=item.next_earnings_date,
+        as_of=as_of,
+        atr_pct=item.atr_pct,
+        atr_pct_p90_in_universe=atr_pct_p90,
+    )
+
+
+def _score_response(breakdown: radar_scoring.RadarScoreBreakdown) -> RadarScoreResponse:
+    return RadarScoreResponse(
+        total=breakdown.total,
+        setup_quality=breakdown.setup_quality,
+        relative_strength=breakdown.relative_strength,
+        trigger_proximity=breakdown.trigger_proximity,
+        geometry_quality=breakdown.geometry_quality,
+        volume_confirmation=breakdown.volume_confirmation,
+        earnings_penalty=breakdown.earnings_penalty,
+        high_atr_penalty=breakdown.high_atr_penalty,
+    )
+
+
+def _attach_scores(items: list[RadarItemResponse], as_of: date) -> None:
+    """Muta `item.score` en cada elemento - el percentil 90 de ATR se mide
+    una sola vez sobre TODO el lote, antes de puntuar el primero, para que
+    el percentil de cada item sea consistente con el de los demás (no un
+    percentil que se recalcula a medida que la lista "crece")."""
+    atr_pct_p90 = _atr_pct_p90_in_universe(items)
+    for item in items:
+        score_input = _score_input_for_item(item, atr_pct_p90, as_of)
+        if score_input is not None:
+            item.score = _score_response(radar_scoring.compute_radar_score(score_input))
 
 
 def _should_drop_forming_below_grade(item: RadarItemResponse) -> bool:
@@ -300,27 +364,19 @@ def _should_drop_forming_below_grade(item: RadarItemResponse) -> bool:
 
 
 def _radar_sort_key(item: RadarItemResponse) -> tuple:
-    """Parte 9.1, lexicográfica - de más a menos significativo: etapa del
-    setup líder, grado, expectancy medida, percentil de sector, distancia
-    al gatillo en ATR, percentil de fuerza relativa."""
-    leading = _leading_setup(item)
-    stage_rank = _SETUP_STAGE_SORT_RANK.get(leading.stage, 3) if leading is not None else 3
-    grade_value = item.grade.grade if item.grade is not None else None
-    grade_rank = _GRADE_SORT_RANK.get(grade_value, 3)
-    # Expectancy medida del setup (Parte 10, `setup_replay.py`) - todavía no
-    # existe, fase posterior. Sin esa medición, TODO empata en este escalón
-    # - es exactamente "los setups sin muestra van al final de su grupo"
-    # (el encargo ya lo contempla), no un hueco: el escalón ya está en su
-    # sitio correcto en la clave para cuando exista de verdad.
-    expectancy_rank = 0
-    sector_percentile_rank = -(item.sector_rs_percentile or 0)
-    distance_atr = (
-        item.grade.distance_atr
-        if item.grade is not None and item.grade.distance_atr is not None
-        else float("inf")
-    )
-    rs_percentile_rank = -(item.rs_rating or 0)
-    return (stage_rank, grade_rank, expectancy_rank, sector_percentile_rank, distance_atr, rs_percentile_rank)
+    """Auditoria del Radar, bloque E2: reemplaza la tupla lexicográfica
+    original (etapa/grado/`expectancy_rank` hardcodeado a 0/percentil de
+    sector/distancia/RS) por el score compuesto explicable - "sustituye la
+    tupla por un score numérico 0-100" (literal). `item.score` ya debe
+    existir (`_attach_scores` corre antes que esto en
+    `_rank_and_cut_radar_items`) - un candidato sin score en absoluto
+    (`_score_input_for_item` devolvió `None`, sin setup/grado/geometría que
+    puntuar) va al final, no a un cero indistinguible de un score real bajo.
+    Empate exacto de score: orden alfabético de ticker, para que el
+    resultado sea determinista y reproducible en los tests, no un orden de
+    iteración de diccionario arbitrario."""
+    score_total = item.score.total if item.score is not None else float("-inf")
+    return (-score_total, item.ticker)
 
 
 def _apply_sector_cap(items: list[RadarItemResponse], max_per_sector: int) -> list[RadarItemResponse]:
@@ -338,8 +394,13 @@ def _apply_sector_cap(items: list[RadarItemResponse], max_per_sector: int) -> li
     return kept
 
 
-def _rank_and_cut_radar_items(items: list[RadarItemResponse]) -> list[RadarItemResponse]:
+def _rank_and_cut_radar_items(items: list[RadarItemResponse], as_of: date) -> list[RadarItemResponse]:
     survivors = [item for item in items if not _should_drop_forming_below_grade(item)]
+    # El score se calcula sobre los supervivientes del corte de grado, no
+    # sobre el lote bruto - el percentil 90 de ATR (bloque E2, "de su
+    # universo") no debe verse arrastrado por candidatos que ya se
+    # descartaron por otra razón.
+    _attach_scores(survivors, as_of)
     survivors.sort(key=_radar_sort_key)
     survivors = _apply_sector_cap(survivors, RADAR_MAX_PER_SECTOR)
     return survivors[:RADAR_MAX_ITEMS]
@@ -393,6 +454,9 @@ def _daily_state_to_radar_item(
         timeframe_strip=_timeframe_strip_dict_to_response(state.timeframe_strip),
         sector=state.sector,
         sector_rs_percentile=state.sector_rs_percentile,
+        relative_volume=state.relative_volume,
+        next_earnings_date=state.next_earnings_date,
+        atr_pct=state.atr_pct,
     )
 
 
@@ -444,7 +508,7 @@ def get_radar(
     # Parte 8/9 (§28.x): descarta/ordena/recorta ANTES de dimensionar contra
     # una cartera concreta más abajo - no tiene sentido gastar ese trabajo
     # en filas que el propio corte va a descartar de todas formas.
-    items = _rank_and_cut_radar_items(items)
+    items = _rank_and_cut_radar_items(items, date.today())
 
     # Parte 7 (later pass): "the Radar rendering for one portfolio" -
     # `trade_geometry.py`'s own docstring names this as the natural place to

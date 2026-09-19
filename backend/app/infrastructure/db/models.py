@@ -236,6 +236,9 @@ class TickerDailyStateORM(Base):
     timeframe_strip: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     sector: Mapped[str | None] = mapped_column(String(60), nullable=True)
     sector_rs_percentile: Mapped[int | None] = mapped_column(nullable=True)
+    relative_volume: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    next_earnings_date: Mapped[date | None] = mapped_column(nullable=True)
+    atr_pct: Mapped[float | None] = mapped_column(Numeric(10, 6), nullable=True)
 
 
 class TickerIntradayStateORM(Base):

@@ -4042,3 +4042,68 @@ exacto de 1.0 ATR, el caso semanal-siempre-medium incluso disparado, ATR inváli
 (`horizon`/`expected_sessions_to_trigger` ahora siempre se serializan, mismo patrón que
 `distance_atr`/`measured_stats`/`ticker_history` en fases anteriores). Suite completa y ruff
 limpios; sin cambios de frontend en este bloque.
+
+### 29.5 Score compuesto del Radar (bloque E2) - elimina `expectancy_rank` hardcodeado
+
+`market.py::_radar_sort_key` era una tupla lexicográfica (etapa/grado/`expectancy_rank`/percentil de
+sector/distancia/RS) con `expectancy_rank = 0` fijo desde que se escribió (la métrica que debía
+llenar ese escalón, `setup_replay.py`, no existía todavía) - "hardcodeado a cero es peor que
+ausente, porque engaña al que lee el código" (literal). `app/services/setups/scoring.py` (nuevo,
+módulo puro sin FastAPI/Pydantic - toma primitivos, nunca un schema) sustituye la tupla entera por
+un score 0-100 con desglose de 5 componentes + 2 penalizaciones, todos con su peso nombrado en
+`trading_params.py` (nunca disperso en el código, como pedía el encargo).
+
+**Tres números nuevos persistidos en `TickerDailyState`** (migración `d7e2a5c9f1b4`) que el score
+necesita y que `daily_close.py` ya calculaba/recibía para otros fines pero nunca guardaba - cero
+coste nuevo de red ni de cómputo: `relative_volume` (ya lo llevaba `TickerSnapshot`),
+`next_earnings_date` (ya era un parámetro de `build_ticker_daily_state`, pedido para
+`no_event_risk`), `atr_pct` (`atr14/precio`, ambos ya en memoria).
+
+**Los cinco componentes** (ver `trading_params.py` para cada peso, y el docstring de cada función
+privada en `scoring.py` para el razonamiento numérico completo):
+- Calidad del setup (30): grado A/B/C x confianza medida - `unvalidated` multiplica por 0,5, nunca
+  por 1,0 ("penaliza, no premia", literal).
+- Fuerza relativa (25): RS del valor (60%) + percentil RS de su sector (40%).
+- Proximidad al gatillo (20): distancia en ATR invertida, cero a partir de `RADAR_SCORE_PROXIMITY_ATR_SCALE=2.0`.
+- Calidad de la geometría (15): R:R neto normalizado entre `MIN_RISK_REWARD_NET` y un techo de 4,0,
+  combinado con la calidad del anclaje del stop - nivel real (ruptura/soporte) puntúa más que una
+  media móvil (EMA21/55). Nunca "sin anclaje": `_stop_cascade` (bloque H, todavía sin unificar en
+  este bloque) ya rechaza toda geometría viable sin alguno de los dos, así que el Radar de hoy
+  siempre tiene UN anclaje - este componente distingue calidad, no presencia.
+- Confirmación de volumen (10): dirección distinta según la etapa - más volumen puntúa alto en
+  `triggered` (confirma la ruptura), menos volumen puntúa alto en `forming`/`ready` (contracción
+  silenciosa de la base). Sin dato, neutral (0,5 del peso) - nunca premiado ni penalizado por un
+  vacío de información.
+
+**Dos penalizaciones, restadas después de sumar los componentes** (nunca mezcladas dentro de uno,
+así el desglose las muestra aparte): earnings dentro de ~10 días naturales (aproximación de "10
+sesiones", mismo criterio ya establecido por `TAKEN_WINDOW_DAYS` para la misma clase de pregunta -
+deliberadamente conservador, para avisar pronto y no tarde) - solo en horizonte `short`, "en medio
+plazo, solo aviso" (literal, sin penalización numérica); ATR% por encima del percentil 90 de los
+propios candidatos del día (no el universo completo, que ni siquiera llega a este endpoint).
+
+**Sustitución completa de `_radar_sort_key`**: ya no una tupla con seis escalones - `(-score.total,
+ticker)`, puro score descendente con desempate alfabético determinista. Un efecto secundario
+deliberado y discutido en la documentación (no oculto): la etapa del setup (triggered/ready/forming)
+YA NO es un escalón de ordenación propio - influye solo a través del componente de volumen, así que
+dos candidatos idénticos salvo la etapa ahora EMPATAN en vez de que el triggered gane siempre. Se
+verificó explícitamente con un test que antes fallaba con el diseño viejo
+(`test_radar_no_longer_sorts_by_stage_alone_ties_go_alphabetical`) y uno nuevo que confirma que la
+etapa sí importa cuando aporta información real vía volumen
+(`test_radar_sorts_by_score_descending_when_volume_confirms_a_trigger`). Los otros tres tests de
+ordenación ya existentes (por grado, por percentil de sector, por distancia ATR) siguieron pasando
+sin cambios - el score reproduce esas tres propiedades como consecuencia natural de sus propios
+componentes, confirmando que el rediseño no perdió nada del comportamiento anterior que sí tenía
+sentido.
+
+**Respuesta**: `RadarItemResponse.score: RadarScoreResponse | None` - `None` solo cuando no hay
+absolutamente nada que puntuar (sin grado, sin setup, sin geometría); en cualquier otro caso, todos
+los componentes salen (los que faltan puntúan 0 o neutral, nunca fabricados). El desglose completo
+viaja siempre, nunca solo el total.
+
+**Tests**: 31 nuevos en `test_scoring.py` (cada componente aislado con los demás inputs
+neutralizados, más el total como suma exacta de las partes) y 5 nuevos/actualizados en
+`test_radar_api.py` (desglose expuesto completo, `score: None` sin nada que puntuar, penalización de
+ATR alto relativa a los candidatos del propio día, y los dos tests de la etapa ya no ordena por sí
+sola). Suite completa y ruff limpios; build de producción del frontend verificado (sin cambios de
+frontend en este bloque - la interfaz de las dos listas y el desglose visible llega en el bloque 10).
