@@ -68,6 +68,7 @@ import pandas as pd
 
 from app.core.trading_params import HIGH_CORRELATION_THRESHOLD, MAX_OPEN_POSITIONS
 from app.services.technical_analysis import (
+    Level,
     PriceLevel,
     Stage,
     TrendState,
@@ -89,7 +90,15 @@ from app.services.trade_geometry import (
 # version string (see that module's docstring for why this isn't the same
 # constant). v2 marks the Sexta auditoría's switch to the 5 literal
 # eligibility criteria (Parte 6.2), replacing v1's 6-condition approximation.
-GATE_VERSION = "2026-09-levels-v2"
+# v3 (Auditoria del Radar, bloque H2): `entry_geometry` cambia de verdad qué
+# se clasifica como viable - ya no rechaza por techo de riesgo adaptativo ni
+# recorta el stop al techo duro de 2.0 ATR ("el stop no se mueve para caber;
+# el tamaño sí"), y el peldaño de ruptura pasa de estructuralmente
+# inalcanzable (comparaba el precio contra un nivel que, por construcción,
+# seguía por encima) a uno real basado en `Level`/`BROKEN_CONFIRMED`. Un
+# `GateResult`/`TradePlan` persistido con `gate_version="2026-09-levels-v2"`
+# no es comparable a uno v3 para el mismo ticker/fecha.
+GATE_VERSION = "2026-09-levels-v3"
 
 # Parte 6.2: "en las próximas 10 sesiones" - aproximado en días naturales
 # (~2 semanas de calendario para 10 sesiones de trading), mismo criterio que
@@ -154,7 +163,11 @@ class GateResult:
     hand) is the richer stop-cascade/adaptive-risk-ceiling/cost-net-target
     read from `trade_geometry.compute_entry_geometry` - `None` whenever the
     caller doesn't pass `ema21`/`ema55` (e.g. `replay_gate_at`'s point-in-time
-    backtest replay, which doesn't compute them). Deliberately still no
+    backtest replay, which doesn't compute them). `levels` (Auditoria del
+    Radar, bloque H2) is optional too - without it the stop cascade's
+    ruptura-confirmada and mínimo-de-20-sesiones rungs simply don't apply,
+    same honest degradation as missing EMAs, never a fabricated anchor.
+    Deliberately still no
     sizing on it (`shares_for_risk_budget`/`position_value`/`pct_of_portfolio`
     are always `None` here) - a ticker's own gate isn't scoped to any one
     portfolio's capital; call `trade_geometry.size_position` separately once
@@ -204,6 +217,7 @@ def evaluate_gate(
     as_of: date | None = None,
     ema21: float | None = None,
     ema55: float | None = None,
+    levels: list[Level] | None = None,
 ) -> GateResult:
     conditions: list[GateCondition] = []
 
@@ -238,7 +252,7 @@ def evaluate_gate(
     entry_geometry = None
     if ema21 is not None and ema55 is not None:
         entry_geometry = compute_entry_geometry(
-            price, atr14, nearest_support, nearest_resistance, ema21, ema55, trend
+            price, atr14, nearest_support, nearest_resistance, ema21, ema55, trend, levels
         )
 
     return GateResult(

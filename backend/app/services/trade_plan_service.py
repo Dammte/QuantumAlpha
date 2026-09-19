@@ -20,15 +20,26 @@ and will remain, built after the fact (see "deliberately lazy" above), so
 that disclaimer is never stale or misleading to drop.
 
 Trailing-stop updates (Chandelier Exit) and scaled exits are `trade_manager.py`'s
-job - this module only ever sets `current_stop` once, equal to `initial_stop`,
-at creation; `trade_manager.py` computes what it should trail to afterward
-and persists it via `TradePlanRepositoryPort.update_trailing`.
+job - this module only ever sets `current_stop`/`current_stop_basis` once,
+equal to `initial_stop`/`initial_stop_basis`, at creation; `trade_manager.py`
+computes what it should trail to afterward and persists it via
+`TradePlanRepositoryPort.update_trailing`.
 
 2026-09 (reconstruction, Fase 4): the plan's own `engine_version` now stamps
 `levels_engine.GATE_VERSION`, not `recommendation_engine.ENGINE_VERSION` -
 the same "which live engine generation produced this" marker, now pointed at
 whichever module is actually live (see `portfolio_risk_service.py`'s own
 Fase 4 note).
+
+Auditoria del Radar, bloque H2: `reconstruct_stop_and_target` (misnamed now,
+kept for its existing callers/tests) migrated off the simple, one-fixed-ATR
+`compute_stop_and_target` onto the real unified cascade,
+`trade_geometry.compute_entry_geometry` - the propietario's literal
+complaint that motivated this whole audit was that the Dashboard's stop
+"no corresponde a ningún nivel real del gráfico"; a position reconstructed
+with the same simple math would have kept reproducing exactly that. Returns
+a full `TradeGeometry` now (not the old `StopAndTarget`), so `ensure_trade_plan`
+can persist `stop_basis`/`level_kind`, not just the number.
 """
 
 from datetime import date
@@ -39,9 +50,10 @@ from app.domain.interfaces.trade_plan_repository import TradePlanRepositoryPort
 from app.domain.models.trade_plan import TradePlan
 from app.domain.models.transaction import Transaction, TransactionType
 from app.services import exit_engine as ee
+from app.services import multi_timeframe as mtf
 from app.services import technical_analysis as ta
 from app.services.levels_engine import GATE_VERSION
-from app.services.trade_geometry import StopAndTarget, compute_stop_and_target
+from app.services.trade_geometry import TradeGeometry, compute_entry_geometry
 
 RECONSTRUCTED_THESIS = (
     "Plan reconstruido retroactivamente a partir del histórico de precio en la fecha de entrada - "
@@ -55,26 +67,27 @@ _TREND_LABEL = {
 }
 
 
-def generate_thesis(ticker: str, entry_price: float, trend: ta.TrendState, stop_and_target: StopAndTarget) -> str:
+def generate_thesis(ticker: str, entry_price: float, trend: ta.TrendState, geometry: TradeGeometry) -> str:
     """Parte 5.4: an auto-generated, factual description of the setup at
     entry - never the propietario's own subjective reasoning (nobody but
     the person buying can supply that, see this module's own docstring),
     just the technical facts a fresh gate evaluation would have shown at
-    the time: trend, stop distance, target and its basis. Built entirely
-    from values `ensure_trade_plan` already computes (`trend` from the same
+    the time: trend, stop distance (and its real anchor, Auditoria del
+    Radar bloque H2), target and its basis. Built entirely from values
+    `ensure_trade_plan` already computes (`trend` from the same
     `as_of_entry` frame `reconstruct_stop_and_target` uses, that function's
-    own `StopAndTarget`) - no extra computation, no network call, safe to
+    own `TradeGeometry`) - no extra computation, no network call, safe to
     call from the same lazy reconstruction path every plan already goes
-    through. `None` stop/target fields (no ATR yet, e.g.) are simply
+    through. `None` stop/target fields (no viable anchor, e.g.) are simply
     omitted rather than guessed at."""
     parts = [f"Entrada en {ticker} a {entry_price:.2f}, con {_TREND_LABEL[trend]}."]
-    if stop_and_target.stop_loss is not None:
-        risk_pct = (entry_price - stop_and_target.stop_loss) / entry_price
-        parts.append(f"Stop en {stop_and_target.stop_loss:.2f} ({risk_pct:.1%} de riesgo).")
-    if stop_and_target.take_profit is not None and stop_and_target.take_profit_method is not None:
-        target_sentence = f"Objetivo en {stop_and_target.take_profit:.2f} ({stop_and_target.take_profit_method})"
-        if stop_and_target.risk_reward is not None:
-            target_sentence += f", relación beneficio:riesgo {stop_and_target.risk_reward:.1f}:1."
+    if geometry.stop_price is not None and geometry.risk_pct is not None:
+        basis_suffix = f" ({geometry.stop_basis})" if geometry.stop_basis else ""
+        parts.append(f"Stop en {geometry.stop_price:.2f}{basis_suffix} ({geometry.risk_pct:.1%} de riesgo).")
+    if geometry.target_price is not None and geometry.target_basis is not None:
+        target_sentence = f"Objetivo en {geometry.target_price:.2f} ({geometry.target_basis})"
+        if geometry.risk_reward_net is not None:
+            target_sentence += f", relación beneficio:riesgo neta {geometry.risk_reward_net:.1f}:1."
         else:
             target_sentence += "."
         parts.append(target_sentence)
@@ -123,22 +136,49 @@ def current_held_quantity(transactions: list[Transaction], ticker: str) -> float
     return quantity
 
 
-def reconstruct_stop_and_target(entry_price: float, ohlcv_as_of_entry: pd.DataFrame) -> StopAndTarget:
-    """Runs the exact math a fresh passing gate uses (`compute_stop_and_target`)
-    against the ticker's OWN history *as of the entry date* -
-    `ohlcv_as_of_entry` must already be sliced to end there, so this never
-    looks at a bar that hadn't happened yet."""
-    close, high, low = ohlcv_as_of_entry["close"], ohlcv_as_of_entry["high"], ohlcv_as_of_entry["low"]
+def reconstruct_stop_and_target(entry_price: float, ohlcv_as_of_entry: pd.DataFrame) -> TradeGeometry:
+    """Runs the exact math a fresh passing gate uses
+    (`trade_geometry.compute_entry_geometry`, the real unified cascade -
+    Auditoria del Radar, bloque H2) against the ticker's OWN history *as of
+    the entry date* - `ohlcv_as_of_entry` must already be sliced to end
+    there, so this never looks at a bar that hadn't happened yet. A pure
+    function of `ohlcv_as_of_entry` alone (no `trend`/levels passed in from
+    the caller) - `ensure_trade_plan` needs its own trend read for the
+    thesis too, but keeping this self-contained means it stays a single,
+    testable "what would the gate have said" call, the same contract it has
+    always had."""
+    close = ohlcv_as_of_entry["close"]
+    high = ohlcv_as_of_entry["high"]
+    low = ohlcv_as_of_entry["low"]
+    volume = ohlcv_as_of_entry["volume"]
     raw_atr = ta.atr(high, low, close).iloc[-1] if len(close) else None
     atr14 = None if raw_atr is None or pd.isna(raw_atr) else float(raw_atr)
-    levels = ta.support_resistance_levels(high, low, close)
+    price_levels = ta.support_resistance_levels(high, low, close)
     nearest_support = min(
-        (lv for lv in levels if lv.kind == "support"), key=lambda lv: abs(lv.distance_pct), default=None
+        (lv for lv in price_levels if lv.kind == "support"), key=lambda lv: abs(lv.distance_pct), default=None
     )
     nearest_resistance = min(
-        (lv for lv in levels if lv.kind == "resistance"), key=lambda lv: abs(lv.distance_pct), default=None
+        (lv for lv in price_levels if lv.kind == "resistance"), key=lambda lv: abs(lv.distance_pct), default=None
     )
-    return compute_stop_and_target(entry_price, atr14, nearest_support, nearest_resistance)
+    ema21_raw = ta.ema(close, mtf.FAST_MA_PERIOD).iloc[-1] if len(close) else None
+    ema55_raw = ta.ema(close, mtf.SLOW_MA_PERIOD).iloc[-1] if len(close) else None
+    ema21 = None if ema21_raw is None or pd.isna(ema21_raw) else float(ema21_raw)
+    ema55 = None if ema55_raw is None or pd.isna(ema55_raw) else float(ema55_raw)
+    sma20 = ta.sma(close, 20).iloc[-1] if len(close) >= 20 else None
+    sma50 = ta.sma(close, 50).iloc[-1] if len(close) >= 50 else None
+    sma200 = ta.sma(close, 200).iloc[-1] if len(close) >= 200 else None
+    trend = ta.classify_trend(
+        entry_price,
+        None if sma20 is None or pd.isna(sma20) else float(sma20),
+        None if sma50 is None or pd.isna(sma50) else float(sma50),
+        None if sma200 is None or pd.isna(sma200) else float(sma200),
+    )
+    weekly_df = ta.resample_ohlcv(ohlcv_as_of_entry, mtf.WEEKLY_RULE)
+    weekly_close = weekly_df["close"] if len(weekly_df) >= 2 else None
+    levels = ta.detect_levels(high, low, close, volume, weekly_close=weekly_close)
+    return compute_entry_geometry(
+        entry_price, atr14, nearest_support, nearest_resistance, ema21, ema55, trend, levels
+    )
 
 
 def ensure_trade_plan(
@@ -190,7 +230,7 @@ def ensure_trade_plan(
     if existing is not None:
         repo.close(portfolio_id, ticker)
 
-    stop_target = reconstruct_stop_and_target(entry_tx.price, as_of_entry)
+    geometry = reconstruct_stop_and_target(entry_tx.price, as_of_entry)
     # Same classify_trend basis (SMA20/50/200) evaluate_gate itself judges
     # entries against - cheap, already-in-memory, no extra network cost,
     # just for the auto-generated thesis below (Parte 5.4).
@@ -204,7 +244,7 @@ def ensure_trade_plan(
         None if sma50 is None or pd.isna(sma50) else float(sma50),
         None if sma200 is None or pd.isna(sma200) else float(sma200),
     )
-    thesis = f"{generate_thesis(ticker, entry_tx.price, trend, stop_target)} {RECONSTRUCTED_THESIS}"
+    thesis = f"{generate_thesis(ticker, entry_tx.price, trend, geometry)} {RECONSTRUCTED_THESIS}"
     # The quantity held *right now*, not just entry_tx's own quantity - a
     # DCA'd position (bought more after the initial entry, before this plan
     # was ever created) should start scaled-exit tracking from what's
@@ -215,11 +255,16 @@ def ensure_trade_plan(
         ticker=ticker,
         entry_price=entry_tx.price,
         entry_date=entry_date,
-        initial_stop=stop_target.stop_loss,
-        initial_target=stop_target.take_profit,
+        initial_stop=geometry.stop_price,
+        initial_target=geometry.target_price,
         initial_quantity=initial_quantity,
         thesis=thesis,
         engine_version=GATE_VERSION,
+        # Auditoria del Radar, bloque H2: el ancla en texto/tipo del stop,
+        # no solo el número - `None` cuando `geometry` no es viable (sin
+        # anclaje), nunca un valor fabricado.
+        initial_stop_basis=geometry.stop_basis,
+        initial_stop_level_kind=geometry.level_kind.value if geometry.level_kind is not None else None,
     )
 
 

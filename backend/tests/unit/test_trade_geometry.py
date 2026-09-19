@@ -1,7 +1,7 @@
 import pytest
 
 from app.services import trade_geometry as tg
-from app.services.technical_analysis import PriceLevel, TrendState
+from app.services.technical_analysis import Level, LevelKind, LevelState, PriceLevel, TrendState
 
 # --- compute_entry_trigger ---------------------------------------------------
 
@@ -91,7 +91,7 @@ def test_compute_stop_and_target_none_without_atr():
 
 def test_compute_stop_and_target_uses_atr_ceiling_without_a_nearby_support():
     result = tg.compute_stop_and_target(price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=None)
-    assert result.stop_loss == pytest.approx(100.0 - tg.ATR_STOP_MULTIPLE * 2.0)
+    assert result.stop_loss == pytest.approx(100.0 - tg.STOP_ATR_CEILING * 2.0)
     assert result.take_profit is not None
     assert result.take_profit_method == f"objetivo {tg.REWARD_RISK_RATIO:.0f}:1 sobre el riesgo"
 
@@ -128,9 +128,9 @@ def test_entry_geometry_never_computes_sizing_fields():
     # No capital_total parameter at all - evaluate_gate/daily_close.py score
     # the whole universe with no portfolio in scope, so these three fields
     # must always come back None here regardless of how viable the setup is.
-    resistance = PriceLevel(price=98.0, kind="resistance", strength=2, distance_pct=-0.02)
+    support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
     result = tg.compute_entry_geometry(
-        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=resistance,
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
         ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
     )
     assert result.viable is True
@@ -140,9 +140,9 @@ def test_entry_geometry_never_computes_sizing_fields():
 
 
 def test_size_position_fills_in_the_sizing_fields_of_a_viable_geometry():
-    resistance = PriceLevel(price=98.0, kind="resistance", strength=2, distance_pct=-0.02)
+    support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
     geometry = tg.compute_entry_geometry(
-        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=resistance,
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
         ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
     )
     sized = tg.size_position(geometry, capital_total=100_000.0)
@@ -271,24 +271,42 @@ def test_geometry_ema_rungs_never_apply_outside_an_uptrend():
 
 
 # --- stop cascade, one rung per entry type -----------------------------------
+# Todas las geometrías de esta sección tienen atr_pct = atr14/price = 2% con
+# price=100.0/atr14=2.0, salvo que se diga lo contrario - justo en el perfil
+# "normal" (< VOLATILITY_PROFILE_NORMAL_MAX_ATR_PCT=4%), colchón
+# STOP_CUSHION_ATR_NORMAL=0.35 (ver `classify_volatility_profile`).
+
+
+def _broken_resistance(price: float) -> Level:
+    """Auditoria del Radar, bloque H1/H2: el único anclaje de ruptura válido
+    ahora es un `Level` con estado `BROKEN_CONFIRMED` - una `PriceLevel` de
+    resistencia (por construcción, siempre por ENCIMA del precio) ya no basta
+    ni debe bastar para simular una ruptura ya confirmada."""
+    return Level(
+        kind=LevelKind.PIVOT_RESISTANCE, price=price, side="above", distance_pct=-0.02,
+        distance_atr=-1.0, state=LevelState.BROKEN_CONFIRMED, bars_in_state=1, strength=2, slope_pct_20d=None,
+    )
 
 
 def test_geometry_breakout_rung_stop_below_the_broken_resistance():
-    resistance = PriceLevel(price=98.0, kind="resistance", strength=2, distance_pct=-0.02)
     result = tg.compute_trade_geometry(
-        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=resistance,
+        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=None,
         ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
+        levels=[_broken_resistance(98.0)],
     )
     assert result.entry_type == tg.EntryType.BREAKOUT
-    # 98.0 - 0.3*2.0 (LEVEL_STOP_CUSHION_ATR)
-    assert result.stop_price == pytest.approx(97.4)
-    assert result.risk_atr == pytest.approx(1.3)
+    assert result.level_kind == LevelKind.PIVOT_RESISTANCE
+    assert result.stop_price == pytest.approx(97.3)  # 98.0 - 0.35*2.0 (perfil normal)
+    assert result.risk_atr == pytest.approx(1.35)
     assert "resistencia roto" in result.stop_basis
     assert result.viable is True
 
 
-def test_geometry_no_breakout_rung_before_the_resistance_is_actually_cleared():
-    # Price hasn't reached the breakout buffer yet - falls through to "no rung applies".
+def test_geometry_no_breakout_rung_without_a_confirmed_broken_level():
+    # Bloque H1: una `PriceLevel` de resistencia todavía por encima del precio
+    # NUNCA basta para el peldaño de ruptura (el bug estructural que hacía
+    # que ese peldaño fuera inalcanzable) - sin `levels`, ni siquiera pasa el
+    # "casi rota" de antes.
     resistance = PriceLevel(price=105.0, kind="resistance", strength=2, distance_pct=0.05)
     result = tg.compute_trade_geometry(
         price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=resistance,
@@ -305,7 +323,8 @@ def test_geometry_bounce_rung_stop_below_the_pivot_low():
         ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
     )
     assert result.entry_type == tg.EntryType.PULLBACK_SUPPORT
-    assert result.stop_price == pytest.approx(98.4)  # 99.0 - 0.3*2.0
+    assert result.level_kind == LevelKind.PIVOT_SUPPORT
+    assert result.stop_price == pytest.approx(98.3)  # 99.0 - 0.35*2.0
     assert "soporte" in result.stop_basis
     assert result.viable is True
 
@@ -322,11 +341,11 @@ def test_geometry_bounce_rung_requires_support_within_pullback_proximity():
 
 
 def test_geometry_breakout_rung_takes_priority_over_bounce_rung():
-    resistance = PriceLevel(price=98.0, kind="resistance", strength=2, distance_pct=-0.02)
     support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
     result = tg.compute_trade_geometry(
-        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=resistance,
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
         ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
+        levels=[_broken_resistance(98.0)],
     )
     assert result.entry_type == tg.EntryType.BREAKOUT
 
@@ -337,7 +356,8 @@ def test_geometry_pullback_ema21_rung_in_an_uptrend():
         ema21=99.0, ema55=90.0, trend=TrendState.UPTREND, capital_total=100_000.0,
     )
     assert result.entry_type == tg.EntryType.PULLBACK_EMA21
-    assert result.stop_price == pytest.approx(98.2)  # 99.0 - 0.4*2.0 (MA_STOP_CUSHION_ATR)
+    assert result.level_kind == LevelKind.EMA21
+    assert result.stop_price == pytest.approx(98.3)  # 99.0 - 0.35*2.0 (perfil normal)
     assert "EMA21" in result.stop_basis
     assert result.viable is True
 
@@ -350,86 +370,136 @@ def test_geometry_continuation_ema55_rung_when_ema21_is_too_far():
         ema21=95.0, ema55=99.0, trend=TrendState.UPTREND, capital_total=100_000.0,
     )
     assert result.entry_type == tg.EntryType.CONTINUATION_EMA55
-    assert result.stop_price == pytest.approx(98.2)  # 99.0 - 0.4*2.0
+    assert result.level_kind == LevelKind.EMA55
+    assert result.stop_price == pytest.approx(98.3)  # 99.0 - 0.35*2.0
     assert "EMA55" in result.stop_basis
     assert result.viable is True
 
 
-# --- hard 2.0 ATR stop ceiling -----------------------------------------------
-
-
-def test_geometry_hard_atr_ceiling_caps_a_stop_that_demands_more():
-    # A very calm name (ATR = 0.5% of price) whose adaptive risk ceiling is
-    # floor-clamped to 2% - loose enough that the *hard* 2.0 ATR cap is what
-    # actually binds here, not the risk ceiling (see the module's own
-    # docstring on why the risk ceiling is checked against the *natural*,
-    # uncapped distance first).
-    resistance = PriceLevel(price=98.65, kind="resistance", strength=2, distance_pct=-0.0135)
+def test_geometry_range_low_20_is_the_last_resort_anchor():
+    # Bloque H2, paso 2, literal: "sin estructura cercana válida -> bajo el
+    # mínimo de 20 sesiones" - el único peldaño que no depende del tipo de
+    # entrada, ofrecido cuando nada más (soporte/resistencia/EMA) aplica.
+    range_low = Level(
+        kind=LevelKind.RANGE_LOW_20, price=95.0, side="above", distance_pct=-0.05,
+        distance_atr=2.5, state=LevelState.FAR, bars_in_state=5, strength=None, slope_pct_20d=None,
+    )
     result = tg.compute_trade_geometry(
-        price=100.0, atr14=0.5, nearest_support=None, nearest_resistance=resistance,
+        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
+        levels=[range_low],
+    )
+    assert result.entry_type == tg.EntryType.PULLBACK_SUPPORT
+    assert result.level_kind == LevelKind.RANGE_LOW_20
+    assert result.stop_price == pytest.approx(94.3)  # 95.0 - 0.35*2.0
+    assert "mínimo de 20 sesiones" in result.stop_basis
+    assert result.viable is True
+
+
+# --- "demasiado cerca" escala al siguiente peldaño (bloque H2, paso 4.3) -----
+
+
+def test_geometry_skips_a_too_close_anchor_and_escalates_to_the_next_rung():
+    # El soporte está a solo 0.3 puntos de distancia natural - con el colchón
+    # normal (0.35*2.0=0.7) el stop resultante queda a 0.5 ATR, por debajo del
+    # mínimo STOP_MIN_DISTANCE_ATR=0.8 - ruido, no nivel. La cascada debe
+    # descartarlo y probar el siguiente peldaño (EMA55) en vez de aceptar un
+    # stop pegado al precio o rechazar la operación entera.
+    support = PriceLevel(price=99.7, kind="support", strength=2, distance_pct=-0.003)
+    result = tg.compute_trade_geometry(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
+        ema21=None, ema55=95.0, trend=TrendState.UPTREND, capital_total=100_000.0,
+    )
+    assert result.entry_type == tg.EntryType.CONTINUATION_EMA55
+    assert result.level_kind == LevelKind.EMA55
+    assert result.stop_price == pytest.approx(94.3)  # 95.0 - 0.35*2.0, no el soporte descartado
+    assert result.risk_atr == pytest.approx(2.85)
+    assert result.viable is True
+
+
+def test_geometry_rejects_when_every_candidate_anchor_is_too_close():
+    support = PriceLevel(price=99.7, kind="support", strength=2, distance_pct=-0.003)
+    result = tg.compute_trade_geometry(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
         ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
     )
+    assert result.viable is False
+    assert "demasiado cerca" in result.rejection_reason
+
+
+# --- el stop ya no se mueve para caber (bloque H2, paso 4: "el stop no se ---
+# --- mueve para caber; el tamaño sí") - ni el techo duro de 2.0 ATR ni el ---
+# --- techo de riesgo adaptativo rechazan o encogen el stop; solo informan --
+
+
+def test_geometry_no_longer_caps_the_stop_at_the_hard_atr_ceiling():
+    # Un nombre muy tranquilo (ATR 0.5% del precio, perfil "tranquilo",
+    # colchón 0.25) cuyo stop natural pide casi 3.0 ATR de riesgo - antes se
+    # habría recortado a 2.0 ATR exactos; ahora se deja tal cual, más ancho
+    # que el viejo techo duro, y es `size_position` quien absorbería ese
+    # riesgo reduciendo acciones, no esta función.
+    result = tg.compute_trade_geometry(
+        price=100.0, atr14=0.5, nearest_support=None, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
+        levels=[_broken_resistance(98.65)],
+    )
     assert result.viable is True
-    assert result.risk_atr == pytest.approx(2.0)
-    assert result.stop_price == pytest.approx(99.0)  # 100 - 2.0*0.5, not the natural 98.56
-    assert "techo de 2.0 ATR" in result.stop_basis
+    assert result.risk_atr == pytest.approx(2.95)  # por encima del viejo techo duro de 2.0
+    assert result.stop_price == pytest.approx(98.525)  # 98.65 - 0.25*0.5, sin recortar
+    assert "techo" not in result.stop_basis
 
 
-# --- adaptive risk ceiling, per volatility profile (Parte 15/20) -------------
+# --- techo de riesgo adaptativo, ahora puramente informativo (bloque H2) -----
 
 
-def test_geometry_calm_utility_profile_rejects_a_natural_stop_beyond_its_ceiling():
-    # Parte 15 escenario #6: ATR 1.2% of price -> ceiling clamp(2.5*1.2%, 2%,
-    # 7%) = 3.0%. A natural (EMA55-continuation) stop asking for 4% is
-    # rejected - even though it's well under the *hard* 2.0 ATR cap
-    # (4%/1.2% = 3.33 ATR... wait, that one *would* exceed 2.0 ATR too, but
-    # the risk ceiling (checked first, against the natural distance) already
-    # rejects it before the hard cap is ever applied).
+def test_geometry_informational_risk_ceiling_no_longer_rejects_a_wide_stop():
+    # Perfil "tranquilo" (ATR 1.2% del precio) -> techo informativo
+    # clamp(2.5*1.2%, 2%, 7%) = 3.0%. El stop natural (peldaño EMA55) pide un
+    # riesgo mayor a ese techo - bloque H2: ya no se rechaza por eso, el
+    # techo solo se expone para que `size_position`/la UI lo muestren.
     result = tg.compute_trade_geometry(
         price=100.0, atr14=1.2, nearest_support=None, nearest_resistance=None,
         ema21=90.0, ema55=96.48, trend=TrendState.UPTREND, capital_total=100_000.0,
     )
-    assert result.viable is False
+    assert result.viable is True
     assert result.risk_ceiling_pct == pytest.approx(0.03)
-    assert result.risk_pct == pytest.approx(0.04)
-    assert "techo adaptativo" in result.rejection_reason
+    assert result.risk_pct == pytest.approx(0.0382, rel=1e-3)  # 96.48 - 0.25*1.2 = 96.18
 
 
-def test_geometry_volatile_semiconductor_profile_accepts_within_its_wider_ceiling():
-    # Parte 15 escenario #7: ATR 3.5% of price -> ceiling clamp(2.5*3.5%, 2%,
-    # 7%) = 7.0% (hits the max clamp). A 6% natural stop is accepted.
+def test_geometry_volatile_profile_ceiling_clamped_at_its_max():
+    # ATR 5.0% del precio -> perfil "volátil", techo informativo
+    # clamp(2.5*5%, 2%, 7%) = 7.0% (tope del clamp).
     result = tg.compute_trade_geometry(
-        price=100.0, atr14=3.5, nearest_support=None, nearest_resistance=None,
+        price=100.0, atr14=5.0, nearest_support=None, nearest_resistance=None,
         ema21=80.0, ema55=95.4, trend=TrendState.UPTREND, capital_total=100_000.0,
     )
     assert result.viable is True
     assert result.risk_ceiling_pct == pytest.approx(0.07)
-    assert result.risk_pct == pytest.approx(0.06)
+    assert result.risk_pct == pytest.approx(0.071)  # 95.4 - 0.5*5.0 = 92.9 -> riesgo 7.1%
 
 
 def test_geometry_normal_large_cap_profile_ceiling():
     # ATR 2.0% of price -> ceiling clamp(2.5*2%, 2%, 7%) = 5.0%.
-    resistance = PriceLevel(price=98.0, kind="resistance", strength=2, distance_pct=-0.02)
     result = tg.compute_trade_geometry(
-        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=resistance,
+        price=100.0, atr14=2.0, nearest_support=None, nearest_resistance=None,
         ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
+        levels=[_broken_resistance(98.0)],
     )
     assert result.risk_ceiling_pct == pytest.approx(0.05)
 
 
-def test_geometry_erratic_microcap_profile_ceiling_is_capped_not_15_percent():
-    # ATR 6.0% of price -> clamp(2.5*6%, 2%, 7%) = 7.0% (the max clamp, not
-    # the unclamped 15%) - Parte 20's own "often will reject" case: a natural
-    # stop only slightly beyond 7% (well within what 6%-ATR noise produces)
-    # already exceeds it.
+def test_geometry_erratic_microcap_profile_ceiling_no_longer_rejects():
+    # ATR 6.0% of price -> perfil "volátil", clamp(2.5*6%, 2%, 7%) = 7.0% (el
+    # tope del clamp, no el 15% sin acotar) - antes esto rechazaba la
+    # operación; ahora solo se informa, y la operación es viable.
     result = tg.compute_trade_geometry(
         price=100.0, atr14=6.0, nearest_support=None, nearest_resistance=None,
         ema21=80.0, ema55=92.0, trend=TrendState.UPTREND, capital_total=100_000.0,
     )
     assert result.risk_ceiling_pct == pytest.approx(0.07)
-    # Natural stop: 92.0 - 0.4*6.0 = 89.6 -> 10.4% risk, well over the 7% ceiling.
-    assert result.viable is False
-    assert result.risk_pct == pytest.approx(0.104)
+    # Stop natural: 92.0 - 0.5*6.0 = 89.0 -> 11% de riesgo, por encima del techo informativo.
+    assert result.viable is True
+    assert result.risk_pct == pytest.approx(0.11)
 
 
 # --- target selection: resistance vs fixed 2R vs rejection -------------------
@@ -461,33 +531,38 @@ def test_geometry_falls_back_to_fixed_target_when_resistance_net_rr_is_too_low()
 
 
 def test_geometry_rejected_when_even_the_fixed_target_cannot_clear_costs():
-    # A tiny risk-per-share (a very tight stop on a very calm name) - the
-    # fixed 2:1 target's *gross* R/R is still exactly 2.0, but the flat
-    # round-trip transaction cost is large relative to such a small reward,
-    # so the *net* R/R falls under MIN_RISK_REWARD_NET.
-    support = PriceLevel(price=99.95, kind="support", strength=2, distance_pct=-0.0005)
+    # Un riesgo por acción pequeño (pero todavía por encima de
+    # STOP_MIN_DISTANCE_ATR, para que el rechazo venga del objetivo y no del
+    # guardarraíl de "demasiado cerca") - el objetivo fijo 2:1 tiene un R/R
+    # *bruto* de exactamente 2.0, pero el coste de ida y vuelta es grande
+    # relativo a una recompensa tan pequeña, así que el R/R *neto* cae por
+    # debajo de MIN_RISK_REWARD_NET.
+    support = PriceLevel(price=99.8, kind="support", strength=2, distance_pct=-0.002)
     result = tg.compute_trade_geometry(
         price=100.0, atr14=0.3, nearest_support=support, nearest_resistance=None,
         ema21=None, ema55=None, trend=TrendState.SIDEWAYS, capital_total=100_000.0,
     )
+    assert result.risk_atr == pytest.approx(0.9167, rel=1e-3)  # por encima de STOP_MIN_DISTANCE_ATR=0.8
     assert result.viable is False
     assert result.target_price is None
-    assert "costes" in result.rejection_reason or "cerca" in result.rejection_reason
+    assert "costes" in result.rejection_reason
 
 
 # --- sizing: the three limits -------------------------------------------------
 
 
 def test_geometry_sizing_uses_risk_per_trade_pct_of_capital():
-    # Wide enough risk (6%) that RISK_PER_TRADE_PCT's own sizing (1% / 6% =
-    # ~16.7% of capital) still clears MAX_POSITION_PCT (15%) with room for
-    # the halving test below to show a real, uncapped difference.
+    # atr_pct=3% -> perfil "normal", colchón 0.35: stop = 95.0-0.35*3.0=93.95,
+    # riesgo=6.05% - ancho de sobra para que RISK_PER_TRADE_PCT's own sizing
+    # (1% / 6.05% = ~16.5% of capital) todavía dispare MAX_POSITION_PCT (15%),
+    # con margen para que la prueba de halving de abajo muestre una
+    # diferencia real, sin recorte.
     result = tg.compute_trade_geometry(
         price=100.0, atr14=3.0, nearest_support=None, nearest_resistance=None,
-        ema21=80.0, ema55=94.2, trend=TrendState.UPTREND, capital_total=100_000.0,
+        ema21=80.0, ema55=95.0, trend=TrendState.UPTREND, capital_total=100_000.0,
     )
-    assert result.risk_pct == pytest.approx(0.06)
-    # Risk-based size alone would be (100_000*0.01)/6.0 = 166.67 shares - MAX_POSITION_PCT caps it.
+    assert result.risk_pct == pytest.approx(0.0605)
+    # Risk-based size alone sería (100_000*0.01)/6.05 = 165.29 acciones - MAX_POSITION_PCT lo recorta.
     assert result.shares_for_risk_budget == pytest.approx(150.0)
     assert result.position_value == pytest.approx(15_000.0)
     assert result.pct_of_portfolio == pytest.approx(0.15)
@@ -496,19 +571,19 @@ def test_geometry_sizing_uses_risk_per_trade_pct_of_capital():
 def test_geometry_sizing_halves_at_or_above_the_85th_atr_percentile():
     result = tg.compute_trade_geometry(
         price=100.0, atr14=3.0, nearest_support=None, nearest_resistance=None,
-        ema21=80.0, ema55=94.2, trend=TrendState.UPTREND, capital_total=100_000.0,
+        ema21=80.0, ema55=95.0, trend=TrendState.UPTREND, capital_total=100_000.0,
         atr_percentile_252=0.9,
     )
-    # Halved *before* the MAX_POSITION_PCT cap is applied - (100_000*0.01)/6.0/2 = 83.33,
+    # Halved *before* the MAX_POSITION_PCT cap is applied - (100_000*0.01)/6.05/2 = 82.64,
     # which no longer needs capping at all (a real, visible halving, not masked by the cap).
-    assert result.shares_for_risk_budget == pytest.approx(83.333, rel=1e-3)
-    assert result.position_value == pytest.approx(8_333.33, rel=1e-3)
+    assert result.shares_for_risk_budget == pytest.approx(82.645, rel=1e-3)
+    assert result.position_value == pytest.approx(8_264.46, rel=1e-3)
 
 
 def test_geometry_sizing_does_not_halve_below_the_85th_atr_percentile():
     result = tg.compute_trade_geometry(
         price=100.0, atr14=3.0, nearest_support=None, nearest_resistance=None,
-        ema21=80.0, ema55=94.2, trend=TrendState.UPTREND, capital_total=100_000.0,
+        ema21=80.0, ema55=95.0, trend=TrendState.UPTREND, capital_total=100_000.0,
         atr_percentile_252=0.84,
     )
     assert result.shares_for_risk_budget == pytest.approx(150.0)

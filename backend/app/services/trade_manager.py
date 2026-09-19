@@ -65,6 +65,13 @@ SCALE_OUT_TOLERANCE = 0.05
 class ChandelierResult:
     stop: float | None
     multiplier: float
+    # Auditoria del Radar, bloque H2: texto del anclaje SOLO cuando el
+    # Chandelier es lo que de verdad gobierna este `stop` (el candidato
+    # ganó el `max()` de `update_trailing_stop`) - `None` cuando el stop
+    # estructural original sigue vigente sin cambios, para que
+    # `TradePlanRepositoryPort.update_trailing` sepa no pisar el
+    # `current_stop_basis` ya persistido con un valor que no aplicó hoy.
+    basis: str | None = None
 
 
 def chandelier_stop(
@@ -159,7 +166,11 @@ def compute_trailing_stop(
     candidate = chandelier_stop(high, atr14, multiplier, window)
     if candidate is not None and price is not None and candidate >= price:
         candidate = None
-    return ChandelierResult(stop=update_trailing_stop(current_stop, candidate, price=price), multiplier=multiplier)
+    stop = update_trailing_stop(current_stop, candidate, price=price)
+    basis = None
+    if candidate is not None and stop == candidate:
+        basis = f"Chandelier {multiplier:.2f}x ATR desde el máximo de {window} sesiones"
+    return ChandelierResult(stop=stop, multiplier=multiplier, basis=basis)
 
 
 def max_shares_for_position_risk(

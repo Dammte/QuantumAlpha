@@ -18,10 +18,13 @@ importing this module's classes, so its measurement is unaffected). This
 file is kept, deliberately small, for two things only:
 
 - Re-exporting `StopAndTarget`/`compute_stop_and_target` (and their
-  `ATR_STOP_MULTIPLE`/`REWARD_RISK_RATIO`/`MAX_RESISTANCE_TARGET_DISTANCE`
+  `STOP_ATR_CEILING`/`REWARD_RISK_RATIO`/`MAX_RESISTANCE_TARGET_DISTANCE`
   constants) from `trade_geometry.py`, where the actual "at what price"
   logic has lived since Fase 3 - kept here so `scripts/
   factor_ablation_study.py`'s existing import keeps working unedited.
+  Auditoria del Radar, bloque H2: `STOP_ATR_CEILING` reemplaza a
+  `ATR_STOP_MULTIPLE`, que vivía duplicado (y desalineado) en
+  `trade_geometry.py` - una sola fuente de verdad en `trading_params.py`.
 - `ENGINE_VERSION`, per Parte 6/17 of the reconstruction brief: the single
   version string marking which decision engine is live. Distinct from
   `levels_engine.GATE_VERSION` (bumped for a gate-condition/threshold change
@@ -32,18 +35,18 @@ file is kept, deliberately small, for two things only:
 """
 
 from app.services.trade_geometry import (
-    ATR_STOP_MULTIPLE,
     MAX_RESISTANCE_TARGET_DISTANCE,
     REWARD_RISK_RATIO,
+    STOP_ATR_CEILING,
     StopAndTarget,
     compute_stop_and_target,
 )
 
 __all__ = [
-    "ATR_STOP_MULTIPLE",
     "ENGINE_VERSION",
     "MAX_RESISTANCE_TARGET_DISTANCE",
     "REWARD_RISK_RATIO",
+    "STOP_ATR_CEILING",
     "StopAndTarget",
     "compute_stop_and_target",
 ]

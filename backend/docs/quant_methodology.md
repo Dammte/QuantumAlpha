@@ -4258,3 +4258,119 @@ mensajes honestos del bloque B.7 probados por separado, dos de ellos forzando el
 con `monkeypatch` porque `FakeMarketDataProvider` por sí solo siempre tiene éxito; refresco exitoso
 desde datos viejos). Suite completa y ruff limpios; build de producción del frontend verificado (la
 UI que avisa de `source == "live_fallback"` llega en el bloque 10).
+
+### 29.8 Unificación del stop-loss (bloque H) - el stop de cartera ya corresponde a un nivel real
+
+Cierra la segunda causa raíz del diagnóstico (§29.1): el stop recomendado del Dashboard de cartera
+no correspondía a ningún nivel real del gráfico. Dos bugs genuinos, no uno solo:
+
+**H1, diagnóstico previo a escribir código.** El peldaño de ruptura de `trade_geometry._stop_cascade`
+comparaba `price >= nearest_resistance.price * (1 + BREAKOUT_BUFFER_PCT)` - pero
+`support_resistance_levels` define una resistencia, POR CONSTRUCCIÓN, como un pivote por ENCIMA del
+precio actual (`p > current_price` en su propio filtro). Esa condición nunca podía cumplirse: pedía
+que el precio superara un nivel que, por definición, seguía por encima del precio. El mismo patrón
+de auto-referencia que ya había aparecido varias veces en la biblioteca de setups (§28), aquí en el
+propio corazón de la geometría de stops. El arreglo real no era ajustar un umbral, era usar el tipo
+correcto: `ta.Level`/`LevelKind`/`LevelState` (con estado `BROKEN_CONFIRMED`, que `detect_levels` ya
+calcula y que `setups/breakout.py` ya usa para esto mismo), no el `PriceLevel` simple y sin estado
+que `trade_geometry.py` tomaba antes.
+
+**Rediseño (`app/services/trade_geometry.py`), en el orden literal del bloque H2:**
+
+1. **Perfil de volatilidad** (`classify_volatility_profile`, nuevo): cuatro perfiles
+   (`tranquilo` < 2% ATR/precio, `normal` < 4%, `volátil` < 7%, `extremo` en adelante) - "la
+   diferencia no está en el porcentaje que tolero, está en qué nivel del gráfico es lo bastante
+   robusto para ese valor" (literal).
+2. **Cascada de candidatos, no un único ganador** (`_stop_cascade_candidates`, sustituye a
+   `_stop_cascade`): devuelve TODOS los anclajes que aplican hoy, en el mismo orden de prioridad de
+   siempre - ruptura confirmada (ahora real, vía `Level`/`BROKEN_CONFIRMED`) > rebote en soporte >
+   pullback a EMA21 > continuación sobre EMA55 > mínimo de 20 sesiones (`RANGE_LOW_20`, nuevo -
+   único peldaño que no depende del tipo de entrada, el respaldo literal del bloque H2 paso 2
+   cuando nada más aplica).
+3. **Colchón por perfil, no por tipo de entrada**: `STOP_CUSHION_ATR_CALM/NORMAL/VOLATILE`
+   (`trading_params.py`, 0.25/0.35/0.5) sustituyen a los fijos `LEVEL_STOP_CUSHION_ATR=0.3`/
+   `MA_STOP_CUSHION_ATR=0.4` (eliminados) - "extremo" comparte colchón con "volátil": a esas
+   alturas el anclaje ya es estructuralmente más ancho, no hace falta que el colchón también crezca.
+4. **"Demasiado cerca" escala al siguiente peldaño, nunca se acepta ni rechaza la operación entera**
+   (`STOP_MIN_DISTANCE_ATR=0.8`, literal: "un mínimo de ayer en un valor con 8% de ATR lo perfora el
+   ruido de una mañana cualquiera") - `compute_entry_geometry` recorre la lista de candidatos en
+   orden y prueba el siguiente si el resultante queda a menos de 0.8 ATR, en vez de la cascada vieja
+   que devolvía "el primero que aplica y se acabó".
+5. **El stop no se mueve para caber; el tamaño sí (literal).** Se eliminan de
+   `compute_entry_geometry` tanto el rechazo por techo de riesgo adaptativo
+   (`raw_risk_pct > risk_ceiling_pct`) como el recorte duro a `STOP_ATR_CEILING` - ambos existían
+   para que la operación "cupiera" en un presupuesto, y ese presupuesto lo absorbe `size_position`
+   reduciendo acciones (`shares_for_risk_budget = capital*RISK_PER_TRADE_PCT / risk_per_share` ya
+   encogía naturalmente el tamaño para un stop más ancho, confirmado sin cambios necesarios en esa
+   función). `risk_ceiling_pct` se sigue calculando y exponiendo, ahora puramente INFORMATIVO.
+6. **`ATR_STOP_MULTIPLE` eliminado de `trade_geometry.py`** (duplicaba, desalineado, a
+   `STOP_ATR_CEILING` de `trading_params.py` sin que nadie lo hubiera notado) - `compute_stop_and_target`
+   (la función simple, ver más abajo) pasa a usar `STOP_ATR_CEILING`, una sola fuente de verdad.
+   `recommendation_engine.py`/`scripts/factor_ablation_study.py` (que re-exportaban/usaban
+   `ATR_STOP_MULTIPLE`) migrados al mismo nombre.
+7. **`TradeGeometry` gana `level_kind: LevelKind | None`** - el anclaje exacto, no solo el tipo de
+   entrada, persistido/serializado en `geometry_to_dict`/`geometry_from_dict` junto al resto.
+
+**Decisión de alcance, deliberada:** `levels_engine.evaluate_gate`'s `stop_and_target` (el campo
+simple, vía `compute_stop_and_target`) se deja intacto salvo el fix de `ATR_STOP_MULTIPLE` de arriba
+- retirar esa función por completo tendría un radio de impacto mucho mayor que la queja literal del
+propietario sobre el stop del Dashboard de cartera. Sigue viva como "vista simple en paralelo" para
+quien la consuma; `entry_geometry` (la cascada real) es la que ahora gobierna tanto el Radar como
+`trade_plan_service.py`.
+
+**`levels` ahora se pasa de verdad, no solo queda disponible en la firma.** `evaluate_gate` ganó un
+parámetro `levels: list[Level] | None` (opcional, mismo criterio que `ema21`/`ema55`: sin él, los
+peldaños de ruptura-confirmada y mínimo-de-20-sesiones simplemente no aplican, degradación honesta,
+nunca un anclaje fabricado) - sin conectarlo en los dos llamadores de producción
+(`ticker_daily_state_builder.build_ticker_daily_state`, que ya calculaba `setup_levels` para la
+biblioteca de setups; `ticker_analysis_service.compute_core_signals`, que ya calculaba
+`detected_levels` para lo mismo), el arreglo de H1 habría quedado correcto en la función pero
+inalcanzable en producción - el mismo error de "queda en la firma pero nadie lo llama de verdad" que
+motivó buena parte de este bloque. Ambos ya tenían la lista calculada para otro propósito (la
+biblioteca de setups) - cero llamada nueva, cero coste de red adicional.
+
+**`GATE_VERSION` bumpeado a `"2026-09-levels-v3"`** (era `v2`, Sexta auditoría): cambio material en
+qué se clasifica como viable - ya no rechaza por techo de riesgo ni recorta el stop, y el peldaño de
+ruptura pasa de estructuralmente inalcanzable a uno real. Un `TickerDailyState`/`TradePlan`
+persistido con `gate_version="2026-09-levels-v2"` no es comparable a uno v3 para el mismo ticker.
+
+**`trade_plan_service.py` migrado de `compute_stop_and_target` a `compute_entry_geometry`.**
+`reconstruct_stop_and_target` (nombre conservado por compatibilidad con sus llamadores/tests
+existentes, aunque ahora corre la cascada real) devuelve un `TradeGeometry` completo, no la
+`StopAndTarget` simple de antes - `ensure_trade_plan` persiste `initial_stop_basis`/
+`initial_stop_level_kind` (nuevos, `TradePlan`/`TradePlanORM`/migración `e8b3f6a1d4c7`) junto al
+número, y `generate_thesis` (Parte 5.4) ahora cita el anclaje real en la tesis auto-generada
+("Stop en 94.30 (bajo el mínimo de 20 sesiones en 95.00)..."), no solo la cifra. `current_stop_basis`
+arranca igual al inicial y `trade_manager.compute_trailing_stop` lo actualiza solo cuando el
+Chandelier es lo que de verdad gobierna esa evaluación (`ChandelierResult.basis`, `None` cuando el
+stop estructural sigue vigente sin cambios - `TradePlanRepository.update_trailing` interpreta `None`
+como "sin cambio de anclaje", nunca como "bórralo").
+
+**Validación en la capa de persistencia, defensa en profundidad.** `TradePlanRepository.create`
+nunca persiste un `initial_stop` en o por encima del `entry_price` - `compute_entry_geometry` ya lo
+impide en el cálculo (`raw_risk_per_share <= 0` descarta el candidato), pero la garantía se repite en
+el último punto antes de tocar la base de datos, por si acaso, y se guarda honestamente sin stop (ni
+target, ni anclaje) en vez de una geometría a medias. Esta garantía es solo para el stop INICIAL: un
+`current_stop` por encima del `entry_price` una vez trailing (proteger ganancia moviendo el stop más
+allá de la entrada) es un estado legítimo y deseable, no un bug - la guarda de
+`trade_manager.update_trailing_stop` contra `current_stop >= price` (el precio ACTUAL, no el de
+entrada) es la que corresponde a ese caso, y ya existía de una auditoría anterior.
+
+**No localizado:** el propietario mencionó un test que afirmaba como correcto un stop persistido en
+o por encima del precio de entrada. Se buscó en `test_trade_plan_service.py`,
+`test_portfolio_risk_service.py`, `test_trade_manager.py` y `test_exit_engine.py` sin encontrar ese
+caso exacto - los candidatos más cercanos (`test_max_shares_for_position_risk_none_when_stop_at_or_above_entry`,
+las pruebas de auto-sanación del Chandelier) ya hacen lo contrario (tratan esa situación como
+inválida). Es posible que se refiriera a una versión anterior del código ya corregida en una
+auditoría previa, o a un test ya eliminado. La validación en la capa de persistencia de arriba cubre
+la garantía pedida independientemente de si ese test específico existe.
+
+**Tests**: `test_trade_geometry.py` reescrito en la sección de la cascada/techo (perfiles de
+volatilidad, escalada por "demasiado cerca", `RANGE_LOW_20`, ruptura real vía `Level`, ausencia de
+recorte duro, techo de riesgo puramente informativo) - 12 tests nuevos/reescritos, dos ajustados por
+el cambio de colchón. `test_levels_engine.py`/`test_portfolio_construction_service.py` ajustados al
+nuevo campo `level_kind` de `TradeGeometry`. `test_trade_plan_service.py` reescrito para el nuevo
+`TradeGeometry` de retorno (`generate_thesis`, `reconstruct_stop_and_target`). `test_trade_manager.py`
+gana 2 assertions sobre `ChandelierResult.basis`. `test_trade_plan_repository.py` (nuevo, 5 tests):
+la validación de persistencia y el comportamiento de `current_stop_basis` en `update_trailing`. Suite
+completa (1169 tests) y ruff limpios.

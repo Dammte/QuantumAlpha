@@ -20,7 +20,7 @@ version had, each addressed directly:**
    any stop/target. Every sample here is now labeled with
    `backtest_engine.label_triple_barrier` (trailing Chandelier stop
    included), sized with `recommendation_engine.py`'s own
-   `ATR_STOP_MULTIPLE`/`REWARD_RISK_RATIO` constants - the same discipline
+   `STOP_ATR_CEILING`/`REWARD_RISK_RATIO` constants - the same discipline
    the live system actually trades under, applied uniformly to every sample
    regardless of which factor is being tested (a factor can't have its own
    bespoke stop/target; that would make cross-factor comparison meaningless).
@@ -141,7 +141,7 @@ from app.services import levels_engine as le  # noqa: E402
 from app.services import technical_analysis as ta  # noqa: E402
 from app.services.market_data_service import MarketDataService  # noqa: E402
 from app.services.market_universe import VIX_TICKER, benchmark_for_ticker, universe_tickers  # noqa: E402
-from app.services.recommendation_engine import ATR_STOP_MULTIPLE, REWARD_RISK_RATIO  # noqa: E402
+from app.services.recommendation_engine import REWARD_RISK_RATIO, STOP_ATR_CEILING  # noqa: E402
 
 WARMUP_BARS = 260  # enough for SMA200 + its 25-bar slope lookback
 MIN_BARS_REQUIRED = WARMUP_BARS + 100
@@ -381,7 +381,7 @@ def collect_samples_for_ticker(
     """Non-overlapping sampling grid (stride == horizon), same as before -
     but each sample's return now comes from `backtest_engine.label_triple_barrier`
     (trailing Chandelier stop, sized with the live system's own
-    ATR_STOP_MULTIPLE/REWARD_RISK_RATIO), not a naive fixed-horizon return.
+    STOP_ATR_CEILING/REWARD_RISK_RATIO), not a naive fixed-horizon return.
     `demeaned_return` is left at 0.0 here - filled in by
     `demean_cross_sectionally` once every ticker's samples for this horizon
     are pooled (demeaning needs the whole cross-section, not one ticker at a
@@ -420,7 +420,7 @@ def collect_samples_for_ticker(
         if pd.isna(atr_t) or atr_t <= 0:
             continue
         entry_price = float(close.iloc[i])
-        stop = entry_price - ATR_STOP_MULTIPLE * float(atr_t)
+        stop = entry_price - STOP_ATR_CEILING * float(atr_t)
         if stop >= entry_price:
             continue
         target = entry_price + REWARD_RISK_RATIO * (entry_price - stop)

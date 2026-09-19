@@ -5,7 +5,7 @@ import pytest
 
 from app.services import levels_engine as le
 from app.services import trade_geometry as tg
-from app.services.technical_analysis import PriceLevel, Stage, TrendState
+from app.services.technical_analysis import LevelKind, PriceLevel, Stage, TrendState
 
 # Sexta auditoría (texto literal completo, Parte 6.2): el gate son 5
 # criterios eliminatorios - liquidity_ok, data_quality_ok, weekly_not_stage4,
@@ -201,7 +201,8 @@ def _geometry(
 ) -> tg.TradeGeometry:
     return tg.TradeGeometry(
         entry_price=100.0, stop_price=100.0 - risk_atr * 2.0, stop_basis="bajo el soporte",
-        entry_type=tg.EntryType.PULLBACK_SUPPORT, risk_pct=0.02, risk_atr=risk_atr, risk_ceiling_pct=0.05,
+        entry_type=tg.EntryType.PULLBACK_SUPPORT, level_kind=LevelKind.PIVOT_SUPPORT,
+        risk_pct=0.02, risk_atr=risk_atr, risk_ceiling_pct=0.05,
         target_price=110.0, target_basis="objetivo 2:1 sobre el riesgo", reward_pct=0.10,
         risk_reward_gross=risk_reward_net, risk_reward_net=risk_reward_net,
         shares_for_risk_budget=None, position_value=None, pct_of_portfolio=None,

@@ -443,6 +443,7 @@ def compute_core_signals(
         next_earnings_date=next_earnings_date,
         ema21=ema21,
         ema55=ema55,
+        levels=detected_levels,
     )
 
     confirmed_gate = None

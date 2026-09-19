@@ -88,7 +88,7 @@ class _FakeTradePlanRepo:
 
     def create(
         self, portfolio_id, ticker, entry_price, entry_date, initial_stop, initial_target, initial_quantity,
-        thesis, engine_version,
+        thesis, engine_version, initial_stop_basis=None, initial_stop_level_kind=None,
     ) -> TradePlan:
         plan = TradePlan(
             id=self._next_id,
@@ -105,17 +105,23 @@ class _FakeTradePlanRepo:
             engine_version=engine_version,
             updated_at=datetime.now(UTC),
             closed_at=None,
+            initial_stop_basis=initial_stop_basis,
+            initial_stop_level_kind=initial_stop_level_kind,
+            current_stop_basis=initial_stop_basis,
         )
         self._next_id += 1
         self._plans[(portfolio_id, ticker)] = plan
         return plan
 
-    def update_trailing(self, plan_id: int, current_stop: float, highest_close_since_entry: float) -> None:
+    def update_trailing(
+        self, plan_id: int, current_stop: float, highest_close_since_entry: float, current_stop_basis=None,
+    ) -> None:
         for key, plan in self._plans.items():
             if plan.id == plan_id:
-                self._plans[key] = replace(
-                    plan, current_stop=current_stop, highest_close_since_entry=highest_close_since_entry
-                )
+                update = {"current_stop": current_stop, "highest_close_since_entry": highest_close_since_entry}
+                if current_stop_basis is not None:
+                    update["current_stop_basis"] = current_stop_basis
+                self._plans[key] = replace(plan, **update)
 
     def close(self, portfolio_id: int, ticker: str) -> None:
         self._plans.pop((portfolio_id, ticker), None)

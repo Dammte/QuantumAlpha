@@ -18,6 +18,9 @@ def _to_domain(orm: TradePlanORM) -> TradePlan:
         initial_stop=float(orm.initial_stop) if orm.initial_stop is not None else None,
         initial_target=float(orm.initial_target) if orm.initial_target is not None else None,
         current_stop=float(orm.current_stop) if orm.current_stop is not None else None,
+        initial_stop_basis=orm.initial_stop_basis,
+        initial_stop_level_kind=orm.initial_stop_level_kind,
+        current_stop_basis=orm.current_stop_basis,
         highest_close_since_entry=float(orm.highest_close_since_entry),
         initial_quantity=float(orm.initial_quantity),
         thesis=orm.thesis,
@@ -60,7 +63,23 @@ class TradePlanRepository(TradePlanRepositoryPort):
         initial_quantity: float,
         thesis: str,
         engine_version: str,
+        initial_stop_basis: str | None = None,
+        initial_stop_level_kind: str | None = None,
     ) -> TradePlan:
+        # Auditoria del Radar, bloque H2 (validación en la capa de
+        # persistencia): un stop inicial en o por encima del precio de
+        # entrada nunca es una geometría real, sea cual sea el origen de la
+        # llamada - `compute_entry_geometry` ya lo impide en el cálculo
+        # (`raw_risk_per_share <= 0` rechaza la operación), esto es la misma
+        # garantía en el último punto antes de tocar la base de datos,
+        # defensa en profundidad. Nunca se rellena con un valor que parezca
+        # real (Regla 0 del propietario) - se guarda honestamente sin stop,
+        # y el objetivo/anclaje que dependían de él tampoco se persisten.
+        if initial_stop is not None and initial_stop >= entry_price:
+            initial_stop = None
+            initial_target = None
+            initial_stop_basis = None
+            initial_stop_level_kind = None
         orm = TradePlanORM(
             portfolio_id=portfolio_id,
             ticker=ticker,
@@ -69,6 +88,9 @@ class TradePlanRepository(TradePlanRepositoryPort):
             initial_stop=initial_stop,
             initial_target=initial_target,
             current_stop=initial_stop,  # trailing starts equal to the initial stop
+            initial_stop_basis=initial_stop_basis,
+            initial_stop_level_kind=initial_stop_level_kind,
+            current_stop_basis=initial_stop_basis,  # el trailing empieza en el mismo anclaje que el inicial
             highest_close_since_entry=entry_price,
             initial_quantity=initial_quantity,
             thesis=thesis,
@@ -79,12 +101,24 @@ class TradePlanRepository(TradePlanRepositoryPort):
         self.db.refresh(orm)
         return _to_domain(orm)
 
-    def update_trailing(self, plan_id: int, current_stop: float, highest_close_since_entry: float) -> None:
+    def update_trailing(
+        self,
+        plan_id: int,
+        current_stop: float,
+        highest_close_since_entry: float,
+        current_stop_basis: str | None = None,
+    ) -> None:
         orm = self.db.get(TradePlanORM, plan_id)
         if orm is None:
             return
         orm.current_stop = current_stop
         orm.highest_close_since_entry = highest_close_since_entry
+        # Auditoria del Radar, bloque H2: `None` significa "sin cambio de
+        # anclaje" (el llamador no tenía uno nuevo que ofrecer), nunca
+        # "borra el anclaje existente" - solo se sobrescribe cuando se pasa
+        # un texto real.
+        if current_stop_basis is not None:
+            orm.current_stop_basis = current_stop_basis
         orm.updated_at = datetime.now(UTC)
         self.db.commit()
 

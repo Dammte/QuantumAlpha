@@ -123,6 +123,9 @@ def test_compute_trailing_stop_never_lowers_even_when_the_candidate_is_lower():
     # candidate = 110 - 2.0*2 = 106.0 < current_stop 107.0 -> stays put
     assert result.stop == pytest.approx(107.0)
     assert result.multiplier == pytest.approx(2.0)
+    # El Chandelier no gobierna esta evaluación (perdió el max()) - sin texto
+    # de anclaje nuevo, para que update_trailing no pise el que ya hay.
+    assert result.basis is None
 
 
 def test_compute_trailing_stop_raises_when_the_candidate_is_higher():
@@ -131,6 +134,10 @@ def test_compute_trailing_stop_raises_when_the_candidate_is_higher():
     result = tm.compute_trailing_stop(high, atr14, current_stop=125.0, r_multiple=0.5, vol_regime="normal")
     # candidate = 140 - 2.0*2 = 136.0 > 125.0 -> raises to 136.0
     assert result.stop == pytest.approx(136.0)
+    # El Chandelier sí gobierna aquí (ganó el max()) - se anota como el
+    # anclaje del stop actual, para que trade_plan_service persista *por qué*
+    # el stop está donde está, no solo el número.
+    assert result.basis == "Chandelier 2.00x ATR desde el máximo de 10 sesiones"
 
 
 def test_compute_trailing_stop_uses_the_tighter_profit_lock_multiplier_beyond_threshold():

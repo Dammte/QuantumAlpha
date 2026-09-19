@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from app.services import portfolio_construction_service as pcs
+from app.services.technical_analysis import LevelKind
 from app.services.trade_geometry import EntryType, TradeGeometry
 
 # --- compute_correlation_matrix / find_correlated_pairs ----------------------
@@ -236,7 +237,8 @@ def test_sector_limit_shares_unmapped_candidate_uses_the_desconocido_bucket():
 def _sized_geometry(**overrides) -> TradeGeometry:
     defaults = dict(
         entry_price=50.0, stop_price=45.0, stop_basis="bajo el soporte en 45.00",
-        entry_type=EntryType.PULLBACK_SUPPORT, risk_pct=0.10, risk_atr=2.5, risk_ceiling_pct=0.07,
+        entry_type=EntryType.PULLBACK_SUPPORT, level_kind=LevelKind.PIVOT_SUPPORT,
+        risk_pct=0.10, risk_atr=2.5, risk_ceiling_pct=0.07,
         target_price=60.0, target_basis="objetivo 2:1 sobre el riesgo", reward_pct=0.20,
         risk_reward_gross=2.0, risk_reward_net=1.9,
         shares_for_risk_budget=20.0, position_value=1_000.0, pct_of_portfolio=0.10,

@@ -141,27 +141,47 @@ def _ohlcv_df(n: int, closes) -> pd.DataFrame:
 
 
 def test_reconstruct_stop_and_target_produces_a_stop_with_enough_history():
+    # Auditoria del Radar, bloque H2: ahora devuelve la geometría real
+    # (`compute_entry_geometry`, la cascada unificada), no la
+    # `StopAndTarget` simple de antes - si es viable, siempre trae un
+    # anclaje en texto, nunca solo el número.
     n = 60
     df = _ohlcv_df(n, 100 + np.sin(np.arange(n) / 3) * 5)
-    result = tps.reconstruct_stop_and_target(entry_price=float(df["close"].iloc[-1]), ohlcv_as_of_entry=df)
-    assert result.stop_loss is not None
-    assert result.stop_loss < df["close"].iloc[-1]
+    entry_price = float(df["close"].iloc[-1])
+    result = tps.reconstruct_stop_and_target(entry_price=entry_price, ohlcv_as_of_entry=df)
+    assert result.viable is True
+    assert result.stop_price is not None
+    assert result.stop_price < entry_price
+    assert result.stop_basis is not None
 
 
 def test_reconstruct_stop_and_target_none_with_too_little_history_for_atr():
     df = _ohlcv_df(5, [100.0, 101.0, 99.0, 102.0, 100.0])
     result = tps.reconstruct_stop_and_target(entry_price=100.0, ohlcv_as_of_entry=df)
-    assert result.stop_loss is None
+    assert result.viable is False
+    assert result.stop_price is None
 
 
 # --- generate_thesis (Parte 5.4) ----------------------------------------------
 
 
-def test_generate_thesis_describes_trend_stop_and_target():
-    stop_and_target = tg.StopAndTarget(
-        stop_loss=90.0, take_profit=120.0, take_profit_method="objetivo 2:1 sobre el riesgo", risk_reward=2.0
+def _geometry(**overrides) -> tg.TradeGeometry:
+    defaults = dict(
+        entry_price=100.0, stop_price=90.0, stop_basis="bajo el soporte en 90.00",
+        entry_type=tg.EntryType.PULLBACK_SUPPORT, level_kind=ta.LevelKind.PIVOT_SUPPORT,
+        risk_pct=0.10, risk_atr=1.0, risk_ceiling_pct=0.05,
+        target_price=120.0, target_basis="objetivo 2:1 sobre el riesgo", reward_pct=0.20,
+        risk_reward_gross=2.0, risk_reward_net=2.0,
+        shares_for_risk_budget=None, position_value=None, pct_of_portfolio=None,
+        viable=True, rejection_reason=None,
     )
-    thesis = tps.generate_thesis("AAPL", 100.0, ta.TrendState.UPTREND, stop_and_target)
+    defaults.update(overrides)
+    return tg.TradeGeometry(**defaults)
+
+
+def test_generate_thesis_describes_trend_stop_and_target():
+    geometry = _geometry()
+    thesis = tps.generate_thesis("AAPL", 100.0, ta.TrendState.UPTREND, geometry)
     assert "AAPL" in thesis
     assert "100.00" in thesis
     assert "tendencia alcista" in thesis
@@ -170,8 +190,12 @@ def test_generate_thesis_describes_trend_stop_and_target():
 
 
 def test_generate_thesis_omits_stop_and_target_sentences_when_not_available():
-    stop_and_target = tg.StopAndTarget(stop_loss=None, take_profit=None, take_profit_method=None, risk_reward=None)
-    thesis = tps.generate_thesis("AAPL", 100.0, ta.TrendState.SIDEWAYS, stop_and_target)
+    geometry = _geometry(
+        stop_price=None, stop_basis=None, entry_type=None, level_kind=None, risk_pct=None, risk_atr=None,
+        risk_ceiling_pct=None, target_price=None, target_basis=None, reward_pct=None,
+        risk_reward_gross=None, risk_reward_net=None, viable=False, rejection_reason="sin nivel de referencia",
+    )
+    thesis = tps.generate_thesis("AAPL", 100.0, ta.TrendState.SIDEWAYS, geometry)
     assert "Stop en" not in thesis
     assert "Objetivo en" not in thesis
     assert "tendencia lateral" in thesis
@@ -268,18 +292,25 @@ class _FakeRepo:
 
     def create(
         self, portfolio_id, ticker, entry_price, entry_date, initial_stop, initial_target, initial_quantity,
-        thesis, engine_version,
+        thesis, engine_version, initial_stop_basis=None, initial_stop_level_kind=None,
     ) -> TradePlan:
-        self.created_with = {"entry_price": entry_price, "entry_date": entry_date, "thesis": thesis}
+        self.created_with = {
+            "entry_price": entry_price, "entry_date": entry_date, "thesis": thesis,
+            "initial_stop_basis": initial_stop_basis, "initial_stop_level_kind": initial_stop_level_kind,
+        }
         self.plan = TradePlan(
             id=2, portfolio_id=portfolio_id, ticker=ticker, entry_price=entry_price, entry_date=entry_date,
             initial_stop=initial_stop, initial_target=initial_target, current_stop=initial_stop,
             highest_close_since_entry=entry_price, initial_quantity=initial_quantity, thesis=thesis,
             engine_version=engine_version, updated_at=datetime(2024, 1, 1), closed_at=None,
+            initial_stop_basis=initial_stop_basis, initial_stop_level_kind=initial_stop_level_kind,
+            current_stop_basis=initial_stop_basis,
         )
         return self.plan
 
-    def update_trailing(self, plan_id: int, current_stop: float, highest_close_since_entry: float) -> None:
+    def update_trailing(
+        self, plan_id: int, current_stop: float, highest_close_since_entry: float, current_stop_basis=None,
+    ) -> None:
         raise AssertionError("not exercised by these tests")
 
     def close(self, portfolio_id: int, ticker: str) -> None:

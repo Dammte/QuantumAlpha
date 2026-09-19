@@ -407,11 +407,20 @@ def assess_position_risk(
                 current_stop=plan.current_stop, r_multiple=r_multiple, vol_regime=vol_regime, price=exit_price,
             )
             if trailing.stop is not None and plan.id is not None:
-                trade_plan_repo.update_trailing(plan.id, trailing.stop, position_context.highest_close_since_entry)
+                trade_plan_repo.update_trailing(
+                    plan.id, trailing.stop, position_context.highest_close_since_entry,
+                    current_stop_basis=trailing.basis,
+                )
                 trade_plan = replace(
                     plan,
                     current_stop=trailing.stop,
                     highest_close_since_entry=position_context.highest_close_since_entry,
+                    # `trailing.basis` es `None` cuando el Chandelier no gobierna
+                    # esta evaluación (Auditoria del Radar, bloque H2) - el mismo
+                    # "None significa sin cambio" que `update_trailing` aplica en
+                    # la fila persistida, para que este objeto en memoria no
+                    # diverja de lo que acaba de escribirse.
+                    current_stop_basis=(trailing.basis if trailing.basis is not None else plan.current_stop_basis),
                 )
 
             # The exit engine's read outranks a "comprar" verdict for the

@@ -198,6 +198,7 @@ def build_ticker_daily_state(
         as_of=trade_date,
         ema21=ema21,
         ema55=ema55,
+        levels=setup_levels,
     )
     trigger = gate.entry_trigger
     stop_target = gate.stop_and_target

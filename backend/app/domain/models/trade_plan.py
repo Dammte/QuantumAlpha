@@ -31,3 +31,16 @@ class TradePlan:
     engine_version: str
     updated_at: datetime
     closed_at: datetime | None  # set once the position that opened this plan is fully sold
+    # Auditoria del Radar, bloque H2: el ancla EN TEXTO del stop, no solo el
+    # número - "el stop tiene que corresponder a un nivel real del gráfico,
+    # no a un porcentaje arbitrario" era justo el problema que motivó esta
+    # auditoría (el stop del Dashboard no correspondía a ningún nivel real).
+    # `initial_stop_basis`/`initial_stop_level_kind` se fijan una sola vez en
+    # `ensure_trade_plan` (igual que `initial_stop` mismo); `current_stop_basis`
+    # cambia cuando `trade_manager.py` empieza a trailing por Chandelier en
+    # vez de la estructura original. `None` por defecto - tanto para un plan
+    # anterior a este campo (columna nueva, fila vieja) como para uno
+    # reconstruido sin ATR suficiente - nunca un valor fabricado.
+    initial_stop_basis: str | None = None
+    initial_stop_level_kind: str | None = None
+    current_stop_basis: str | None = None

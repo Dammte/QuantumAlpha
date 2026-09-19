@@ -117,6 +117,11 @@ class TradePlanORM(Base):
     initial_stop: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
     initial_target: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
     current_stop: Mapped[float | None] = mapped_column(Numeric(20, 8), nullable=True)
+    # Auditoria del Radar, bloque H2: el anclaje del stop en texto - ver el
+    # docstring de `TradePlan` (domain).
+    initial_stop_basis: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    initial_stop_level_kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    current_stop_basis: Mapped[str | None] = mapped_column(String(200), nullable=True)
     highest_close_since_entry: Mapped[float] = mapped_column(Numeric(20, 8))
     initial_quantity: Mapped[float] = mapped_column(Numeric(20, 8))
     thesis: Mapped[str] = mapped_column(String(500), default="")

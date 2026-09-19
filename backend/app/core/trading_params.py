@@ -41,11 +41,44 @@ TRANSACTION_COST_PCT = 0.001  # por lado (0.2% ida y vuelta)
 
 # --- Stop/target geometry (Parte 7) -------------------------------------------
 
-STOP_ATR_CEILING = 2.0  # techo duro del stop en ATR, cualquiera sea el nivel
-RISK_CEILING_ATR_MULTIPLE = 2.5  # techo de riesgo = 2.5 x atr_pct
+# Auditoria del Radar, bloque H: ya no un techo que MUEVE el stop dentro de
+# `compute_entry_geometry` (bloque H2, paso 4: "el stop no se mueve para
+# caber; el tamaño sí") - `_stop_cascade` ya no lo consulta. Sobrevive como
+# la única fuente de verdad del multiplicador fijo que
+# `compute_stop_and_target` (la función simple, todavía usada por el
+# `stop_and_target` sencillo del Radar) sigue necesitando - sustituye al
+# `ATR_STOP_MULTIPLE=2,5` local de `trade_geometry.py`, que contradecía a
+# este mismo número sin que nadie lo hubiera notado.
+STOP_ATR_CEILING = 2.0
+RISK_CEILING_ATR_MULTIPLE = 2.5  # techo de riesgo INFORMATIVO = 2.5 x atr_pct (bloque H2, paso 4.1)
 RISK_CEILING_MIN_PCT = 0.020
 RISK_CEILING_MAX_PCT = 0.070
 MIN_RISK_REWARD_NET = 1.5
+
+# Auditoria del Radar, bloque H2: perfil de volatilidad - "la diferencia no
+# está en el porcentaje que tolero, está en qué nivel del gráfico es lo
+# bastante robusto para ese valor" (literal). Umbrales de `atr_pct`
+# (ATR14/precio) que separan los cuatro perfiles - por encima de
+# `VOLATILE_MAX` es "extremo".
+VOLATILITY_PROFILE_CALM_MAX_ATR_PCT = 0.02
+VOLATILITY_PROFILE_NORMAL_MAX_ATR_PCT = 0.04
+VOLATILITY_PROFILE_VOLATILE_MAX_ATR_PCT = 0.07
+
+# El colchón bajo el nivel escala con el perfil, no es fijo (bloque H2, paso
+# 3) - sustituye `LEVEL_STOP_CUSHION_ATR`/`MA_STOP_CUSHION_ATR` (ambos
+# fijos en 0,3/0,4 sin importar la volatilidad del valor). "Extremo" usa el
+# mismo colchón que "volátil" - a esas alturas el anclaje ya es
+# estructuralmente más ancho (swing semanal/MA30 semanal), no hace falta
+# que el colchón siga creciendo también.
+STOP_CUSHION_ATR_CALM = 0.25
+STOP_CUSHION_ATR_NORMAL = 0.35
+STOP_CUSHION_ATR_VOLATILE = 0.5
+
+# Un stop más cerca que esto es ruido disfrazado de nivel (bloque H2, paso
+# 4.3, literal: "un mínimo de ayer en un valor con 8% de ATR lo perfora el
+# ruido de una mañana cualquiera") - sube al siguiente anclaje de la
+# cascada en vez de aceptarlo.
+STOP_MIN_DISTANCE_ATR = 0.8
 
 # --- Scale-out ladder (Parte 8) ------------------------------------------------
 

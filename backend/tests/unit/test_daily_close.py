@@ -144,7 +144,7 @@ def test_build_ticker_daily_state_carries_identity_and_gate_fields():
     assert state.stage == "stage2"
     assert state.rs_rating == 85
     assert isinstance(state.gate_passes, bool)
-    assert state.gate_version == "2026-09-levels-v2"
+    assert state.gate_version == "2026-09-levels-v3"
     assert all({"label", "passed"} == set(c) for c in state.gate_conditions)
     assert all(isinstance(c["passed"], bool) for c in state.gate_conditions)
 

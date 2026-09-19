@@ -31,11 +31,19 @@ class TradePlanRepositoryPort(ABC):
         initial_quantity: float,
         thesis: str,
         engine_version: str,
+        initial_stop_basis: str | None = None,
+        initial_stop_level_kind: str | None = None,
     ) -> TradePlan:
         ...
 
     @abstractmethod
-    def update_trailing(self, plan_id: int, current_stop: float, highest_close_since_entry: float) -> None:
+    def update_trailing(
+        self,
+        plan_id: int,
+        current_stop: float,
+        highest_close_since_entry: float,
+        current_stop_basis: str | None = None,
+    ) -> None:
         ...
 
     @abstractmethod
