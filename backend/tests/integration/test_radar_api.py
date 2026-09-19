@@ -384,11 +384,12 @@ def test_radar_with_unknown_portfolio_id_returns_404(client: TestClient, db_sess
     assert response.status_code == 404
 
 
-def _setup(stage: str = "ready", name: str = "x") -> dict:
+def _setup(stage: str = "ready", name: str = "x", horizon: str | None = None) -> dict:
     return {
         "family": "stage_transition", "name": name, "label_es": "Prueba", "stage": stage, "bars_in_stage": 1,
         "timeframe": "daily", "trigger_price": None, "trigger_condition": "", "invalidation_price": None,
-        "invalidation_condition": "", "evidence": {}, "narrative_es": "", "confidence": "unvalidated",
+        "invalidation_condition": "", "evidence": {}, "narrative_es": "narrativa de prueba.",
+        "confidence": "unvalidated", "horizon": horizon, "expected_sessions_to_trigger": None,
     }
 
 
@@ -552,6 +553,118 @@ def test_radar_drops_a_forming_setup_graded_c(client: TestClient, db_session: Se
     assert "DROP" not in tickers
     assert "KEEP_B" in tickers
     assert "KEEP_READY_C" in tickers
+
+
+# --- Auditoria del Radar, bloque E3/E4: dos listas y "principal a entrar" --
+
+
+def test_radar_splits_candidates_into_short_and_medium_term_by_horizon(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_state(
+        db_session, ticker="NEAR", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A"),
+        setups=[_setup("ready", horizon="short")],
+    )
+    _seed_state(
+        db_session, ticker="FAR", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A"),
+        setups=[_setup("forming", horizon="medium")],
+    )
+    _seed_state(db_session, ticker="NO_HORIZON", grade=_grade("A"))  # sin setup, sin horizonte
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert [item["ticker"] for item in body["short_term"]] == ["NEAR"]
+    assert [item["ticker"] for item in body["medium_term"]] == ["FAR"]
+
+
+def test_radar_short_term_list_has_its_own_stricter_sector_cap(client: TestClient, db_session: Session) -> None:
+    # RADAR_SHORT_TERM_MAX_PER_SECTOR=3, más estricto que el tope general (4)
+    # - "no quiero que un sector caliente me ocupe media lista" (literal).
+    for i in range(5):
+        _seed_state(
+            db_session, ticker=f"TEC{i}", entry_geometry=_VIABLE_GEOMETRY,
+            grade=_grade("A", distance_atr=float(i)), setups=[_setup("ready", horizon="short")],
+            sector="Tecnología",
+        )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert len(body["short_term"]) == 3
+    assert {item["ticker"] for item in body["short_term"]} == {"TEC0", "TEC1", "TEC2"}
+
+
+def test_radar_short_term_shows_fewer_than_ten_with_an_honest_message_never_padded(
+    client: TestClient, db_session: Session
+) -> None:
+    for i in range(3):
+        _seed_state(
+            db_session, ticker=f"S{i}", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A"),
+            setups=[_setup("ready", horizon="short")], sector=f"Sector{i}",
+        )
+    # Candidatos de sobra en medium_term - nunca deben "prestarse" a short_term
+    # para rellenar hasta 10.
+    for i in range(10):
+        _seed_state(
+            db_session, ticker=f"M{i}", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A"),
+            setups=[_setup("forming", horizon="medium")], sector=f"SectorM{i}",
+        )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert len(body["short_term"]) == 3
+    assert body["short_term_message"] == "Solo 3 valores cumplen los criterios de corto plazo hoy."
+    assert body["medium_term_message"] is None  # esa sí llega a 10
+
+
+def test_radar_marks_the_top_short_term_candidate_as_primary_above_the_threshold(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_state(
+        db_session, ticker="STRONG", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A", distance_atr=0.1),
+        setups=[_setup("triggered", horizon="short")], rs_rating=95, sector_rs_percentile=90,
+        relative_volume=2.5,
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    strong = body["short_term"][0]
+    assert strong["ticker"] == "STRONG"
+    assert strong["is_primary"] is True
+    assert strong["thesis"] is not None
+    assert "STRONG" in strong["thesis"] or "narrativa de prueba" in strong["thesis"]
+
+
+def test_radar_marks_no_primary_when_the_best_score_is_below_the_threshold(
+    client: TestClient, db_session: Session
+) -> None:
+    # Setup sin geometría viable, sin RS, grado C - un score bajo de sobra.
+    # `stage="ready"` (no "forming") a propósito: un FORMING de grado C ya
+    # se descarta por la Parte 9.2 antes de llegar siquiera a puntuarse -
+    # este test quiere el caso "puntúa bajo", no "se descarta antes".
+    _seed_state(
+        db_session, ticker="WEAK", setups=[_setup("ready", horizon="short")], grade=_grade("C"),
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert len(body["short_term"]) == 1
+    assert body["short_term"][0]["is_primary"] is False
+    assert body["short_term"][0]["thesis"] is None
+
+
+def test_radar_medium_term_never_gets_a_primary_even_with_a_high_score(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_state(
+        db_session, ticker="MEDSTRONG", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A", distance_atr=0.1),
+        setups=[_setup("triggered", horizon="medium")], rs_rating=95, sector_rs_percentile=90,
+        relative_volume=2.5,
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["medium_term"][0]["is_primary"] is False
+    assert body["medium_term"][0]["thesis"] is None
 
 
 def test_radar_caps_candidates_per_sector(client: TestClient, db_session: Session) -> None:

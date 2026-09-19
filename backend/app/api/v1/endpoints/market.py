@@ -15,6 +15,7 @@ from app.api.deps import (
     get_ticker_daily_state_repository,
     get_trade_plan_repository,
 )
+from app.core import trading_params as tp
 from app.domain.models.setup_performance import SetupPerformance
 from app.domain.models.setup_ticker_history import SetupTickerHistory
 from app.domain.models.ticker_daily_state import TickerDailyState
@@ -68,6 +69,7 @@ from app.services.market_universe import currency_of, industries_by_sector, regi
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
 from app.services.relationship_map_service import build_relationship_map
 from app.services.setups import scoring as radar_scoring
+from app.services.setups import thesis as radar_thesis
 from app.services.trade_geometry import geometry_from_dict, geometry_to_dict, size_position
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -275,6 +277,12 @@ RADAR_MAX_PER_SECTOR = 4
 RADAR_DROP_FORMING_BELOW_GRADE = "B"  # los FORMING de grado C no se muestran
 RADAR_EMPTY_MESSAGE = "Ningún setup cumple los criterios hoy. Es un resultado normal en esta operativa."
 
+# Auditoria del Radar, bloque E3: las dos listas de horizonte, cada una con
+# su propio tope - "no quiero que un sector caliente me ocupe media lista"
+# (literal, motivo del tope de sector más estricto en corto plazo).
+RADAR_LIST_MAX_ITEMS = 10
+RADAR_SHORT_TERM_MAX_PER_SECTOR = 3
+
 _GRADE_SORT_RANK = {"A": 0, "B": 1, "C": 2}
 
 
@@ -394,16 +402,77 @@ def _apply_sector_cap(items: list[RadarItemResponse], max_per_sector: int) -> li
     return kept
 
 
-def _rank_and_cut_radar_items(items: list[RadarItemResponse], as_of: date) -> list[RadarItemResponse]:
+def _score_and_sort_radar_items(items: list[RadarItemResponse], as_of: date) -> list[RadarItemResponse]:
+    """El primer tramo, compartido por `items` y por las dos listas de
+    horizonte (bloque E3): descarta los FORMING de grado bajo, puntúa el
+    resto (el percentil 90 de ATR se mide sobre ESTOS supervivientes, no
+    sobre el lote bruto - un candidato ya descartado por grado no debe
+    arrastrar el percentil de nadie) y ordena por score. Los cortes
+    (por sector, por tamaño de lista) son responsabilidad de quien llama
+    esto, porque `items`/`short_term`/`medium_term` cada uno tiene los
+    suyos propios, distintos entre sí."""
     survivors = [item for item in items if not _should_drop_forming_below_grade(item)]
-    # El score se calcula sobre los supervivientes del corte de grado, no
-    # sobre el lote bruto - el percentil 90 de ATR (bloque E2, "de su
-    # universo") no debe verse arrastrado por candidatos que ya se
-    # descartaron por otra razón.
     _attach_scores(survivors, as_of)
     survivors.sort(key=_radar_sort_key)
-    survivors = _apply_sector_cap(survivors, RADAR_MAX_PER_SECTOR)
-    return survivors[:RADAR_MAX_ITEMS]
+    return survivors
+
+
+def _rank_and_cut_radar_items(scored_sorted_items: list[RadarItemResponse]) -> list[RadarItemResponse]:
+    capped = _apply_sector_cap(scored_sorted_items, RADAR_MAX_PER_SECTOR)
+    return capped[:RADAR_MAX_ITEMS]
+
+
+def _build_horizon_list(
+    scored_sorted_items: list[RadarItemResponse], horizon: str, max_per_sector: int
+) -> tuple[list[RadarItemResponse], str | None]:
+    """Auditoria del Radar, bloque E3: filtra por el horizonte del setup
+    LÍDER (no de cualquier setup secundario del ticker - el líder ya es "el
+    que gana", `arbitration.order_by_rank`), aplica el tope de sector propio
+    de esta lista, y corta a `RADAR_LIST_MAX_ITEMS`. Nunca rellena de vuelta
+    con peores candidatos si la lista queda corta - "un radar honesto con 3
+    nombres vale más que uno con 10 de los cuales 7 son relleno" (literal);
+    en ese caso devuelve el mensaje que lo explica."""
+    matching = [
+        item for item in scored_sorted_items if (leading := _leading_setup(item)) and leading.horizon == horizon
+    ]
+    capped = _apply_sector_cap(matching, max_per_sector)
+    result = capped[:RADAR_LIST_MAX_ITEMS]
+    if len(result) >= RADAR_LIST_MAX_ITEMS:
+        return result, None
+    label = "corto" if horizon == "short" else "medio"
+    plural = "es" if len(result) != 1 else ""
+    verb_plural = "n" if len(result) != 1 else ""
+    message = f"Solo {len(result)} valor{plural} cumple{verb_plural} los criterios de {label} plazo hoy."
+    return result, message
+
+
+def _mark_primary(short_term: list[RadarItemResponse]) -> None:
+    """Auditoria del Radar, bloque E4: el primero de `short_term` (ya
+    ordenado por score) se marca `is_primary` solo si supera
+    `trading_params.RADAR_PRIMARY_SCORE_THRESHOLD` - "si el mejor candidato
+    del día no llega al umbral, ninguno es primario" (literal, "un sistema
+    que cada día me señala obligatoriamente un principal me empuja a operar
+    por operar"). Muta en sitio, igual que `_attach_scores`."""
+    if not short_term:
+        return
+    leader = short_term[0]
+    if leader.score is None or leader.score.total < tp.RADAR_PRIMARY_SCORE_THRESHOLD:
+        return
+    leader.is_primary = True
+    leading_setup = _leading_setup(leader)
+    geometry = leader.entry_geometry
+    leader.thesis = radar_thesis.generate_deterministic_thesis(
+        ticker=leader.ticker,
+        setup_narrative=leading_setup.narrative_es if leading_setup is not None else None,
+        sector=leader.sector,
+        rs_rating=leader.rs_rating,
+        entry_price=geometry.entry_price if geometry is not None else None,
+        stop_price=geometry.stop_price if geometry is not None else None,
+        stop_basis=geometry.stop_basis if geometry is not None else None,
+        target_price=geometry.target_price if geometry is not None else None,
+        risk_reward_net=geometry.risk_reward_net if geometry is not None else None,
+        score_total=leader.score.total,
+    )
 
 
 def _daily_state_to_radar_item(
@@ -504,11 +573,21 @@ def get_radar(
     states = ticker_daily_state_repo.latest_by_region(region)
     candidates = [s for s in states if s.gate_passes or s.entry_trigger_price is not None]
     computed_at = max((s.computed_at for s in states), default=None)
-    items = [_daily_state_to_radar_item(s, performance_by_name, history_by_ticker_and_name) for s in candidates]
-    # Parte 8/9 (§28.x): descarta/ordena/recorta ANTES de dimensionar contra
-    # una cartera concreta más abajo - no tiene sentido gastar ese trabajo
-    # en filas que el propio corte va a descartar de todas formas.
-    items = _rank_and_cut_radar_items(items, date.today())
+    all_items = [
+        _daily_state_to_radar_item(s, performance_by_name, history_by_ticker_and_name) for s in candidates
+    ]
+    # Parte 8/9 (§28.x): descarta/puntúa/ordena ANTES de dimensionar contra
+    # una cartera concreta más abajo - no tiene sentido gastar ese trabajo en
+    # filas que los cortes de más abajo van a descartar de todas formas.
+    # Auditoria del Radar, bloque E3: `scored_sorted` es la base ÚNICA
+    # (descartada/puntuada/ordenada una sola vez) de la que `items` y las dos
+    # listas de horizonte se derivan cada una con su propio corte - nunca
+    # tres cálculos de score independientes.
+    scored_sorted = _score_and_sort_radar_items(all_items, date.today())
+    items = _rank_and_cut_radar_items(scored_sorted)
+    short_term, short_term_message = _build_horizon_list(scored_sorted, "short", RADAR_SHORT_TERM_MAX_PER_SECTOR)
+    medium_term, medium_term_message = _build_horizon_list(scored_sorted, "medium", RADAR_MAX_PER_SECTOR)
+    _mark_primary(short_term)
 
     # Parte 7 (later pass): "the Radar rendering for one portfolio" -
     # `trade_geometry.py`'s own docstring names this as the natural place to
@@ -560,7 +639,13 @@ def get_radar(
             )
         aggregate_risk = pcs.compute_aggregate_risk(position_risks, capital_total)
 
-        for item in items:
+        # `scored_sorted` (no `items`) - el superconjunto del que `items`,
+        # `short_term` y `medium_term` derivan cada uno su propio subcorte;
+        # dimensionar aquí, una sola vez por objeto, deja ya dimensionados
+        # los tres, sin volver a procesar el mismo `entry_geometry` dos
+        # veces (que aplicaría el techo de riesgo agregado por partida
+        # doble sobre el mismo candidato).
+        for item in scored_sorted:
             if item.entry_geometry is None or not item.entry_geometry.viable:
                 continue
             geometry = geometry_from_dict(item.entry_geometry.model_dump())
@@ -571,7 +656,16 @@ def get_radar(
             item.entry_geometry = TradeGeometryResponse(**geometry_to_dict(narrowed))
 
     message = RADAR_EMPTY_MESSAGE if not items and computed_at is not None else None
-    return RadarResponse(items=items, computed_at=computed_at, message=message, total_analyzed=len(states))
+    return RadarResponse(
+        items=items,
+        computed_at=computed_at,
+        message=message,
+        total_analyzed=len(states),
+        short_term=short_term,
+        medium_term=medium_term,
+        short_term_message=short_term_message,
+        medium_term_message=medium_term_message,
+    )
 
 
 @router.get("/levels/proximity", response_model=list[ProximityItemResponse])

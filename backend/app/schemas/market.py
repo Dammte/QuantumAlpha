@@ -441,6 +441,17 @@ class RadarItemResponse(BaseModel):
     # `None` solo si el ticker no tiene ningún setup ni geometría con la que
     # construir un score en absoluto.
     score: RadarScoreResponse | None = None
+    # Auditoria del Radar, bloque E4: el primero de `short_term`, y solo si
+    # supera `trading_params.RADAR_PRIMARY_SCORE_THRESHOLD` - "si el mejor
+    # candidato del día no llega al umbral, ninguno es primario" (literal).
+    # Como mucho un `True` en toda la respuesta.
+    is_primary: bool = False
+    # Solo se rellena cuando `is_primary` es `True` - "dos o tres frases de
+    # tesis que resuman qué hace ese setup interesante hoy" (literal).
+    # Plantilla determinista (`setups/thesis.py`) hasta que el bloque 12
+    # conecte Gemini por encima; el LLM redacta, nunca decide qué es
+    # primario - eso ya lo decidió el score.
+    thesis: str | None = None
 
 
 class RadarResponse(BaseModel):
@@ -461,6 +472,19 @@ class RadarResponse(BaseModel):
     # filtro de gate/disparador y de los cortes de la Parte 9.2. `0` cuando
     # `computed_at is None` (el job no ha corrido todavía).
     total_analyzed: int = 0
+    # Auditoria del Radar, bloque E3: "que se me muestren 10 activos... en
+    # dos listas, en orden, indicando cuál es el principal a entrar"
+    # (literal) - derivadas del mismo `items` ya puntuado/ordenado, filtradas
+    # por `horizon` del setup líder, con su propio tope por sector
+    # (`RADAR_SHORT_TERM_MAX_PER_SECTOR`/`RADAR_MAX_PER_SECTOR`) y su propio
+    # tope de 10. Un ticker sin ningún setup (y por tanto sin `horizon`) no
+    # aparece en ninguna de las dos - solo en `items`.
+    short_term: list[RadarItemResponse] = []
+    medium_term: list[RadarItemResponse] = []
+    # "Si una lista se queda con menos de 10, muéstrala corta y di por qué"
+    # (literal) - `None` cuando la lista SÍ llega a 10, nunca relleno.
+    short_term_message: str | None = None
+    medium_term_message: str | None = None
 
 
 class CorrelationWarningResponse(BaseModel):

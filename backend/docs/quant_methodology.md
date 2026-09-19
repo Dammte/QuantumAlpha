@@ -4107,3 +4107,67 @@ neutralizados, más el total como suma exacta de las partes) y 5 nuevos/actualiz
 ATR alto relativa a los candidatos del propio día, y los dos tests de la etapa ya no ordena por sí
 sola). Suite completa y ruff limpios; build de producción del frontend verificado (sin cambios de
 frontend en este bloque - la interfaz de las dos listas y el desglose visible llega en el bloque 10).
+
+### 29.6 Dos listas de horizonte, tope por sector propio, "principal a entrar" (bloque E3/E4)
+
+"Que se me muestren 10 activos... en dos listas, en orden, indicando cuál es el principal a entrar"
+(literal) - el corazón de todo el encargo. `get_radar` calcula ahora `scored_sorted` UNA SOLA VEZ
+(descarte de grado + score + orden, extraído de lo que antes era `_rank_and_cut_radar_items` en un
+único paso, `_score_and_sort_radar_items`) y deriva de ahí tres vistas independientes, cada una con
+su propio corte - nunca tres cálculos de score por separado:
+
+- `items` (sin cambios de comportamiento): tope de sector 4, tope total 25 - el "todos los
+  candidatos" que ya existía.
+- `short_term`/`medium_term` (nuevas): filtradas por el `horizon` del setup LÍDER (no cualquier
+  setup secundario - el líder ya es "el que gana" según `arbitration.order_by_rank`), tope de 10
+  cada una. El tope de sector es DISTINTO por lista: 3 en `short_term`
+  (`RADAR_SHORT_TERM_MAX_PER_SECTOR`, más estricto - "no quiero que un sector caliente me ocupe
+  media lista", literal), 4 en `medium_term` (el mismo de siempre). Un ticker sin ningún setup de la
+  biblioteca (sin `horizon` en absoluto) no aparece en ninguna de las dos - solo en `items`.
+
+**Nunca relleno**: si una lista no llega a 10 tras su propio corte, se queda corta y
+`short_term_message`/`medium_term_message` explican por qué ("Solo 3 valores cumplen los criterios
+de corto plazo hoy") - `None` exactamente cuando la lista sí llega a 10. Verificado con un test que
+seed 3 candidatos de corto y 10 de medio a la vez, confirmando que el de medio con candidatos de
+sobra JAMÁS se presta a rellenar el de corto.
+
+**Dimensionado, una sola vez sobre el superconjunto**: el bucle que dimensiona `entry_geometry`
+contra el capital de una cartera (cuando se pasa `portfolio_id`) pasó de iterar `items` a iterar
+`scored_sorted` - si iterara `items` (el subconjunto con el tope global), un candidato que sobrevive
+al corte de `short_term`/`medium_term` pero no al corte global de `items` se habría quedado sin
+dimensionar. Iterar el superconjunto una sola vez deja los tres derivados ya dimensionados (mismos
+objetos en memoria, no copias) sin volver a procesar el mismo `entry_geometry` dos veces - lo que
+habría aplicado el techo de riesgo agregado por partida doble sobre el mismo candidato si apareciera
+en más de una lista a la vez (algo que en la práctica nunca ocurre, porque `short_term`/`medium_term`
+son mutuamente excluyentes por construcción - un ticker tiene un único setup líder con un único
+`horizon` - pero el diseño lo evita también por si acaso, no por confiar en esa exclusión).
+
+**`is_primary` (bloque E4)**: el primero de `short_term` (ya el de mayor score) se marca
+`is_primary=True` solo si su score supera `trading_params.RADAR_PRIMARY_SCORE_THRESHOLD=70` - "si
+el mejor candidato del día no llega al umbral, ninguno es primario" (literal, "un sistema que cada
+día me señala obligatoriamente un principal me empuja a operar por operar"). `medium_term` NUNCA
+tiene un primario, sin importar su score - la ficha ampliada es, por diseño del propio encargo, solo
+para una entrada de corto plazo.
+
+**Tesis determinista** (`app/services/setups/thesis.py`, nuevo, puro): tres frases construidas a
+partir de datos ya calculados - la narrativa del propio setup (reutilizada tal cual, ya es una frase
+factual determinista de su propio detector), la geometría (entrada/stop con su anclaje/objetivo/R:R)
+y el contexto (RS/sector/score). Esta es la ÚNICA pieza que existe hasta el bloque 12 - ahí se
+conecta Gemini por encima, con esta plantilla como fallback si la llamada falla o no hay clave, "el
+LLM redacta, no decide" (literal) exactamente como ya hace `trade_plan_service.generate_thesis` para
+la tesis de una posición real abierta.
+
+**Respuesta**: `RadarResponse` gana `short_term`/`medium_term` (listas de `RadarItemResponse`,
+`[]` por defecto) y `short_term_message`/`medium_term_message`. `RadarItemResponse` gana
+`is_primary: bool = False` y `thesis: str | None` (solo poblada junto con `is_primary=True`).
+
+**Tests**: 6 nuevos en `test_radar_api.py` (separación por horizonte; tope de sector propio de
+`short_term`; lista corta con mensaje honesto y sin relleno cruzado entre listas; primario marcado
+por encima del umbral con tesis no vacía; sin primario por debajo del umbral; `medium_term` nunca
+marca primario) + 6 nuevos en `test_thesis.py` (narrativa incluida tal cual, geometría, fallback sin
+`stop_basis`, contexto, mensaje honesto sin ningún dato, geometría omitida sin stop). Un detalle de
+diseño encontrado al escribir el primer test: un `FORMING` de grado C ya se descarta por la Parte 9.2
+ANTES de llegar a puntuarse - el test de "sin primario por debajo del umbral" tuvo que usar `READY`
+en vez de `FORMING` para probar de verdad "puntúa bajo", no "se descarta antes de puntuar" (dos
+causas distintas para el mismo síntoma superficial de "no aparece"). Suite completa y ruff limpios;
+build de producción del frontend verificado (sin cambios de frontend en este bloque).

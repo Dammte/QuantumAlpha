@@ -118,4 +118,11 @@ RADAR_SCORE_EARNINGS_PENALTY_SHORT = 15  # solo en horizonte corto - "es mi hori
 RADAR_SCORE_EARNINGS_WITHIN_SESSIONS = 10  # próximas 10 sesiones de calendario
 RADAR_SCORE_HIGH_ATR_PENALTY = 10
 RADAR_SCORE_HIGH_ATR_PERCENTILE = 90  # percentil de atr_pct dentro del universo del día
+
+# Umbral de convicción para marcar el primero de `short_term` como "principal
+# a entrar" (bloque E4) - "si el mejor candidato del día no llega al umbral,
+# ninguno es primario" (literal). Ajustable si un estudio de replay futuro
+# dice otro número más calibrado.
+RADAR_PRIMARY_SCORE_THRESHOLD = 70
+
 HIGH_CORRELATION_THRESHOLD = 0.7
