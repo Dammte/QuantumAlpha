@@ -159,3 +159,10 @@ RADAR_SCORE_HIGH_ATR_PERCENTILE = 90  # percentil de atr_pct dentro del universo
 RADAR_PRIMARY_SCORE_THRESHOLD = 70
 
 HIGH_CORRELATION_THRESHOLD = 0.7
+
+# --- Rotación de cartera (Auditoria del Radar, bloque 9) -----------------------
+# "rotación contra cartera con topes" (literal) - como mucho esta cantidad de
+# sugerencias de swap por llamada (día, en la práctica: `/today` se lee una
+# vez al día) - "aviso, no automatización", mismo espíritu que
+# `MAX_OPEN_POSITIONS` de arriba (Parte 10.3: un aviso que no bloquea nada).
+ROTATION_MAX_SUGGESTIONS_PER_DAY = 2

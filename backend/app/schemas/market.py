@@ -263,6 +263,20 @@ class OpportunityCostNoteResponse(BaseModel):
     alternative_rs_rating: int | None
 
 
+class RotationSuggestionResponse(BaseModel):
+    """Auditoria del Radar, bloque 9: ver `portfolio_rotation_service.py` -
+    a diferencia de `OpportunityCostNoteResponse`, esto SÍ recomienda un swap
+    concreto (nunca automático, solo una sugerencia visible), y solo cuando
+    `sell_ticker` ya tiene una urgencia de salida real (`exit_now`/`reduce`)
+    y la cartera está llena."""
+
+    sell_ticker: str
+    sell_reason: str
+    buy_ticker: str
+    buy_reason: str
+    sector: str
+
+
 class PortfolioTodayResponse(BaseModel):
     # `None` when daily_close.py hasn't run for this portfolio yet - same
     # "empty vs. doesn't exist yet" distinction RadarResponse.computed_at
@@ -270,6 +284,7 @@ class PortfolioTodayResponse(BaseModel):
     brief: DailyBriefResponse | None
     positions: list[PositionDailyStateResponse]
     opportunity_cost: list[OpportunityCostNoteResponse]
+    rotation_suggestions: list[RotationSuggestionResponse] = []
 
 
 class TimeframeCellResponse(BaseModel):

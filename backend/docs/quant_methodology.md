@@ -4374,3 +4374,57 @@ nuevo campo `level_kind` de `TradeGeometry`. `test_trade_plan_service.py` reescr
 gana 2 assertions sobre `ChandelierResult.basis`. `test_trade_plan_repository.py` (nuevo, 5 tests):
 la validación de persistencia y el comportamiento de `current_stop_basis` en `update_trailing`. Suite
 completa (1169 tests) y ruff limpios.
+
+### 29.9 Rotación de cartera con topes (bloque 9)
+
+Nota de procedencia (mismo criterio que `trade_geometry.py`/`levels_engine.py` ya documentan en sus
+propios docstrings): el texto literal de este bloque había salido de contexto para cuando se empezó
+a implementar; lo que sigue es la reconstrucción de mejor esfuerzo a partir del resumen de la sesión
+("sugerencias de swap basadas en score, puntuación de salud para posiciones abiertas, topes duros de
+sugerencias por día") bajo la misma autorización explícita del propietario para proceder con criterio
+propio en los puntos donde el texto exacto no estuviera disponible.
+
+**`app/services/portfolio_rotation_service.py` (nuevo).** Un paso más allá de `opportunity_cost.py`
+(Fase 5, resto), que deliberadamente solo señala "hay una alternativa cuyo gate aprueba en tu sector"
+sin nunca decidir si la posición en sí debería venderse. `suggest_rotations` SÍ recomienda un swap
+concreto (vender X, comprar Y) - pero solo cuando:
+
+1. La cartera está llena (`open_positions_count >= MAX_OPEN_POSITIONS`) - rotar tiene sentido cuando
+   no hay hueco libre, no como sustituto de simplemente añadir una posición nueva.
+2. La posición candidata a salir ya tiene una urgencia de salida objetivamente débil
+   (`exit_engine.ExitUrgency` = `exit_now`/`reduce`) - **ya decidida y persistida por
+   `daily_close.py`** en `position_daily_states.urgency`, nunca recalculada en este módulo. Un
+   ticker sin entrada en el mapa de urgencias (aún no evaluado) nunca se asume débil por defecto.
+   `exit_now` se prioriza sobre `reduce` cuando hay más candidatas débiles que cupo.
+3. El reemplazo está en el mismo sector, tiene el gate aprobado y un grado A/B/C real (nunca `None`)
+   - desempate por RS Rating, mismo idiom exacto que `opportunity_cost.find_opportunity_cost_notes`
+   ya usa. **Deliberadamente el grado, no el score compuesto del Radar** (`setups/scoring.py`): ese
+   pipeline vive dentro de `GET /market/radar` (percentiles de ATR del universo del día,
+   penalización de earnings) y reproducirlo aquí duplicaría lógica que ya tiene su propio hogar - el
+   grado es la misma señal de calidad que `opportunity_cost.py` ya trata como suficiente.
+4. Nunca sugiere un ticker ya en cartera, ni reutiliza el mismo candidato para dos sugerencias.
+5. Tope duro `ROTATION_MAX_SUGGESTIONS_PER_DAY=2` (`trading_params.py`) - "aviso, no automatización",
+   mismo espíritu que `MAX_OPEN_POSITIONS`.
+
+Comprar y vender siguen siendo preguntas distintas (CLAUDE.md, §8): esta función nunca decide
+"vender" por su cuenta, solo añade la mitad que faltaba una vez que `exit_engine.py` ya lo decidió.
+
+**Sector vía `market_universe.sector_of(ticker)`, no `TickerDailyState.sector`.** Aunque esa columna
+ya existe (Parte 8 de la biblioteca de setups), leerla directamente ataría esta función a que
+`daily_close.py` la hubiera poblado para esa fila en concreto; `sector_of()` es la misma fuente de
+verdad sin esa dependencia, y es exactamente lo que `opportunity_cost.py` ya hace - mismo patrón, sin
+inventar uno nuevo.
+
+**Conectado a `GET /portfolios/{id}/today`** (`rotation_suggestions`, nuevo campo en
+`PortfolioTodayResponse`), con los mismos `held_states`/`radar_candidates` que `opportunity_cost` ya
+recibía ahí - sin llamada de red ni recálculo nuevo, mismo principio de "sin cómputo en caliente en
+Radar/Hoy" del resto del sistema. `open_positions_count` se deriva de `len(positions)` (las filas de
+`position_daily_states` de la cartera) - la misma cuenta que el resto del endpoint ya trata como "lo
+que tengo hoy", con la misma limitación conocida y preexistente de `latest_for_portfolio` (una
+posición cerrada sin una fila nueva de hoy seguiría contando con su última fila vieja) - no
+introducida por este bloque, ya presente en `opportunity_cost`/`positions` desde antes.
+
+**Tests**: `test_portfolio_rotation_service.py` (nuevo, 13 tests unitarios, sector lookups
+monkeypatcheados igual que `test_opportunity_cost.py`) + 3 nuevos en `test_portfolio_today_api.py`
+(swap sugerido con cartera llena y posición débil, sin sugerencia con hueco libre, sin sugerencia
+cuando todo está sano). Suite completa (1185 tests) y ruff limpios.

@@ -43,6 +43,7 @@ from app.schemas.market import (
     PositionRiskContributionResponse,
     PositionRiskResponse,
     PriceLevelResponse,
+    RotationSuggestionResponse,
     ScaledExitPlanResponse,
     SectorConcentrationResponse,
     TradePlanResponse,
@@ -54,6 +55,7 @@ from app.services import durable_cache
 from app.services import multi_timeframe as mtf
 from app.services import opportunity_cost as oc
 from app.services import portfolio_construction_service as pcs
+from app.services import portfolio_rotation_service as prs
 from app.services import trade_manager as tm
 from app.services import trade_plan_service as tps
 from app.services.market_data_service import MarketDataService
@@ -398,7 +400,14 @@ def get_portfolio_today(
     each held ticker whose own gate doesn't pass today against the Radar's
     already-passing candidates in the same curated sector, combining both
     regions' Radar pools (same "a personal portfolio isn't confined to one
-    market" reasoning `GET /{portfolio_id}/risk` above already uses)."""
+    market" reasoning `GET /{portfolio_id}/risk` above already uses).
+
+    `rotation_suggestions` (Auditoria del Radar, bloque 9 - see
+    `portfolio_rotation_service.py`) goes one step further than
+    `opportunity_cost`: a concrete sell/buy swap, but only for a holding
+    whose own precomputed exit urgency is already `exit_now`/`reduce` and
+    only once the portfolio is full - never a second opinion on whether to
+    sell, that call was already made by `exit_engine.py`."""
     if repository.get(portfolio_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portfolio not found")
 
@@ -417,6 +426,16 @@ def get_portfolio_today(
         if state.gate_passes
     ]
     opportunity_notes = oc.find_opportunity_cost_notes(held_states, radar_candidates)
+    # Auditoria del Radar, bloque 9: "rotación contra cartera con topes" -
+    # ver portfolio_rotation_service.py. Mismos `held_states`/`radar_candidates`
+    # que opportunity_cost de arriba, más la urgencia de salida ya
+    # precomputada (`positions[].urgency`) - sin cómputo nuevo.
+    rotation_suggestions = prs.suggest_rotations(
+        held_states=held_states,
+        urgency_by_ticker={p.ticker: p.urgency for p in positions},
+        radar_candidates=radar_candidates,
+        open_positions_count=len(positions),
+    )
 
     return PortfolioTodayResponse(
         brief=(
@@ -452,6 +471,16 @@ def get_portfolio_today(
                 alternative_rs_rating=note.alternative_rs_rating,
             )
             for note in opportunity_notes
+        ],
+        rotation_suggestions=[
+            RotationSuggestionResponse(
+                sell_ticker=s.sell_ticker,
+                sell_reason=s.sell_reason,
+                buy_ticker=s.buy_ticker,
+                buy_reason=s.buy_reason,
+                sector=s.sector,
+            )
+            for s in rotation_suggestions
         ],
     )
 

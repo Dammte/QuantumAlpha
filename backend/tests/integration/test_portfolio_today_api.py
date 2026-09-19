@@ -196,3 +196,68 @@ def test_today_has_no_opportunity_cost_note_when_no_alternative_shares_the_secto
     body = client.get(f"/api/v1/portfolios/{portfolio_id}/today").json()
 
     assert body["opportunity_cost"] == []
+
+
+# --- rotation_suggestions (Auditoria del Radar, bloque 9) ---------------------
+
+
+def _fill_portfolio_to_the_cap(db_session: Session, portfolio_id: int, weak_ticker: str) -> None:
+    """Seeds MAX_OPEN_POSITIONS (10) held positions - one weak (`weak_ticker`,
+    exit_now), the rest healthy filler tickers with no TickerDailyState of
+    their own (rotation only needs a sector match for the weak one)."""
+    _seed_position_state(db_session, portfolio_id, ticker=weak_ticker, urgency="exit_now")
+    for i in range(9):
+        _seed_position_state(db_session, portfolio_id, ticker=f"FILLER{i}", urgency="hold")
+
+
+def test_today_suggests_a_rotation_when_the_portfolio_is_full_and_a_holding_is_weak(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio_id = _create_portfolio(client)
+    _fill_portfolio_to_the_cap(db_session, portfolio_id, weak_ticker="MSFT")
+    _seed_ticker_state(db_session, ticker="MSFT", gate_passes=False)
+    _seed_ticker_state(
+        db_session, ticker="ORCL", gate_passes=True, rs_rating=92, grade={"grade": "A", "reasons": []}
+    )
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/today").json()
+
+    assert len(body["rotation_suggestions"]) == 1
+    suggestion = body["rotation_suggestions"][0]
+    assert suggestion["sell_ticker"] == "MSFT"
+    assert suggestion["buy_ticker"] == "ORCL"
+    assert suggestion["sector"] == "Tecnología"
+    assert "salida inmediata" in suggestion["sell_reason"]
+    assert "grado A" in suggestion["buy_reason"]
+
+
+def test_today_has_no_rotation_suggestion_when_the_portfolio_has_room(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio_id = _create_portfolio(client)
+    _seed_position_state(db_session, portfolio_id, ticker="MSFT", urgency="exit_now")
+    _seed_ticker_state(db_session, ticker="MSFT", gate_passes=False)
+    _seed_ticker_state(
+        db_session, ticker="ORCL", gate_passes=True, rs_rating=92, grade={"grade": "A", "reasons": []}
+    )
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/today").json()
+
+    assert body["rotation_suggestions"] == []
+
+
+def test_today_has_no_rotation_suggestion_when_every_holding_is_healthy(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio_id = _create_portfolio(client)
+    _fill_portfolio_to_the_cap(db_session, portfolio_id, weak_ticker="MSFT")
+    # Overwrite the "weak" seed with a healthy urgency - nothing eligible to rotate out.
+    _seed_position_state(db_session, portfolio_id, ticker="MSFT", urgency="hold")
+    _seed_ticker_state(db_session, ticker="MSFT", gate_passes=False)
+    _seed_ticker_state(
+        db_session, ticker="ORCL", gate_passes=True, rs_rating=92, grade={"grade": "A", "reasons": []}
+    )
+
+    body = client.get(f"/api/v1/portfolios/{portfolio_id}/today").json()
+
+    assert body["rotation_suggestions"] == []
