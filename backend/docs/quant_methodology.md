@@ -4550,13 +4550,42 @@ sus límites exactos, `volatility_profile` en el resultado viable y en los tres 
 compatibilidad hacia atrás de `geometry_from_dict` sin la clave). Suite completa (1218 tests) y ruff
 limpios; `npm run lint`/`npm run build` limpios en el frontend.
 
-**Verificación en navegador NO realizada** - a diferencia de trabajo previo de esta misma sesión
-(biblioteca de setups), este entorno no tiene Docker ni una instancia de Postgres local corriendo
-(`docker`/`docker ps` no están disponibles), y no hay una herramienta de navegador/captura de pantalla
-accesible en esta sesión - solo `WebFetch` (URLs remotas, no `localhost`). Se verificó en su lugar,
-con la misma seriedad: `npm run build`/`npm run lint` limpios, y los 1218 tests de backend (que
-validan exactamente la forma JSON que estos dos componentes consumen) en verde. Dicho explícitamente,
-no como un "ya funciona" fabricado - ver CLAUDE.md, "si no puedes probar la UI, dilo explícitamente".
+**Verificación en navegador, realizada a posteriori.** Sin Docker/Postgres local ni una herramienta de
+navegador ya integrada en esta sesión, se montó un servidor desechable propio: FastAPI con la misma
+sustitución de dependencias por SQLite en memoria que ya usa `tests/integration/conftest.py`
+(`FakeMarketDataProvider` incluido), servido por `uvicorn` real (no `TestClient`) para que un
+navegador de verdad pudiera hablarle por HTTP, más `playwright` (instalado ex profeso para esta
+verificación) contra Vite en modo dev. Datos sembrados a mano: una cartera con una posición abierta
+(para `PositionDetailPanel.jsx`) y un universo pequeño con un primario, un candidato de medio plazo,
+uno "a punto de disparar" y uno "rompiendo por abajo" (para las 5 subsecciones de `RadarView.jsx`).
+
+**Bug real encontrado y corregido por esta verificación - exactamente el tipo de fallo que la suite
+automática no puede atrapar.** `PositionDetailPanel.jsx` mostraba solo 7 de sus 10 indicadores -
+"Sesiones mantenidas", "Perfil de volatilidad" y "Urgencia de salida" faltaban en pantalla pese a
+estar presentes en el DOM y en la respuesta de la API. Causa: `.positions-table__detail-row td` es
+una celda con `colSpan` dentro de una tabla sin `table-layout: fixed` - el algoritmo de ancho
+automático de una tabla mide el contenido "sin ajustar línea" de un grid CSS `auto-fill`
+(`.stat-grid`) como si todas sus tarjetas cupieran en una sola fila sin límite, así que la tabla
+entera crecía más allá del viewport en vez de dejar que el grid pasara a una segunda fila - con 7
+tarjetas (la ficha antes de este bloque) casi cabía sin que nadie lo notara; con 10 (las 2 nuevas de
+los bloques H2/H3: "Stop inicial" y "Perfil de volatilidad"), las últimas 3 quedaban recortadas fuera
+de la pantalla, invisibles pero técnicamente "renderizadas". Arreglado con dos reglas CSS acotadas a
+esta ficha en concreto, sin tocar el resto de la tabla: `max-width: 1100px` en `.position-detail__stats`
+(rompe el ciclo dándole a la celda un contenido máximo del que la tabla sí puede derivar un ancho de
+columna razonable) y `white-space: normal` en `.positions-table__detail-row td` (la tesis/motivos en
+prosa de la ficha necesitan ajustar línea; el `nowrap` de las celdas normales de la tabla no aplica
+aquí). Confirmado con captura de pantalla antes/después - las 10 tarjetas se ven, en dos filas, sin
+desbordar el viewport.
+
+**Resto verificado sin hallazgos**: régimen de mercado (línea alcista con el % de amplitud real),
+ficha del primario completa (entrada/stop con ancla/objetivo/R:R/tamaño/tesis/gatillo), las dos listas
+de horizonte con sus mensajes honestos ("solo 1 valor cumple..."), "a punto de disparar", "rompiendo
+por abajo" con su nivel roto, mapa de sectores con barras proporcionales, nota de cobertura al pie,
+los 4 chips podados, y el desglose del score (bloque E2) en la fila expandida - conectado a la UI por
+primera vez en este bloque, nunca antes visible. Sin errores de consola atribuibles a este trabajo
+(un 404/CORS en `/portfolios/{id}/history` sí apareció en la vista "Hoy" - preexistente, ajeno a los
+bloques 8-12, anotado en la lista de fuera de alcance, no tocado). Scripts y capturas desechables
+eliminados al terminar - nunca formaron parte del repositorio.
 
 ### 29.12 Bloque 11: auditoría contra la lista literal del bloque I
 
@@ -4695,6 +4724,13 @@ en una lista al final; no lo toques"):
   naturales en tres sitios distintos de esta sola auditoría: `EVENT_RISK_WINDOW_DAYS`, el "36 horas
   hábiles" del fallback, y el "5 sesiones" del régimen de mercado) - una utilidad compartida real
   sería una mejora genuina, pero construirla no estaba en ningún bloque de este encargo.
-- Verificación en navegador de `RadarView.jsx`/`PositionDetailPanel.jsx` (bloque 10) - no realizada
-  por falta de Docker/Postgres local y de herramienta de captura en este entorno, documentado
-  explícitamente en su momento, no como visto bueno fabricado.
+- Un 404/CORS en `GET /portfolios/{id}/history` visible en la consola del navegador durante la
+  verificación de la vista "Hoy" - ajeno a los bloques 8-12 (no toca nada que esta auditoría haya
+  escrito), detectado de pasada, no investigado ni tocado.
+
+**Verificación en navegador**: realizada a posteriori, a petición explícita del propietario tras el
+primer cierre de esta auditoría (que la había dejado pendiente por falta de Docker/Postgres local y de
+herramienta de navegador en el entorno) - servidor FastAPI+SQLite+`FakeMarketDataProvider` desechable
+servido por `uvicorn` real, más `playwright` contra Vite en modo dev. Encontró y corrigió un bug real
+de layout en `PositionDetailPanel.jsx` (tres de sus diez indicadores quedaban recortados fuera de la
+pantalla por un desbordamiento de ancho de tabla) - el detalle completo está al cierre del §29.11.
