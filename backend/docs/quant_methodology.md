@@ -4604,3 +4604,97 @@ no trabajo nuevo salvo dos huecos genuinos encontrados al revisar con lupa:
 
 **Tests**: 2 nuevos en `test_trade_geometry.py` (puntos 7 y 8 de arriba, los únicos huecos genuinos).
 Suite completa (1220 tests) y ruff limpios.
+
+### 29.13 Bloque 12: ficha de Gemini para la tesis del primario
+
+Bloque E4/12, literal completo: "esa tesis se genera con Gemini (gemini-2.5-flash-lite, salida JSON
+estructurada) a partir de los números ya calculados - nunca pidiéndole a Gemini que analice ni que
+opine. Si la llamada falla, se muestra un resumen plantilla determinista. El LLM redacta; no decide."
+
+**`LLMNarrator.explain_radar_primary`** (nuevo método del puerto, `app/domain/interfaces/llm_narrator.py`):
+mismos parámetros exactos que `setups.thesis.generate_deterministic_thesis` (el bloque 6, sin cambios)
+ya recibe - ticker, narrativa del setup, sector, RS Rating, entrada, stop y su anclaje, objetivo,
+beneficio:riesgo neto, score - para que la redacción de Gemini y la plantilla determinista trabajen
+siempre sobre idéntica evidencia, nunca sobre datos distintos entre sí. `None` cuando no está
+configurado o la llamada falla por cualquier motivo, mismo contrato exacto que `explain_gate` (Fase 7)
+ya establece.
+
+**`GeminiNarrator.explain_radar_primary`**: modelo `gemini-2.5-flash-lite` (literal, distinto del
+`gemini-2.5-flash` de `explain_gate` - una tarea más barata, un modelo más ligero, elegido a
+propósito). Salida JSON estructurada (`response_mime_type="application/json"`,
+`response_schema={"thesis": string}`) en vez de texto libre - la instrucción de sistema es explícita
+sobre "no analices el valor por tu cuenta... esa decisión ya se tomó por su score antes de que tú
+intervengas" (mismo "el gate ya está decidido, tu trabajo es explicarlo" que `explain_gate` ya
+establece para su propio caso). Cualquier fallo (sin clave, límite de tasa, JSON malformado, campo
+`thesis` ausente) se traga en `None` - mismo `try/except Exception` amplio y documentado que
+`explain_gate` ya usa, nunca deja que un fallo del LLM tumbe la respuesta del Radar.
+
+**Conectado en `GET /market/radar`** (`app/api/v1/endpoints/market.py::_apply_gemini_radar_thesis`,
+nueva función, llamada justo después de `_mark_primary`): deliberadamente una función APARTE de
+`_mark_primary`, no una modificación de ella - `_mark_primary` sigue decidiendo QUIÉN es primario y
+dejando la tesis determinista puesta, exactamente como antes (sus tests existentes del bloque 6 no
+cambian ni una línea); `_apply_gemini_radar_thesis` es un paso puramente aditivo que intenta
+reemplazar solo el TEXTO por la redacción de Gemini sobre los mismos hechos, y no toca nada si no hay
+primario o si Gemini no responde. "El LLM redacta; no decide" queda así verificado por construcción,
+no solo por convención: no hay ningún camino por el que esta función pueda cambiar quién es el
+primario o alterar `is_primary`.
+
+**Tests**: 6 nuevos en `test_gemini_narrator.py` (sin clave, éxito con el campo `thesis`, respuesta sin
+texto, JSON malformado, campo `thesis` ausente, error de la API - mismo patrón exacto de mocking que
+`explain_gate` ya usa, ninguna llamada de red real). 2 nuevos en `test_radar_api.py` (Gemini
+configurado reemplaza la tesis del primario; Gemini devuelve `None` y la determinista se queda tal
+cual) - `app.dependency_overrides[get_llm_narrator]` con un `LLMNarrator` falso, mismo patrón que
+`RadarFallbackService`/`FakeMarketDataProvider` ya usan en `conftest.py`.
+`test_radar_responds_without_a_gemini_key` (bloque de degradación, Fase 7) sigue pasando sin cambios -
+confirma que la ausencia de clave real en el entorno de pruebas nunca rompió nada, antes ni después de
+este bloque. Suite completa (1228 tests) y ruff limpios.
+
+---
+
+## Cierre de la Auditoría del Radar (bloques 1-12)
+
+Los 12 bloques del encargo están completos y en verde. Resumen para el propietario, en el formato que
+pidió al cierre:
+
+**Qué se encontró distinto de lo afirmado en el bloque A**: nada. Cada punto del diagnóstico (A1/A2)
+se confirmó contra el repo en el commit de referencia sin una sola discrepancia - documentado en el
+primer mensaje de esta sesión, antes de tocar código (regla 0: "verifica antes de escribir").
+
+**Decisiones tomadas en los puntos dejados a criterio propio** (cada una ya documentada en detalle en
+su sección correspondiente de este mismo capítulo 29, referenciada aquí por bloque):
+
+- **Bloque B/A3**: opción (ii), fallback en vivo acotado - confirmado, con las 6 salvaguardas del §29.7.
+- **Bloque 8/H2**: el techo de riesgo y el techo duro de ATR pasan a ser puramente informativos
+  (`size_position` ya reducía el tamaño de forma natural); `compute_stop_and_target` (la lectura
+  simple del Radar) se deja intacta salvo el fix de `ATR_STOP_MULTIPLE` - retirarla del todo excedía
+  la queja literal sobre el stop de cartera (§29.8).
+- **Bloque 9**: reconstruido a partir del resumen de la sesión, no del texto literal (que había salido
+  de contexto) - "score-based" se interpretó como el grado A/B/C ya persistido, no el score compuesto
+  del Radar (evita duplicar ese pipeline fuera de su hogar natural), con autorización explícita del
+  propietario para decidir con criterio propio en este punto (§29.9).
+- **Bloque 10**: "rompiendo por abajo" limitado a EMA21/EMA55/soporte (no resistencias ni máximos de
+  52 semanas); el mapa de sectores muestra el único `sector_rs_percentile` real disponible en vez de
+  fabricar una columna semanal/diaria separada que no existe; "5 sesiones" se aproxima a 7 días
+  naturales sin un calendario de mercado exacto a este nivel (§29.10/29.11).
+- **Bloque 12**: la tesis de Gemini se aplica como una función aditiva separada de `_mark_primary`,
+  nunca una modificación de ella, para que "el LLM redacta, no decide" quede garantizado por
+  construcción (§29.13).
+
+**Lo detectado fuera de alcance y no tocado** (regla 0: "si detectas algo fuera de alcance, apúntalo
+en una lista al final; no lo toques"):
+
+- `levels_engine.apply_portfolio_grade_modifiers` (correlación con posición abierta, tope de
+  posiciones) sigue sin ningún llamador - ya señalado como pendiente en CLAUDE.md antes de esta
+  auditoría, y esta auditoría no lo conecta (no estaba en ninguno de los 12 bloques).
+- `technical_analysis.obv_divergence` sigue sin llamador tras el retiro del checklist viejo (marcado
+  para revisión de código muerto en su momento, no en esta auditoría).
+- Una métrica de fuerza relativa de sector separada por semanal/diario (el mapa de sectores del bloque
+  10 la pide, pero no existe hoy como campo propio) - se documentó la simplificación, no se fabricó
+  el dato.
+- Un calendario de mercado exacto para "N sesiones de trading" (usado hoy como aproximación en días
+  naturales en tres sitios distintos de esta sola auditoría: `EVENT_RISK_WINDOW_DAYS`, el "36 horas
+  hábiles" del fallback, y el "5 sesiones" del régimen de mercado) - una utilidad compartida real
+  sería una mejora genuina, pero construirla no estaba en ningún bloque de este encargo.
+- Verificación en navegador de `RadarView.jsx`/`PositionDetailPanel.jsx` (bloque 10) - no realizada
+  por falta de Docker/Postgres local y de herramienta de captura en este entorno, documentado
+  explícitamente en su momento, no como visto bueno fabricado.

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import (
     DbSession,
+    get_llm_narrator,
     get_market_context_service,
     get_market_data_service,
     get_market_screener_service,
@@ -19,6 +20,7 @@ from app.api.deps import (
     get_trade_plan_repository,
 )
 from app.core import trading_params as tp
+from app.domain.interfaces.llm_narrator import LLMNarrator
 from app.domain.models.setup_performance import SetupPerformance
 from app.domain.models.setup_ticker_history import SetupTickerHistory
 from app.domain.models.ticker_daily_state import TickerDailyState
@@ -512,6 +514,38 @@ def _mark_primary(
     )
 
 
+def _apply_gemini_radar_thesis(short_term: list[RadarItemResponse], narrator: LLMNarrator) -> None:
+    """Auditoria del Radar, bloque E4/12, literal: "esa tesis se genera con
+    Gemini... a partir de los números ya calculados - nunca pidiéndole a
+    Gemini que analice ni que opine. Si la llamada falla, se muestra un
+    resumen plantilla determinista. El LLM redacta; no decide." - `_mark_primary`
+    de arriba ya decidió QUIÉN es el primario y ya dejó la tesis determinista
+    puesta; esta función es un paso puramente aditivo que intenta
+    reemplazarla por la redacción de Gemini sobre EXACTAMENTE los mismos
+    hechos, y no hace nada (deja la determinista tal cual) si no hay
+    candidato primario, o si `explain_radar_primary` devuelve `None` (sin
+    configurar, o cualquier fallo de la llamada - ver `GeminiNarrator`)."""
+    if not short_term or not short_term[0].is_primary:
+        return
+    leader = short_term[0]
+    leading_setup = _leading_setup(leader)
+    geometry = leader.entry_geometry
+    thesis = narrator.explain_radar_primary(
+        ticker=leader.ticker,
+        setup_narrative=leading_setup.narrative_es if leading_setup is not None else None,
+        sector=leader.sector,
+        rs_rating=leader.rs_rating,
+        entry_price=geometry.entry_price if geometry is not None else None,
+        stop_price=geometry.stop_price if geometry is not None else None,
+        stop_basis=geometry.stop_basis if geometry is not None else None,
+        target_price=geometry.target_price if geometry is not None else None,
+        risk_reward_net=geometry.risk_reward_net if geometry is not None else None,
+        score_total=leader.score.total,
+    )
+    if thesis is not None:
+        leader.thesis = thesis
+
+
 def _trigger_distance_atr(item: RadarItemResponse) -> float | None:
     if item.entry_trigger is None or not item.atr_pct or item.price <= 0:
         return None
@@ -664,6 +698,7 @@ def get_radar(
     market_data: Annotated[MarketDataService, Depends(get_market_data_service)],
     screener: Annotated[MarketScreenerService, Depends(get_market_screener_service)],
     radar_fallback: Annotated[RadarFallbackService, Depends(get_radar_fallback_service)],
+    narrator: Annotated[LLMNarrator, Depends(get_llm_narrator)],
     region: str = RegionQuery,
     portfolio_id: int | None = None,
 ) -> RadarResponse:
@@ -769,6 +804,11 @@ def get_radar(
         else tp.RADAR_PRIMARY_SCORE_THRESHOLD
     )
     _mark_primary(short_term, primary_threshold)
+    # Auditoria del Radar, bloque 12: Gemini redacta, nunca decide - intenta
+    # reemplazar la tesis determinista de arriba por la de Gemini sobre los
+    # mismos hechos exactos; sin clave configurada o ante cualquier fallo,
+    # la determinista ya puesta por `_mark_primary` se queda tal cual.
+    _apply_gemini_radar_thesis(short_term, narrator)
     about_to_trigger = _build_about_to_trigger(scored_sorted, short_term, medium_term)
 
     # Parte 7 (later pass): "the Radar rendering for one portfolio" -

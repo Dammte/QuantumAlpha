@@ -175,6 +175,9 @@ class _FakeNarrator(LLMNarrator):
         self.calls.append(kwargs)
         return self.response
 
+    def explain_radar_primary(self, **kwargs) -> str | None:
+        raise AssertionError("not exercised by these tests - see test_market_gemini_radar_thesis.py")
+
 
 def _gate(
     passes: bool = True,

@@ -46,3 +46,31 @@ class LLMNarrator(ABC):
         not raw numbers, so no implementation of this port ever needs to
         know this app's currency/rounding conventions."""
         ...
+
+    @abstractmethod
+    def explain_radar_primary(
+        self,
+        ticker: str,
+        setup_narrative: str | None,
+        sector: str | None,
+        rs_rating: int | None,
+        entry_price: float | None,
+        stop_price: float | None,
+        stop_basis: str | None,
+        target_price: float | None,
+        risk_reward_net: float | None,
+        score_total: float,
+    ) -> str | None:
+        """Auditoria del Radar, bloque E4/12: la tesis (2-3 frases, en
+        español) del candidato marcado `is_primary` en `GET /market/radar` -
+        "el LLM redacta; no decide" (literal): el candidato YA se decidió
+        primario por su score antes de que este método se llame, y cada
+        argumento aquí es un hecho ya calculado (nunca un indicador nuevo, ni
+        una llamada de red por el propio narrador - los mismos parámetros
+        exactos que `setups.thesis.generate_deterministic_thesis` ya recibe,
+        para que ambos caminos redacten sobre idéntica evidencia). `None`
+        cuando no está configurado o la llamada falla por cualquier motivo -
+        el llamador (`market.py`) usa la plantilla determinista en ese caso,
+        nunca dejando el campo vacío ni bloqueando la respuesta del Radar
+        por esto."""
+        ...

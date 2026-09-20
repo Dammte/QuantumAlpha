@@ -9,10 +9,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_llm_narrator
 from app.api.v1.endpoints import market
 from app.core.trading_params import RISK_PER_TRADE_PCT
+from app.domain.interfaces.llm_narrator import LLMNarrator
 from app.domain.models.ticker_daily_state import TickerDailyState
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
+from app.main import app
 from app.services.portfolio_construction_service import MAX_SECTOR_CONCENTRATION_PCT
 
 _VIABLE_GEOMETRY = {
@@ -646,6 +649,68 @@ def test_radar_marks_the_top_short_term_candidate_as_primary_above_the_threshold
     assert strong["is_primary"] is True
     assert strong["thesis"] is not None
     assert "STRONG" in strong["thesis"] or "narrativa de prueba" in strong["thesis"]
+
+
+def test_radar_primary_thesis_is_overridden_by_gemini_when_configured(
+    client: TestClient, db_session: Session
+) -> None:
+    # Auditoria del Radar, bloque 12: "el LLM redacta; no decide" - Gemini
+    # solo reemplaza el TEXTO de la tesis ya puesta por `_mark_primary`
+    # (plantilla determinista), nunca decide quién es primario. Con la
+    # llamada real a Gemini fuera de alcance en un test (sin clave en el
+    # entorno de pruebas - ver test_gemini_degradation.py), se sustituye la
+    # dependencia por un `LLMNarrator` falso, mismo patrón que
+    # `RadarFallbackService`/`FakeMarketDataProvider` ya usan en conftest.py.
+    class _FakeNarrator(LLMNarrator):
+        def explain_gate(self, **kwargs):
+            raise AssertionError("not exercised by this test")
+
+        def explain_radar_primary(self, **kwargs):
+            return "Tesis redactada por Gemini sobre los mismos hechos ya calculados."
+
+    _seed_state(
+        db_session, ticker="STRONG", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A", distance_atr=0.1),
+        setups=[_setup("triggered", horizon="short")], rs_rating=95, sector_rs_percentile=90,
+        relative_volume=2.5,
+    )
+
+    app.dependency_overrides[get_llm_narrator] = lambda: _FakeNarrator()
+    try:
+        body = client.get("/api/v1/market/radar?region=us").json()
+    finally:
+        del app.dependency_overrides[get_llm_narrator]
+
+    strong = body["short_term"][0]
+    assert strong["is_primary"] is True
+    assert strong["thesis"] == "Tesis redactada por Gemini sobre los mismos hechos ya calculados."
+
+
+def test_radar_primary_keeps_the_deterministic_thesis_when_gemini_returns_none(
+    client: TestClient, db_session: Session
+) -> None:
+    class _FailingNarrator(LLMNarrator):
+        def explain_gate(self, **kwargs):
+            raise AssertionError("not exercised by this test")
+
+        def explain_radar_primary(self, **kwargs):
+            return None  # sin configurar, o la llamada falló - ver GeminiNarrator
+
+    _seed_state(
+        db_session, ticker="STRONG", entry_geometry=_VIABLE_GEOMETRY, grade=_grade("A", distance_atr=0.1),
+        setups=[_setup("triggered", horizon="short")], rs_rating=95, sector_rs_percentile=90,
+        relative_volume=2.5,
+    )
+
+    app.dependency_overrides[get_llm_narrator] = lambda: _FailingNarrator()
+    try:
+        body = client.get("/api/v1/market/radar?region=us").json()
+    finally:
+        del app.dependency_overrides[get_llm_narrator]
+
+    strong = body["short_term"][0]
+    assert strong["is_primary"] is True
+    assert strong["thesis"] is not None
+    assert strong["thesis"] != "Tesis redactada por Gemini sobre los mismos hechos ya calculados."
 
 
 def test_radar_marks_no_primary_when_the_best_score_is_below_the_threshold(
