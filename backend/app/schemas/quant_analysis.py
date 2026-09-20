@@ -69,6 +69,12 @@ class TradeGeometryResponse(BaseModel):
     pct_of_portfolio: float | None
     viable: bool
     rejection_reason: str | None
+    # Auditoria del Radar, bloque H2/10: "tranquilo"|"normal"|"volatil"|
+    # "extremo" (`trade_geometry.classify_volatility_profile`) - para que
+    # PositionDetailPanel.jsx muestre "el perfil de volatilidad del valor y
+    # el techo de riesgo que le corresponde" (bloque H3, literal) sin
+    # reimplementar los umbrales en el cliente.
+    volatility_profile: str | None = None
 
 
 class GateResultResponse(BaseModel):

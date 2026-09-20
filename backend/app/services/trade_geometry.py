@@ -244,6 +244,14 @@ class TradeGeometry:
     pct_of_portfolio: float | None  # position_value / capital_total
     viable: bool
     rejection_reason: str | None  # Spanish, only when viable is False
+    # Auditoria del Radar, bloque H2/10: la clasificación de
+    # `classify_volatility_profile` - "tranquilo"|"normal"|"volatil"|"extremo"
+    # - expuesta en el resultado para que la UI (bloque H3,
+    # `PositionDetailPanel.jsx`) pueda mostrar "el perfil de volatilidad del
+    # valor y el techo de riesgo que le corresponde" sin reimplementar los
+    # mismos umbrales en el cliente. `None` únicamente cuando no hay ATR con
+    # el que clasificar nada (mismo caso que deja `risk_ceiling_pct` en `None`).
+    volatility_profile: str | None = None
 
 
 def _not_viable(entry_price: float, reason: str, **known: float | None) -> TradeGeometry:
@@ -256,6 +264,7 @@ def _not_viable(entry_price: float, reason: str, **known: float | None) -> Trade
         target_price=None, target_basis=None, reward_pct=None,
         risk_reward_gross=None, risk_reward_net=None,
         shares_for_risk_budget=None, position_value=None, pct_of_portfolio=None,
+        volatility_profile=None,
     )
     fields.update(known)
     return TradeGeometry(**fields, viable=False, rejection_reason=reason)
@@ -430,14 +439,17 @@ def compute_entry_geometry(
     if not atr14 or atr14 <= 0:
         return _not_viable(price, "ATR no disponible - no se puede definir un stop con base de volatilidad")
 
-    candidates = _stop_cascade_candidates(price, nearest_support, nearest_resistance, ema21, ema55, trend, levels)
-    if not candidates:
-        return _not_viable(price, "sin nivel de referencia (soporte/resistencia/EMA21/EMA55) para anclar el stop")
-
     atr_pct = atr14 / price
     profile = classify_volatility_profile(atr_pct)
     cushion = _cushion_for_profile(profile)
     risk_ceiling_pct = min(max(RISK_CEILING_ATR_MULTIPLE * atr_pct, RISK_CEILING_MIN_PCT), RISK_CEILING_MAX_PCT)
+
+    candidates = _stop_cascade_candidates(price, nearest_support, nearest_resistance, ema21, ema55, trend, levels)
+    if not candidates:
+        return _not_viable(
+            price, "sin nivel de referencia (soporte/resistencia/EMA21/EMA55) para anclar el stop",
+            risk_ceiling_pct=risk_ceiling_pct, volatility_profile=profile,
+        )
 
     stop_price = stop_basis = entry_type = level_kind = None
     risk_per_share = risk_atr = None
@@ -458,6 +470,7 @@ def compute_entry_geometry(
         return _not_viable(
             price,
             "todos los anclajes disponibles quedan demasiado cerca del precio (ruido) o por encima de él",
+            risk_ceiling_pct=risk_ceiling_pct, volatility_profile=profile,
         )
 
     risk_pct = risk_per_share / price
@@ -496,6 +509,7 @@ def compute_entry_geometry(
                 price, reason,
                 stop_price=stop_price, stop_basis=stop_basis, entry_type=entry_type, level_kind=level_kind,
                 risk_pct=risk_pct, risk_atr=risk_atr, risk_ceiling_pct=risk_ceiling_pct,
+                volatility_profile=profile,
             )
 
     reward_pct = (target_price - price) / price
@@ -507,7 +521,7 @@ def compute_entry_geometry(
         target_price=target_price, target_basis=target_basis, reward_pct=reward_pct,
         risk_reward_gross=risk_reward_gross, risk_reward_net=risk_reward_net,
         shares_for_risk_budget=None, position_value=None, pct_of_portfolio=None,
-        viable=True, rejection_reason=None,
+        viable=True, rejection_reason=None, volatility_profile=profile,
     )
 
 
@@ -608,6 +622,7 @@ def geometry_to_dict(geometry: TradeGeometry) -> dict:
     data = {field: getattr(geometry, field) for field in _GEOMETRY_FIELDS}
     data["entry_type"] = geometry.entry_type.value if geometry.entry_type is not None else None
     data["level_kind"] = geometry.level_kind.value if geometry.level_kind is not None else None
+    data["volatility_profile"] = geometry.volatility_profile
     return data
 
 
@@ -626,5 +641,6 @@ def geometry_from_dict(data: dict) -> TradeGeometry:
     return TradeGeometry(
         entry_type=EntryType(entry_type) if entry_type is not None else None,
         level_kind=LevelKind(level_kind) if level_kind is not None else None,
+        volatility_profile=data.get("volatility_profile"),
         **fields,
     )

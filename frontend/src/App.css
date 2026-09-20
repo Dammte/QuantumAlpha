@@ -1561,35 +1561,21 @@
   padding-top: 16px;
 }
 
-/* Radar - Parte 12 (interfaz): cabecera, chips, agrupación por sector */
+/* Radar - bloque 10 (Auditoria del Radar): régimen, dos listas, ficha del
+   primario, "a punto de disparar"/"rompiendo por abajo", mapa de sectores,
+   nota de cobertura, chips podados. */
 
-.radar-header {
+.radar-view {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-.radar-header__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-  color: var(--text);
-}
-
-.radar-count {
-  font-variant-numeric: tabular-nums;
+  flex-direction: column;
+  gap: 20px;
 }
 
 .radar-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 14px;
+  margin: 10px 0;
 }
 
 .radar-chip {
@@ -1610,46 +1596,151 @@
   font-weight: 600;
 }
 
-.radar-sector-group {
-  margin-bottom: 14px;
-}
-
-.radar-sector-group__header {
+.radar-subsection {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
   gap: 8px;
-  width: 100%;
-  font: inherit;
-  background: none;
-  border: none;
-  padding: 6px 2px;
-  cursor: pointer;
-  text-align: left;
 }
 
-.radar-sector-group__caret {
-  color: var(--text);
-  font-size: 12px;
-  width: 10px;
-}
-
-.radar-sector-group__title {
-  font-size: 13px;
+.radar-subsection__title {
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-h);
+  margin: 0;
 }
 
-.radar-sector-group__meta {
-  font-size: 12px;
+.radar-subsection__note {
+  font-size: 13px;
   color: var(--text);
-  font-variant-numeric: tabular-nums;
+  margin: 0;
 }
 
-.radar-sector-group__body {
+.radar-horizon-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.radar-regime-banner {
+  font-size: 14px;
+}
+
+.radar-regime-banner__change {
+  color: var(--text);
+}
+
+.radar-primary-card {
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  border-radius: 12px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 8px;
+}
+
+.radar-primary-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.radar-primary-card__thesis {
+  margin: 0;
+  color: var(--text-h);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.radar-primary-card__geometry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.radar-primary-card__geometry strong {
+  color: var(--text-h);
+}
+
+.radar-primary-card__trigger {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.radar-primary-card__no-primary {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-style: italic;
+}
+
+.radar-breaking-down {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.radar-breaking-down__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.radar-row__numeric--penalty {
+  color: var(--series-critical);
+}
+
+.radar-sector-map {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.radar-sector-map__row {
+  display: grid;
+  grid-template-columns: 160px 1fr 60px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.radar-sector-map__name {
+  color: var(--text-h);
+}
+
+.radar-sector-map__bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--code-bg);
+  overflow: hidden;
+}
+
+.radar-sector-map__bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.radar-coverage-note {
+  font-size: 12px;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
 }
 
 .radar-row__grade {

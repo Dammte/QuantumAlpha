@@ -924,3 +924,159 @@ def test_radar_narrows_a_sized_candidate_by_the_portfolios_sector_concentration(
     assert geometry["shares_for_risk_budget"] == pytest.approx(expected_shares)
     assert geometry["position_value"] == pytest.approx(expected_shares * 50.0)
     assert geometry["viable"] is True
+
+
+# --- Auditoria del Radar, bloque G/10: régimen, "a punto de disparar", -------
+# --- "rompiendo por abajo" ----------------------------------------------------
+
+
+def _timeframe_strip(weekly_price_vs_ma: str) -> dict:
+    return {
+        "monthly": {"bias": "unknown", "stage": None, "price_vs_ma": None, "note": ""},
+        "weekly": {"bias": "bullish", "stage": "stage2", "price_vs_ma": weekly_price_vs_ma, "note": ""},
+        "daily": {"bias": "bullish", "stage": "stage2", "price_vs_ma": "above", "note": ""},
+    }
+
+
+def test_radar_regime_is_bullish_when_the_index_holds_and_breadth_clears_the_bar(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    monkeypatch.setattr(market, "_index_above_weekly_ma30", lambda market_data, region: True)
+    _seed_state(db_session, ticker="A", timeframe_strip=_timeframe_strip("above"))
+    _seed_state(db_session, ticker="B", timeframe_strip=_timeframe_strip("above"))
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["regime"]["status"] == "alcista"
+    assert body["regime"]["index_above_weekly_ma30"] is True
+    assert body["regime"]["breadth_pct"] == pytest.approx(1.0)
+
+
+def test_radar_regime_is_bearish_when_breadth_falls_even_if_the_index_holds(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    monkeypatch.setattr(market, "_index_above_weekly_ma30", lambda market_data, region: True)
+    _seed_state(db_session, ticker="A", timeframe_strip=_timeframe_strip("below"))
+    _seed_state(db_session, ticker="B", timeframe_strip=_timeframe_strip("below"))
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["regime"]["status"] == "bajista"
+
+
+def test_radar_regime_bearish_halves_a_sized_candidates_position(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    monkeypatch.setattr(market, "_index_above_weekly_ma30", lambda market_data, region: False)
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "AAPL", "transaction_type": "buy", "quantity": 100, "price": 100},
+    )
+    capital_total = 100 * 150.0  # mismo patrón que el test de sizing de arriba
+    _seed_state(
+        db_session, ticker="NVDA", entry_geometry=_VIABLE_GEOMETRY, timeframe_strip=_timeframe_strip("above")
+    )
+
+    body = client.get(f"/api/v1/market/radar?region=us&portfolio_id={portfolio_id}").json()
+
+    assert body["regime"]["status"] == "bajista"
+    nvda = next(item for item in body["items"] if item["ticker"] == "NVDA")
+    geometry = nvda["entry_geometry"]
+    unhalved_shares = (capital_total * RISK_PER_TRADE_PCT) / (50.0 - 45.0)
+    assert geometry["viable"] is True
+    assert geometry["shares_for_risk_budget"] == pytest.approx(unhalved_shares / 2)
+    assert geometry["position_value"] == pytest.approx((unhalved_shares / 2) * 50.0)
+
+
+def test_radar_regime_unknown_without_enough_data(client: TestClient, db_session: Session, monkeypatch) -> None:
+    monkeypatch.setattr(market, "_index_above_weekly_ma30", lambda market_data, region: None)
+    _seed_state(db_session, ticker="A")  # sin timeframe_strip
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["regime"]["status"] == "desconocido"
+
+
+def test_radar_about_to_trigger_lists_a_close_untriggered_candidate_outside_the_horizon_lists(
+    client: TestClient, db_session: Session
+) -> None:
+    # Sin setups (por tanto sin horizon) - nunca puede caer en short_term ni
+    # medium_term, así que solo "a punto de disparar" puede mostrarlo.
+    _seed_state(
+        db_session, ticker="CLOSECO", price=100.0, entry_trigger_price=101.0, entry_already_triggered=False,
+        atr_pct=0.05,  # atr14 = 5.0 -> distancia = 1/5 = 0.2 ATR, dentro de 0.3
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    tickers = {item["ticker"] for item in body["about_to_trigger"]}
+    assert "CLOSECO" in tickers
+
+
+def test_radar_about_to_trigger_excludes_a_candidate_too_far_from_its_trigger(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_state(
+        db_session, ticker="FARCO", price=100.0, entry_trigger_price=110.0, entry_already_triggered=False,
+        atr_pct=0.05,  # distancia = 10/5 = 2.0 ATR, fuera de 0.3
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert "FARCO" not in {item["ticker"] for item in body["about_to_trigger"]}
+
+
+def test_radar_about_to_trigger_excludes_one_already_triggered(client: TestClient, db_session: Session) -> None:
+    _seed_state(
+        db_session, ticker="GONE", price=100.0, entry_trigger_price=101.0, entry_already_triggered=True,
+        atr_pct=0.05,
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert "GONE" not in {item["ticker"] for item in body["about_to_trigger"]}
+
+
+def test_radar_breaking_down_lists_a_ticker_with_a_recent_level_loss(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_state(
+        db_session, ticker="MSFT", sector="Tecnología",
+        broken_levels=[{"kind": "ema21", "price": 95.0, "bars_since_loss": 2}],
+    )
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert len(body["breaking_down"]) == 1
+    item = body["breaking_down"][0]
+    assert item["ticker"] == "MSFT"
+    assert item["broken_levels"] == [{"kind": "ema21", "price": 95.0, "bars_since_loss": 2}]
+    assert item["held"] is False
+
+
+def test_radar_breaking_down_marks_a_ticker_held_in_the_given_portfolio(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio_id = client.post("/api/v1/portfolios", json={"name": "Main"}).json()["id"]
+    client.post(
+        f"/api/v1/portfolios/{portfolio_id}/transactions",
+        json={"ticker": "MSFT", "transaction_type": "buy", "quantity": 10, "price": 100},
+    )
+    _seed_state(
+        db_session, ticker="MSFT", sector="Tecnología",
+        broken_levels=[{"kind": "ema21", "price": 95.0, "bars_since_loss": 2}],
+    )
+
+    body = client.get(f"/api/v1/market/radar?region=us&portfolio_id={portfolio_id}").json()
+
+    item = next(i for i in body["breaking_down"] if i["ticker"] == "MSFT")
+    assert item["held"] is True
+
+
+def test_radar_breaking_down_is_empty_when_nothing_broke_down(client: TestClient, db_session: Session) -> None:
+    _seed_state(db_session, ticker="AAPL")
+
+    body = client.get("/api/v1/market/radar?region=us").json()
+
+    assert body["breaking_down"] == []

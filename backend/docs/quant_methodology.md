@@ -4428,3 +4428,132 @@ introducida por este bloque, ya presente en `opportunity_cost`/`positions` desde
 monkeypatcheados igual que `test_opportunity_cost.py`) + 3 nuevos en `test_portfolio_today_api.py`
 (swap sugerido con cartera llena y posición débil, sin sugerencia con hueco libre, sin sugerencia
 cuando todo está sano). Suite completa (1185 tests) y ruff limpios.
+
+### 29.10 Backend del bloque 10 (frontend) - régimen, "a punto de disparar", "rompiendo por abajo"
+
+Bloque G/10 literal: "las demás subsecciones del Radar... el Radar tiene que caber en una pantalla y
+responder a una pregunta: ¿qué miro hoy?". De las 5 subsecciones pedidas, el mapa de sectores se
+deriva en el cliente de `sector`/`sector_rs_percentile` (ya en cada `RadarItemResponse` desde el
+bloque 8/9 de la biblioteca de setups) y la nota de cobertura ya viaja en `coverage`/`source`/
+`partial` desde el bloque 7 - ninguna de las dos necesitó backend nuevo. Las otras tres sí:
+
+**Cabecera de régimen de mercado** (`app/services/market_regime_service.py`, nuevo). Deliberadamente
+un módulo y un tipo (`MarketRegime`) DISTINTOS de `market_context_service.assess_market_regime`/
+`MarketRegime` (el régimen basado en VIX que ya alimenta `MarketContextResponse`) - ese mide estrés
+de volatilidad, este mide tendencia (índice de la región frente a su propia MA30 semanal, amplitud
+del universo frente a la MISMA media - `multi_timeframe.WEEKLY_STAGE_MA_WINDOW=30`, no SMA50/200
+diarias de `get_trend_breadth`). Dos preguntas distintas, dos módulos, ningún nombre compartido.
+
+- **Amplitud**: fracción de `states` cuyo `timeframe_strip.weekly.price_vs_ma` (ya persistido por
+  `daily_close.py` para la biblioteca de setups, ver §28) es `"above"` - cero cómputo nuevo.
+- **Cambio en 5 sesiones**: se consulta `ticker_daily_state_repo.for_region_and_date` con la fecha de
+  la fila más reciente menos 7 días naturales - una aproximación deliberada a "5 sesiones de mercado"
+  (sin calendario de mercado exacto a este nivel, mismo criterio que
+  `levels_engine.EVENT_RISK_WINDOW_DAYS`). Si esa fecha exacta no tiene fila (festivo/fin de semana),
+  `breadth_change_5d` sale `None`, nunca un valor aproximado de otra fecha.
+- **Índice de la región vs. su propia MA30 semanal**: la ÚNICA lectura en vivo nueva de este bloque
+  (`_index_above_weekly_ma30`, `market.py`) - UN ticker (`market_universe.benchmark_for_region`), no
+  el universo, envuelto en `try/except` para que un fallo de proveedor nunca tumbe el resto del Radar
+  (el régimen simplemente sale `"desconocido"`). Misma clase de excepción, acotada de la misma forma,
+  que `radar_fallback_service.py` ya documenta.
+- **Consecuencia operativa real, no decorativa** (literal: "el contexto tiene que tener consecuencia,
+  no ser decorado"): en régimen bajista (índice bajo su MA30 semanal, O amplitud < 50% -
+  `BREADTH_BEARISH_THRESHOLD` - cualquiera de las dos basta), el umbral de `is_primary` sube de
+  `RADAR_PRIMARY_SCORE_THRESHOLD=70` a `RADAR_PRIMARY_SCORE_THRESHOLD_BEARISH=80`, y el tamaño de
+  cada candidato ya dimensionado (`portfolio_id` dado) se reduce a la mitad DESPUÉS de
+  `apply_portfolio_limits` (nunca lo sustituye, solo lo estrecha más), volviendo a comprobar
+  `MIN_POSITION_USD` por si la mitad deja de ser una posición viable.
+
+**"A punto de disparar"** (`_build_about_to_trigger`, `market.py`): valores a menos de
+`RADAR_ABOUT_TO_TRIGGER_MAX_DISTANCE_ATR=0.3` ATR de su disparador, sin disparar aún
+(`already_triggered=False`), que no aparecen ya en `short_term`/`medium_term` - "es la lista de
+alarmas para mañana" (literal). `atr14` se deriva de `atr_pct * price` (ambos ya persistidos, nunca
+un campo nuevo) - pura aritmética sobre `scored_sorted`, el mismo superconjunto ya calculado para las
+otras listas. Tope 5, ordenado por distancia ascendente.
+
+**"Rompiendo por abajo"** (`_build_breaking_down`, `market.py`, más `TickerDailyState.broken_levels`
+nuevo - migración `a4c6e9d2f7b1`): "valores que han perdido un soporte, la EMA21 o la EMA55 en las
+últimas 3 sesiones... marca visualmente los que están en mi cartera" (literal). Poblado en
+`ticker_daily_state_builder._broken_levels` a partir de `setup_levels` (`ta.detect_levels`, ya
+calculado para la biblioteca de setups) - niveles con `state == LOST_CONFIRMED` y `bars_in_state <=
+3` entre EMA21/EMA55/soporte únicamente (una resistencia rota o un máximo de 52 semanas perdido no
+son la misma alarma). Se construye sobre `states` completo, no sobre `candidates` (el subconjunto que
+pasa el gate) - una alarma bajista nunca pasaría el gate de compra, así que filtrar por `candidates`
+la habría dejado siempre vacía. `held` refleja `portfolio_id` cuando se da, `False` (nunca `None`)
+en caso contrario - honesto, no "no se sabe".
+
+**Tests**: `test_market_regime_service.py` (nuevo, 11 tests, puro). 5 nuevos en `test_daily_close.py`
+para `_broken_levels`. 10 nuevos en `test_radar_api.py` (régimen alcista/bajista/desconocido,
+consecuencia de tamaño a la mitad con reverificación del mínimo, "a punto de disparar" con sus tres
+exclusiones, "rompiendo por abajo" con y sin `portfolio_id`) - el índice en vivo se monkeypatchea vía
+`market._index_above_weekly_ma30` para no depender del paseo aleatorio determinista del proveedor
+falso. Suite completa (1211 tests) y ruff limpios.
+
+### 29.11 Bloque 10: exposición del anclaje a la API, y RadarView.jsx/PositionDetailPanel.jsx
+
+**`volatility_profile` en `TradeGeometry`** (`trade_geometry.py`): `compute_entry_geometry` ya
+clasificaba el perfil de volatilidad internamente (bloque H2, paso 1) para elegir el colchón, pero
+nunca lo exponía en el resultado - bloque H3 literal: "el perfil de volatilidad del valor y el techo
+de riesgo que le corresponde" en `PositionDetailPanel.jsx` lo necesitaba. Campo nuevo con
+`default=None` (mismo truco que `level_kind` no usó pero podría haber usado - cero cambios en los
+tests existentes que ya construían `TradeGeometry(...)` a mano) - se rellena en TODOS los caminos de
+`_not_viable` donde ya se conoce el ATR (no solo en el resultado viable), porque "por qué no hay stop
+defendible" no debería perder el contexto de volatilidad. `geometry_to_dict`/`geometry_from_dict`
+tratados igual que `level_kind` - fuera de `_GEOMETRY_FIELDS` (que usa indexado directo), leído con
+`.get()` para que una fila persistida antes de este campo no reviente con `KeyError`.
+
+**`TradePlanResponse` ganó `initial_stop_basis`/`initial_stop_level_kind`/`current_stop_basis`**
+(`app/schemas/market.py`, `app/api/v1/endpoints/portfolios.py::_trade_plan_to_response`) - el bloque
+8 ya los calculaba y persistía en `TradePlan`/`TradePlanORM`, pero nunca llegaban a la respuesta de
+`GET /portfolios/{id}/risk`. Sin este paso, `PositionDetailPanel.jsx` no tenía nada real que pintar -
+exactamente el hueco que el propio encargo señala ("stop_basis ya llega al navegador... y
+PositionDetailPanel.jsx simplemente lo ignora"), salvo que la fuente correcta ya no es la lectura en
+vivo del gate (`risk.signals.gate.entry_geometry.stop_basis`, que responde "qué diría el gate hoy si
+esto fuera una entrada nueva", una pregunta distinta) sino el ancla PERSISTIDA de esta posición en
+concreto - la que el bloque 8 dejó de perder en cada evaluación de trailing.
+
+**`RadarView.jsx`, reescrito por completo** (bloque 10, literal): dos listas de horizonte
+(`short_term`/`medium_term`, hasta 10, con su mensaje "solo N cumplen..." cuando queda corta), ficha
+del primario (`PrimaryCard`, con entrada/disparador/stop anclado/objetivo/R:R/tamaño en euros/tesis) o
+el aviso explícito de "hoy ningún candidato alcanza el nivel de convicción" cuando no hay primario, y
+las 5 subsecciones del bloque G: cabecera de régimen (con el texto de consecuencia real cuando es
+bajista), "a punto de disparar", "rompiendo por abajo" (con badge "En cartera"), mapa de sectores
+(compacto, barras por percentil), y nota de cobertura al pie. "El Radar tiene que caber en una
+pantalla" (literal): el `items` plano (hasta 25, superconjunto de las dos listas) pasa a ser una
+sección secundaria, colapsada por defecto ("Ver todos los candidatos analizados") - ya no la vista
+principal. Chips podados de 8 a 4 (se retiraron los 4 filtros por familia de setup - las dos listas
+curadas ya muestran qué setup es cuál; se quedan grado A, disparados, sectores fuertes y muestra
+medida, que aportan un corte que ninguna otra parte de la vista ya da). El desglose del score
+(bloque E2, nunca conectado a la UI hasta ahora) se añade a la fila expandida de `RadarRow`.
+
+**Simplificación deliberada y documentada, no un dato inventado**: el mapa de sectores pide "fuerza
+relativa por sector en semanal y diario" pero `RadarItemResponse` solo trae un `sector_rs_percentile`
+(sin una métrica de sector separada por semanal/diario) - se muestra el único valor real disponible
+con su etiqueta honesta, en vez de fabricar una segunda columna que no existe. Ver la lista de fuera
+de alcance al cierre del encargo.
+
+**`PositionDetailPanel.jsx`, reescrito** (bloque H3, literal): el stop deja de ser un número suelto -
+`current_stop_basis` (o `initial_stop_basis` si el trailing aún no tomó el relevo) como pie de la
+ficha "Stop vigente", la distancia en % y en € DESPUÉS del nivel (nunca antes, en su propia ficha
+separada), el stop inicial visible aparte solo cuando el vigente ya se ha movido (para ver cuánto), el
+perfil de volatilidad y el techo de riesgo informativo (`risk.signals.gate.entry_geometry`, la lectura
+fresca de hoy - deliberadamente una fuente distinta del ancla persistida: "¿qué tan volátil es esto
+hoy" es una pregunta sobre el presente, "¿por qué está el stop donde está" es una pregunta sobre el
+momento de entrada, y el trailing). Cuando `current_stop` es `None` (geometría nunca viable en la
+reconstrucción), un aviso explícito reemplaza el hueco en blanco: "sin nivel estructural defendible...
+considera no mantenerla con un stop técnico" - sin el "a menos de X%" del texto original porque el
+sistema no rechaza por una distancia mínima de búsqueda como tal (rechaza por agotar la cascada o por
+R:R), y "no inventes datos" pesa más que igualar la redacción literal.
+
+**Tests**: 8 nuevos/ajustados en `test_trade_geometry.py` (clasificación directa de los 4 perfiles con
+sus límites exactos, `volatility_profile` en el resultado viable y en los tres caminos de rechazo,
+compatibilidad hacia atrás de `geometry_from_dict` sin la clave). Suite completa (1218 tests) y ruff
+limpios; `npm run lint`/`npm run build` limpios en el frontend.
+
+**Verificación en navegador NO realizada** - a diferencia de trabajo previo de esta misma sesión
+(biblioteca de setups), este entorno no tiene Docker ni una instancia de Postgres local corriendo
+(`docker`/`docker ps` no están disponibles), y no hay una herramienta de navegador/captura de pantalla
+accesible en esta sesión - solo `WebFetch` (URLs remotas, no `localhost`). Se verificó en su lugar,
+con la misma seriedad: `npm run build`/`npm run lint` limpios, y los 1218 tests de backend (que
+validan exactamente la forma JSON que estos dos componentes consumen) en verde. Dicho explícitamente,
+no como un "ya funciona" fabricado - ver CLAUDE.md, "si no puedes probar la UI, dilo explícitamente".

@@ -229,6 +229,22 @@ def test_geometry_to_dict_serializes_a_none_entry_type():
     assert tg.geometry_from_dict(data) == geometry
 
 
+def test_geometry_from_dict_defaults_volatility_profile_to_none_for_a_row_from_before_this_field():
+    # Auditoria del Radar, bloque H2/10: una fila persistida antes de que
+    # `volatility_profile` existiera no debe reventar con KeyError - mismo
+    # criterio "no lo sabemos, no un valor fabricado" que ya aplica a
+    # `level_kind`.
+    support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
+    geometry = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    data = tg.geometry_to_dict(geometry)
+    del data["volatility_profile"]
+    restored = tg.geometry_from_dict(data)
+    assert restored.volatility_profile is None
+
+
 # --- compute_trade_geometry: the real Parte 7 design (stop cascade + ---------
 # --- adaptive risk ceiling + cost-net target + fixed-risk sizing) -----------
 #
@@ -256,6 +272,10 @@ def test_geometry_not_viable_when_no_cascade_rung_applies():
     assert result.viable is False
     assert result.entry_type is None
     assert "nivel de referencia" in result.rejection_reason
+    # Auditoria del Radar, bloque H2/10: el perfil se conoce en cuanto hay
+    # ATR, incluso si la operación se rechaza por falta de anclaje - "por
+    # qué no hay stop defendible" no debería perder el contexto de volatilidad.
+    assert result.volatility_profile == "normal"  # atr_pct = 2.0/100 = 2%
 
 
 def test_geometry_ema_rungs_never_apply_outside_an_uptrend():
@@ -268,6 +288,34 @@ def test_geometry_ema_rungs_never_apply_outside_an_uptrend():
     )
     assert result.viable is False
     assert result.entry_type is None
+
+
+# --- classify_volatility_profile (bloque H2, paso 1) -------------------------
+
+
+def test_classify_volatility_profile_calm_below_2_pct():
+    assert tg.classify_volatility_profile(0.019) == "tranquilo"
+
+
+def test_classify_volatility_profile_normal_at_the_calm_boundary():
+    assert tg.classify_volatility_profile(0.02) == "normal"  # el límite ya no es "tranquilo"
+
+
+def test_classify_volatility_profile_normal_below_4_pct():
+    assert tg.classify_volatility_profile(0.039) == "normal"
+
+
+def test_classify_volatility_profile_volatile_at_the_normal_boundary():
+    assert tg.classify_volatility_profile(0.04) == "volatil"
+
+
+def test_classify_volatility_profile_volatile_below_7_pct():
+    assert tg.classify_volatility_profile(0.069) == "volatil"
+
+
+def test_classify_volatility_profile_extreme_at_and_above_7_pct():
+    assert tg.classify_volatility_profile(0.07) == "extremo"
+    assert tg.classify_volatility_profile(0.15) == "extremo"
 
 
 # --- stop cascade, one rung per entry type -----------------------------------
@@ -476,6 +524,7 @@ def test_geometry_volatile_profile_ceiling_clamped_at_its_max():
     assert result.viable is True
     assert result.risk_ceiling_pct == pytest.approx(0.07)
     assert result.risk_pct == pytest.approx(0.071)  # 95.4 - 0.5*5.0 = 92.9 -> riesgo 7.1%
+    assert result.volatility_profile == "volatil"
 
 
 def test_geometry_normal_large_cap_profile_ceiling():

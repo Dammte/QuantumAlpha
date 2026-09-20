@@ -41,6 +41,29 @@ def _nearest_level(levels: list[ta.PriceLevel], kind: str) -> ta.PriceLevel | No
     return min(candidates, key=lambda lv: abs(lv.distance_pct)) if candidates else None
 
 
+# Auditoria del Radar, bloque 10 (subsección G): "ha perdido un soporte, la
+# EMA21 o la EMA55 en las últimas 3 sesiones" (literal) - los únicos tres
+# niveles que cuentan para "rompiendo por abajo"; una resistencia rota o un
+# máximo de 52 semanas perdido no son la misma alarma.
+_BREAKING_DOWN_KINDS = frozenset({ta.LevelKind.EMA21, ta.LevelKind.EMA55, ta.LevelKind.PIVOT_SUPPORT})
+BREAKING_DOWN_MAX_BARS = 3
+
+
+def _broken_levels(levels: list[ta.Level]) -> list[dict]:
+    """Los niveles de `setup_levels` (ya calculados por `ta.detect_levels`
+    para la biblioteca de setups, ningún cómputo nuevo) cuyo estado es
+    `LOST_CONFIRMED` con `bars_in_state` dentro de la ventana de 3 sesiones -
+    ver `TickerDailyState.broken_levels`. `[]`, no `None`, cuando nada se
+    rompió hoy - el resultado normal la mayoría de los días."""
+    return [
+        {"kind": lv.kind.value, "price": lv.price, "bars_since_loss": lv.bars_in_state}
+        for lv in levels
+        if lv.kind in _BREAKING_DOWN_KINDS
+        and lv.state == ta.LevelState.LOST_CONFIRMED
+        and lv.bars_in_state <= BREAKING_DOWN_MAX_BARS
+    ]
+
+
 def build_ticker_daily_state(
     snapshot: TickerSnapshot,
     region: str,
@@ -270,4 +293,5 @@ def build_ticker_daily_state(
         relative_volume=snapshot.relative_volume,
         next_earnings_date=next_earnings_date,
         atr_pct=(atr14 / snapshot.price) if atr14 and snapshot.price else None,
+        broken_levels=_broken_levels(setup_levels),
     )

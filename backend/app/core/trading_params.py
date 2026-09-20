@@ -158,6 +158,20 @@ RADAR_SCORE_HIGH_ATR_PERCENTILE = 90  # percentil de atr_pct dentro del universo
 # dice otro número más calibrado.
 RADAR_PRIMARY_SCORE_THRESHOLD = 70
 
+# Auditoria del Radar, bloque G/10: "si el régimen es bajista... el umbral
+# del primario sube a 80" (literal) - "el contexto tiene que tener
+# consecuencia, no ser decorado". Ver `market_regime_service.py`.
+RADAR_PRIMARY_SCORE_THRESHOLD_BEARISH = 80
+
+# "A punto de disparar" (bloque G/10): valores a menos de esta distancia (en
+# ATR) de su disparador que no están todavía en ninguna de las dos listas.
+RADAR_ABOUT_TO_TRIGGER_MAX_DISTANCE_ATR = 0.3
+RADAR_ABOUT_TO_TRIGGER_MAX_ITEMS = 5
+
+# "Rompiendo por abajo" (bloque G/10): mismo tope de 5, ver
+# `ticker_daily_state_builder._broken_levels` para la ventana de sesiones.
+RADAR_BREAKING_DOWN_MAX_ITEMS = 5
+
 HIGH_CORRELATION_THRESHOLD = 0.7
 
 # --- Rotación de cartera (Auditoria del Radar, bloque 9) -----------------------

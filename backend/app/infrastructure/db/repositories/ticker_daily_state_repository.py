@@ -42,6 +42,7 @@ def _to_domain(orm: TickerDailyStateORM) -> TickerDailyState:
         relative_volume=float(orm.relative_volume) if orm.relative_volume is not None else None,
         next_earnings_date=orm.next_earnings_date,
         atr_pct=float(orm.atr_pct) if orm.atr_pct is not None else None,
+        broken_levels=orm.broken_levels,
     )
 
 
@@ -89,6 +90,7 @@ class TickerDailyStateRepository(TickerDailyStateRepositoryPort):
             relative_volume=state.relative_volume,
             next_earnings_date=state.next_earnings_date,
             atr_pct=state.atr_pct,
+            broken_levels=state.broken_levels,
         )
         self.db.add(orm)
         self.db.commit()

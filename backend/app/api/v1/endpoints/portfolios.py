@@ -127,6 +127,9 @@ def _trade_plan_to_response(plan: TradePlan) -> TradePlanResponse:
         highest_close_since_entry=plan.highest_close_since_entry,
         thesis=plan.thesis,
         engine_version=plan.engine_version,
+        initial_stop_basis=plan.initial_stop_basis,
+        initial_stop_level_kind=plan.initial_stop_level_kind,
+        current_stop_basis=plan.current_stop_basis,
     )
 
 

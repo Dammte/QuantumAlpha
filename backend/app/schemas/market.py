@@ -177,6 +177,13 @@ class TradePlanResponse(BaseModel):
     highest_close_since_entry: float
     thesis: str
     engine_version: str
+    # Auditoria del Radar, bloque H2/10: el anclaje del stop en texto/tipo -
+    # "el stop deja de ser un número suelto" (bloque H3, literal). `None`
+    # para planes reconstruidos sin geometría viable, o filas anteriores a
+    # que estos campos existieran - nunca un valor fabricado.
+    initial_stop_basis: str | None = None
+    initial_stop_level_kind: str | None = None
+    current_stop_basis: str | None = None
 
 
 class ScaledExitPlanResponse(BaseModel):
@@ -481,6 +488,41 @@ class RadarCoverageResponse(BaseModel):
     universe: int
 
 
+class TrendRegimeResponse(BaseModel):
+    """Auditoria del Radar, bloque G/10: ver `market_regime_service.py` -
+    deliberadamente distinto de `MarketRegimeResponse` (el régimen basado en
+    VIX de `MarketContextResponse`), una pregunta de tendencia, no de estrés
+    de volatilidad. `status == "desconocido"` cuando falta la lectura en vivo
+    del índice o la amplitud precomputada - nunca un veredicto fabricado."""
+
+    status: str  # "alcista" | "bajista" | "desconocido"
+    index_above_weekly_ma30: bool | None
+    breadth_pct: float | None
+    breadth_change_5d: float | None
+    headline: str
+
+
+class BrokenLevelResponse(BaseModel):
+    kind: str  # "ema21" | "ema55" | "pivot_support"
+    price: float
+    bars_since_loss: int
+
+
+class BreakingDownItemResponse(BaseModel):
+    """Auditoria del Radar, bloque G/10: "rompiendo por abajo" - nunca lleva
+    geometría/score (no es un candidato de compra, es una alarma) - solo lo
+    necesario para identificarlo y decir qué se rompió. `held` solo es
+    significativo cuando el request trae `portfolio_id` - `False` en caso
+    contrario, nunca un `None` que sugiera que no se sabe."""
+
+    ticker: str
+    sector: str | None
+    price: float
+    currency: str
+    broken_levels: list[BrokenLevelResponse]
+    held: bool = False
+
+
 class RadarResponse(BaseModel):
     items: list[RadarItemResponse]
     # `None` when `daily_close.py` hasn't run for this region yet (a fresh
@@ -531,6 +573,17 @@ class RadarResponse(BaseModel):
     # corrida antes de terminar el subconjunto acotado - "nunca dejes al
     # usuario mirando un spinner eterno, dilo en la UI" (literal).
     partial: bool = False
+    # Auditoria del Radar, bloque G/10: las 3 subsecciones restantes que
+    # necesitan datos propios de la respuesta (el mapa de sectores se deriva
+    # en el cliente de `sector`/`sector_rs_percentile`, ya en cada item, sin
+    # campo nuevo). `None` en `regime` solo si ni el índice en vivo ni la
+    # amplitud precomputada estuvieron disponibles - ver `TrendRegimeResponse`.
+    regime: TrendRegimeResponse | None = None
+    # Hasta `RADAR_ABOUT_TO_TRIGGER_MAX_ITEMS`, nunca en short_term/medium_term.
+    about_to_trigger: list[RadarItemResponse] = []
+    # Hasta `RADAR_BREAKING_DOWN_MAX_ITEMS`, de todo lo analizado, no solo lo
+    # que pasa el gate - una alarma, no un candidato de compra.
+    breaking_down: list[BreakingDownItemResponse] = []
 
 
 class CorrelationWarningResponse(BaseModel):

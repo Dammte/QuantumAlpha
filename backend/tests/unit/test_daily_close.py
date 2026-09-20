@@ -147,6 +147,66 @@ def test_build_ticker_daily_state_carries_identity_and_gate_fields():
     assert state.gate_version == "2026-09-levels-v3"
     assert all({"label", "passed"} == set(c) for c in state.gate_conditions)
     assert all(isinstance(c["passed"], bool) for c in state.gate_conditions)
+    # Auditoria del Radar, bloque 10: una tendencia alcista limpia y continua
+    # no rompe ningún nivel - el resultado normal, "[]", no "None".
+    assert state.broken_levels == []
+
+
+# --- _broken_levels (Auditoria del Radar, bloque 10: "rompiendo por abajo") --
+
+
+def _level(kind, state, bars_in_state=1, price=100.0) -> ta.Level:
+    return ta.Level(
+        kind=kind, price=price, side="below", distance_pct=-0.02, distance_atr=1.0,
+        state=state, bars_in_state=bars_in_state, strength=None, slope_pct_20d=None,
+    )
+
+
+def test_broken_levels_includes_a_recently_lost_ema21():
+    from app.services.ticker_daily_state_builder import _broken_levels
+
+    levels = [_level(ta.LevelKind.EMA21, ta.LevelState.LOST_CONFIRMED, bars_in_state=2, price=95.0)]
+    result = _broken_levels(levels)
+    assert result == [{"kind": "ema21", "price": 95.0, "bars_since_loss": 2}]
+
+
+def test_broken_levels_excludes_a_loss_older_than_three_bars():
+    from app.services.ticker_daily_state_builder import _broken_levels
+
+    levels = [_level(ta.LevelKind.EMA21, ta.LevelState.LOST_CONFIRMED, bars_in_state=4)]
+    assert _broken_levels(levels) == []
+
+
+def test_broken_levels_excludes_a_level_still_intact():
+    from app.services.ticker_daily_state_builder import _broken_levels
+
+    levels = [_level(ta.LevelKind.EMA21, ta.LevelState.FAR, bars_in_state=1)]
+    assert _broken_levels(levels) == []
+
+
+def test_broken_levels_excludes_kinds_outside_the_three_that_count():
+    from app.services.ticker_daily_state_builder import _broken_levels
+
+    # Una resistencia rota (al alza) o un máximo de 52 semanas perdido no son
+    # "rompiendo por abajo" - solo EMA21/EMA55/soporte cuentan.
+    levels = [
+        _level(ta.LevelKind.PIVOT_RESISTANCE, ta.LevelState.LOST_CONFIRMED, bars_in_state=1),
+        _level(ta.LevelKind.HIGH_52W, ta.LevelState.LOST_CONFIRMED, bars_in_state=1),
+        _level(ta.LevelKind.SMA50, ta.LevelState.LOST_CONFIRMED, bars_in_state=1),
+    ]
+    assert _broken_levels(levels) == []
+
+
+def test_broken_levels_can_include_more_than_one_kind_at_once():
+    from app.services.ticker_daily_state_builder import _broken_levels
+
+    levels = [
+        _level(ta.LevelKind.EMA21, ta.LevelState.LOST_CONFIRMED, bars_in_state=1, price=95.0),
+        _level(ta.LevelKind.PIVOT_SUPPORT, ta.LevelState.LOST_CONFIRMED, bars_in_state=3, price=90.0),
+    ]
+    result = _broken_levels(levels)
+    assert len(result) == 2
+    assert {r["kind"] for r in result} == {"ema21", "pivot_support"}
 
 
 def test_build_ticker_daily_state_stage_none_serializes_to_none():

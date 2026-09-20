@@ -4,19 +4,20 @@ import { formatCurrency, formatPercent, formatRelativeTime } from '../../format'
 import { gradeTone, setupStageLabel } from '../../marketFormat'
 import TrendBadge from './TrendBadge'
 
-// Reconstruction (2026-09), Fase 5, reescrita en la Fase 10 (Parte 12,
-// biblioteca de setups del Radar - docs/quant_methodology.md §28.x) sobre
-// GET /market/radar, que desde la Fase 9 ya llega ordenado
-// (lexicográficamente, Parte 9.1), agrupable por sector y recortado
-// (Parte 9.2) - esta vista solo PRESENTA ese orden, nunca decide uno
-// propio ni descarta nada por su cuenta. El modo agrupado/lista (Parte 8)
-// y los chips de filtro (Parte 12.1) son, a propósito, presentación pura
-// en el cliente: `sector`/`sector_rs_percentile`/`setups` ya viajan en
-// cada fila, agrupar o filtrar sobre eso no justifica una segunda forma de
-// servir el mismo endpoint.
-
-const VIEW_MODE_STORAGE_KEY = 'radar-view-mode'
-const SECTOR_COLLAPSE_PERCENTILE = 30
+// Auditoria del Radar, bloque 10 (texto literal completo del encargo): dos
+// listas por horizonte (corto/medio plazo, hasta 10 cada una, is_primary
+// marcando "el principal a entrar" si supera el umbral), ficha ampliada del
+// primario, y las 5 subsecciones del bloque G - cabecera de régimen de
+// mercado (con consecuencia real sobre tamaño/umbral, no decorativa),
+// "a punto de disparar", "rompiendo por abajo", mapa de sectores y nota de
+// cobertura al pie. "El Radar tiene que caber en una pantalla" (literal):
+// el flat `items` (hasta 25, superconjunto de las dos listas) pasa a ser una
+// sección secundaria y colapsada por defecto - "todos los candidatos" - no
+// la vista principal como en la reconstrucción anterior a este bloque.
+// Chips podados de 8 a 4 (bloque G, literal: "elimina... todo chip que no
+// tenga consumidor real... menos superficie, más señal") - las dos listas
+// curadas ya hacen el trabajo de "qué setup es cuál"; los 4 que quedan son
+// los que aportan un corte que ninguna otra parte de la vista ya muestra.
 
 function leadingSetup(item) {
   // El primero de `setups` ya es el ganador de `arbitration.order_by_rank`
@@ -25,26 +26,9 @@ function leadingSetup(item) {
   return item.setups && item.setups.length > 0 ? item.setups[0] : null
 }
 
-// Chips de la Parte 12.1 con datos reales detrás. "Sin correlación con mi
-// cartera" se queda fuera a propósito: no tiene hoy un campo estructurado en
-// RadarItemResponse (`apply_portfolio_grade_modifiers` la calcula, pero solo
-// como texto libre dentro de `grade.reasons` - ver CLAUDE.md, "modificadores
-// de cartera... siguen sin consumidor" - un subsistema distinto de esta
-// biblioteca, no fabricado aquí). "Con muestra medida" SÍ tiene datos reales
-// desde la Fase 13 (`setup_performance` vía `measured_stats`) - filtra por
-// `confidence === 'measured'`, el mismo criterio binario de la Parte 10.3
-// (no "algo de historial", el umbral n>=30 ya decidido en setup_replay.py).
 const CHIPS = [
-  { id: 'triggered', label: 'Solo disparados', test: (item) => leadingSetup(item)?.stage === 'triggered' },
   { id: 'grade_a', label: 'Solo grado A', test: (item) => item.grade?.grade === 'A' },
-  {
-    id: 'stage_transition',
-    label: 'Etapa 1→2',
-    test: (item) => (item.setups ?? []).some((s) => s.family === 'stage_transition'),
-  },
-  { id: 'vcp', label: 'VCP', test: (item) => (item.setups ?? []).some((s) => s.family === 'vcp') },
-  { id: 'breakout', label: 'Rupturas', test: (item) => (item.setups ?? []).some((s) => s.family === 'breakout') },
-  { id: 'pullback', label: 'Retrocesos', test: (item) => (item.setups ?? []).some((s) => s.family === 'pullback') },
+  { id: 'triggered', label: 'Solo disparados', test: (item) => leadingSetup(item)?.stage === 'triggered' },
   { id: 'strong_sector', label: 'Sectores fuertes', test: (item) => (item.sector_rs_percentile ?? 0) >= 70 },
   {
     id: 'measured',
@@ -131,6 +115,43 @@ function tickerHistorySentence(setup) {
   )
 }
 
+// Bloque E2, literal: "el score y el desglose por componente viajan en la
+// respuesta... sin desglose, esto vuelve a ser una caja negra". Cada
+// componente ya llega multiplicado por su peso, y las penalizaciones ya en
+// negativo - esta tabla solo las lista, ningún cálculo nuevo en el cliente.
+const SCORE_COMPONENT_LABELS = [
+  ['setup_quality', 'Calidad del setup'],
+  ['relative_strength', 'Fuerza relativa'],
+  ['trigger_proximity', 'Proximidad al disparador'],
+  ['geometry_quality', 'Calidad de la geometría'],
+  ['volume_confirmation', 'Confirmación de volumen'],
+]
+const SCORE_PENALTY_LABELS = [
+  ['earnings_penalty', 'Earnings próximos'],
+  ['high_atr_penalty', 'ATR elevado vs. universo'],
+]
+
+function ScoreBreakdown({ score }) {
+  if (!score) return null
+  return (
+    <div className="radar-row__detail-section">
+      <p className="radar-row__detail-title">Score: {score.total.toFixed(0)}/100 - por qué está aquí</p>
+      <div className="radar-row__trigger-invalidation">
+        {SCORE_COMPONENT_LABELS.map(([key, label]) => (
+          <span key={key} className="radar-row__numeric">
+            {label}: {score[key].toFixed(1)}
+          </span>
+        ))}
+        {SCORE_PENALTY_LABELS.filter(([key]) => score[key] < 0).map(([key, label]) => (
+          <span key={key} className="radar-row__numeric radar-row__numeric--penalty">
+            {label}: {score[key].toFixed(1)}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function RadarRow({ item, onNavigateToTicker }) {
   const [expanded, setExpanded] = useState(false)
   const setup = leadingSetup(item)
@@ -164,6 +185,11 @@ function RadarRow({ item, onNavigateToTicker }) {
               title="Grado: geometría, no probabilidad"
             >
               {grade}
+            </span>
+          )}
+          {item.score && (
+            <span className="watchlist-card__industry" title="Score compuesto (bloque E2) - ver detalle">
+              {item.score.total.toFixed(0)}/100
             </span>
           )}
           <SetupBadge setup={setup} />
@@ -211,6 +237,8 @@ function RadarRow({ item, onNavigateToTicker }) {
         <div className="radar-row__detail">
           {setup?.narrative_es && <p className="radar-row__narrative">{setup.narrative_es}</p>}
 
+          <ScoreBreakdown score={item.score} />
+
           {evidenceEntries.length > 0 && (
             <div className="radar-row__detail-section">
               <p className="radar-row__detail-title">Evidencia</p>
@@ -241,7 +269,10 @@ function RadarRow({ item, onNavigateToTicker }) {
               <p className="radar-row__detail-title">Geometría completa</p>
               <div className="radar-row__trigger-invalidation">
                 <span className="radar-row__numeric">Entrada {formatCurrency(geometry.entry_price, item.currency)}</span>
-                <span className="radar-row__numeric">Stop {formatCurrency(geometry.stop_price, item.currency)}</span>
+                <span className="radar-row__numeric">
+                  Stop {formatCurrency(geometry.stop_price, item.currency)}
+                  {geometry.stop_basis ? ` (${geometry.stop_basis})` : ''}
+                </span>
                 <span className="radar-row__numeric">
                   Objetivo {formatCurrency(geometry.target_price, item.currency)}
                 </span>
@@ -333,41 +364,252 @@ function RadarRow({ item, onNavigateToTicker }) {
   )
 }
 
-function readStoredViewMode() {
+// Bloque E4/H3, literal: "el primario lleva una ficha ampliada: entrada,
+// disparador exacto, stop con su anclaje en texto, objetivo, R:R, tamaño de
+// posición sugerido en euros... y dos o tres frases de tesis". `thesis` ya
+// llega generada (plantilla determinista hasta que el bloque 12 conecte
+// Gemini por encima - el LLM redacta, nunca decide qué es primario).
+function PrimaryCard({ item }) {
+  const geometry = item.entry_geometry
+  const setup = leadingSetup(item)
+  return (
+    <div className="radar-primary-card">
+      <div className="radar-primary-card__header">
+        <span className="badge badge--buy">Principal a entrar</span>
+        <span className="positions-table__ticker">{item.ticker}</span>
+        {item.grade?.grade && (
+          <span className={`badge badge--${gradeTone(item.grade.grade)}`}>{item.grade.grade}</span>
+        )}
+        <span className="watchlist-card__industry">{item.score.total.toFixed(0)}/100</span>
+      </div>
+      {item.thesis && <p className="radar-primary-card__thesis">{item.thesis}</p>}
+      {geometry && (
+        <div className="radar-primary-card__geometry">
+          <span>
+            <strong>Entrada</strong> {formatCurrency(geometry.entry_price, item.currency)}
+          </span>
+          <span>
+            <strong>Stop</strong> {formatCurrency(geometry.stop_price, item.currency)}
+            {geometry.stop_basis ? ` — ${geometry.stop_basis}` : ''}
+          </span>
+          <span>
+            <strong>Objetivo</strong> {formatCurrency(geometry.target_price, item.currency)}
+          </span>
+          {geometry.risk_reward_net != null && (
+            <span>
+              <strong>R:R neto</strong> {geometry.risk_reward_net.toFixed(1)}
+            </span>
+          )}
+          {geometry.position_value != null && (
+            <span>
+              <strong>Tamaño sugerido</strong> {formatCurrency(geometry.position_value, item.currency)}
+              {geometry.shares_for_risk_budget != null && ` (${Math.floor(geometry.shares_for_risk_budget)} acc.)`}
+            </span>
+          )}
+        </div>
+      )}
+      {setup?.trigger_condition && (
+        <p className="radar-primary-card__trigger">
+          <strong>Gatillo:</strong> {setup.trigger_condition}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// Bloque E4, literal: "si el mejor candidato del día no llega al umbral,
+// ninguno es primario... un sistema que cada día me señala obligatoriamente
+// un principal me empuja a operar por operar."
+function NoPrimaryNotice() {
+  return (
+    <p className="radar-primary-card__no-primary">
+      Hoy ningún candidato alcanza el nivel de convicción para entrada principal.
+    </p>
+  )
+}
+
+// Bloque G/10, literal: "cabecera de régimen de mercado (una sola línea)...
+// el contexto tiene que tener consecuencia, no ser decorado."
+function RegimeHeader({ regime }) {
+  if (!regime || regime.status === 'desconocido') return null
+  const tone = regime.status === 'bajista' ? 'banner--warning' : ''
+  return (
+    <div className={`banner radar-regime-banner ${tone}`}>
+      {regime.headline}
+      {regime.breadth_change_5d != null && (
+        <span className="radar-regime-banner__change">
+          {' '}
+          Amplitud {regime.breadth_change_5d >= 0 ? '+' : ''}
+          {(regime.breadth_change_5d * 100).toFixed(0)} pts en 5 sesiones.
+        </span>
+      )}
+    </div>
+  )
+}
+
+// Bloque G/10, literal: "'a punto de disparar' (máximo 5): valores a menos
+// de 0.3 ATR de su disparador que no están todavía en las listas. Es la
+// lista de alarmas para mañana."
+function AboutToTriggerSection({ items, onNavigateToTicker }) {
+  if (items.length === 0) return null
+  return (
+    <section className="radar-subsection">
+      <h3 className="radar-subsection__title">A punto de disparar</h3>
+      <div className="radar-list">
+        {items.map((item) => (
+          <RadarRow key={item.ticker} item={item} onNavigateToTicker={onNavigateToTicker} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function brokenLevelLabel(level) {
+  const kindLabel = { ema21: 'EMA21', ema55: 'EMA55', pivot_support: 'soporte' }[level.kind] ?? level.kind
+  const sessionsLabel = level.bars_since_loss === 1 ? '1 sesión' : `${level.bars_since_loss} sesiones`
+  return `perdió ${kindLabel} hace ${sessionsLabel}`
+}
+
+// Bloque G/10, literal: "'rompiendo por abajo' (máximo 5): valores que han
+// perdido un soporte, la EMA21 o la EMA55 en las últimas 3 sesiones...
+// marca visualmente los que están en mi cartera."
+function BreakingDownSection({ items, onNavigateToTicker }) {
+  if (items.length === 0) return null
+  return (
+    <section className="radar-subsection">
+      <h3 className="radar-subsection__title">Rompiendo por abajo</h3>
+      <div className="radar-breaking-down">
+        {items.map((item) => (
+          <div key={item.ticker} className="radar-breaking-down__row">
+            {onNavigateToTicker ? (
+              <button
+                type="button"
+                className="positions-table__ticker positions-table__ticker--link"
+                onClick={() => onNavigateToTicker(item.ticker)}
+              >
+                {item.ticker}
+              </button>
+            ) : (
+              <span className="positions-table__ticker">{item.ticker}</span>
+            )}
+            {item.held && (
+              <span className="badge badge--warn" title="Ya en tu cartera">
+                En cartera
+              </span>
+            )}
+            {item.sector && <span className="watchlist-card__industry">{item.sector}</span>}
+            <span className="radar-row__numeric">{formatCurrency(item.price, item.currency)}</span>
+            {item.broken_levels.map((level) => (
+              <span key={level.kind} className="radar-row__numeric radar-row__numeric--penalty">
+                {brokenLevelLabel(level)}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+// Bloque G/10, literal: "mapa de sectores (compacto): fuerza relativa por
+// sector en semanal y diario, con la columna mensual visible pero
+// explícitamente excluida del ranking. Ordenados de más fuerte a más
+// débil." `RadarItemResponse` hoy solo trae un `sector_rs_percentile`
+// (sin separar semanal/diario en un campo propio) - se muestra el único
+// disponible, con nota honesta, en vez de fabricar una segunda columna que
+// no existe todavía (ver la lista de fuera de alcance al cierre del bloque).
+function SectorMap({ items }) {
+  const sectors = useMemo(() => {
+    const bySector = new Map()
+    for (const item of items) {
+      if (!item.sector || bySector.has(item.sector)) continue
+      bySector.set(item.sector, item.sector_rs_percentile ?? null)
+    }
+    return [...bySector.entries()].sort((a, b) => (b[1] ?? -1) - (a[1] ?? -1))
+  }, [items])
+
+  if (sectors.length === 0) return null
+  return (
+    <section className="radar-subsection">
+      <h3 className="radar-subsection__title">Mapa de sectores</h3>
+      <p className="radar-subsection__note">
+        Percentil de fuerza relativa por sector - la mensual es contexto y nunca entra en la ordenación.
+      </p>
+      <div className="radar-sector-map">
+        {sectors.map(([sector, percentile]) => (
+          <div key={sector} className="radar-sector-map__row">
+            <span className="radar-sector-map__name">{sector}</span>
+            <span className="radar-sector-map__bar-track">
+              <span className="radar-sector-map__bar" style={{ width: `${Math.max(percentile ?? 0, 4)}%` }} />
+            </span>
+            <span className="radar-row__numeric">{percentile != null ? `RS ${percentile}` : '—'}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+// Bloque G/10, literal: "nota de cobertura, al pie y siempre visible:
+// cuántos valores se han analizado, sobre cuántos del universo, con qué
+// fecha de datos y por qué vía."
+function CoverageNote({ source, coverage, partial, computedAt }) {
+  const relative = formatRelativeTime(computedAt)
+  const sourceLabel = source === 'live_fallback' ? 'cálculo en vivo (cierre diario no disponible)' : 'cierre diario'
+  return (
+    <footer className="radar-coverage-note">
+      {coverage.analyzed} de {coverage.universe} valores del universo analizados · vía {sourceLabel}
+      {relative && ` · actualizado ${relative}`}
+      {partial && ' · resultado parcial, el cómputo en vivo no terminó a tiempo'}
+    </footer>
+  )
+}
+
+function HorizonList({ title, items, message, onNavigateToTicker }) {
+  return (
+    <section className="radar-subsection">
+      <h3 className="radar-subsection__title">{title}</h3>
+      {message && <p className="radar-subsection__note">{message}</p>}
+      {items.length === 0 && !message ? (
+        <p className="empty-state">Sin candidatos en este horizonte hoy.</p>
+      ) : (
+        <div className="radar-list">
+          {items.map((item) => (
+            <RadarRow key={item.ticker} item={item} onNavigateToTicker={onNavigateToTicker} />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function readStoredAllExpanded() {
   try {
-    return localStorage.getItem(VIEW_MODE_STORAGE_KEY) === 'list' ? 'list' : 'grouped'
+    return localStorage.getItem('radar-all-candidates-expanded') === 'true'
   } catch {
-    return 'grouped'
+    return false
   }
 }
 
 function RadarView({ onNavigateToTicker, region, portfolioId }) {
-  const [items, setItems] = useState([])
-  const [computedAt, setComputedAt] = useState(null)
-  const [totalAnalyzed, setTotalAnalyzed] = useState(0)
-  const [message, setMessage] = useState(null)
+  const [body, setBody] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [viewMode, setViewMode] = useState(readStoredViewMode)
   const [activeChips, setActiveChips] = useState(() => new Set())
-  const [collapsedOverrides, setCollapsedOverrides] = useState(() => new Map())
+  const [allExpanded, setAllExpanded] = useState(readStoredAllExpanded)
 
   useEffect(() => {
     // `ignore` evita que una respuesta vieja (p. ej. la primera invocación
     // de StrictMode en desarrollo, o la región anterior si el usuario
     // cambia de región dos veces seguidas) pise el estado de una petición
-    // más nueva que resolvió antes - encontrado probando esta vista a mano
-    // (cambiar de región rápido dejaba viendo datos de la región anterior).
+    // más nueva que resolvió antes.
     let ignore = false
     async function load() {
       setLoading(true)
       try {
-        const body = await api.getRadar({ region, portfolioId })
+        const response = await api.getRadar({ region, portfolioId })
         if (ignore) return
-        setItems(body.items)
-        setComputedAt(body.computed_at)
-        setTotalAnalyzed(body.total_analyzed ?? 0)
-        setMessage(body.message ?? null)
+        setBody(response)
         setError(null)
       } catch (err) {
         if (!ignore) setError(err.message)
@@ -381,16 +623,6 @@ function RadarView({ onNavigateToTicker, region, portfolioId }) {
     }
   }, [region, portfolioId])
 
-  function setMode(mode) {
-    setViewMode(mode)
-    try {
-      localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode)
-    } catch {
-      // Preferencia de presentación únicamente - modo privado o cuota
-      // agotada no debe romper el Radar, solo no recordar la elección.
-    }
-  }
-
   function toggleChip(id) {
     setActiveChips((prev) => {
       const next = new Set(prev)
@@ -400,133 +632,107 @@ function RadarView({ onNavigateToTicker, region, portfolioId }) {
     })
   }
 
-  const filtered = useMemo(() => {
+  function toggleAllExpanded() {
+    setAllExpanded((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem('radar-all-candidates-expanded', String(next))
+      } catch {
+        // Preferencia de presentación únicamente.
+      }
+      return next
+    })
+  }
+
+  const items = useMemo(() => body?.items ?? [], [body])
+  const filteredItems = useMemo(() => {
     if (activeChips.size === 0) return items
     const activeTests = CHIPS.filter((c) => activeChips.has(c.id)).map((c) => c.test)
     return items.filter((item) => activeTests.every((test) => test(item)))
   }, [items, activeChips])
 
-  const groups = useMemo(() => {
-    const bySector = new Map()
-    for (const item of filtered) {
-      const key = item.sector ?? 'Sin sector identificado'
-      if (!bySector.has(key)) bySector.set(key, [])
-      bySector.get(key).push(item)
-    }
-    return [...bySector.entries()]
-      .map(([sector, sectorItems]) => ({
-        sector,
-        percentile: sectorItems[0]?.sector_rs_percentile ?? null,
-        items: sectorItems,
-      }))
-      .sort((a, b) => (b.percentile ?? -1) - (a.percentile ?? -1))
-  }, [filtered])
+  if (loading) return <p className="empty-state">Cargando radar…</p>
+  if (error) return <div className="banner banner--error">{error}</div>
+  if (!body) return null
 
-  function isCollapsed(sector, defaultCollapsed) {
-    return collapsedOverrides.has(sector) ? collapsedOverrides.get(sector) : defaultCollapsed
-  }
+  const shortTerm = body.short_term ?? []
+  const mediumTerm = body.medium_term ?? []
+  const primary = shortTerm.find((item) => item.is_primary) ?? null
 
-  function toggleSector(sector, defaultCollapsed) {
-    setCollapsedOverrides((prev) => {
-      const next = new Map(prev)
-      next.set(sector, !isCollapsed(sector, defaultCollapsed))
-      return next
-    })
-  }
-
-  const relative = formatRelativeTime(computedAt)
-
-  return (
-    <div>
-      <div className="radar-header">
-        <div className="radar-header__meta">
-          {relative && <span>Calculado por el cierre diario · actualizado {relative}</span>}
-          {computedAt && (
-            <span className="radar-count">
-              {filtered.length} de {totalAnalyzed} analizados
-            </span>
-          )}
-        </div>
-        <div className="timeframe-tabs">
-          <button
-            type="button"
-            className={`timeframe-tab ${viewMode === 'grouped' ? 'timeframe-tab--active' : ''}`}
-            onClick={() => setMode('grouped')}
-          >
-            Agrupado
-          </button>
-          <button
-            type="button"
-            className={`timeframe-tab ${viewMode === 'list' ? 'timeframe-tab--active' : ''}`}
-            onClick={() => setMode('list')}
-          >
-            Lista
-          </button>
-        </div>
-      </div>
-
-      <div className="radar-chips">
-        {CHIPS.map((chip) => (
-          <button
-            key={chip.id}
-            type="button"
-            className={`radar-chip ${activeChips.has(chip.id) ? 'radar-chip--active' : ''}`}
-            onClick={() => toggleChip(chip.id)}
-          >
-            {chip.label}
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <p className="empty-state">Cargando radar…</p>
-      ) : error ? (
-        <div className="banner banner--error">{error}</div>
-      ) : items.length === 0 ? (
+  if (body.computed_at == null || items.length === 0) {
+    return (
+      <div>
+        <RegimeHeader regime={body.regime} />
         <p className="empty-state">
-          {message ??
+          {body.message ??
             'Sin candidatos todavía - el radar se rellena con el cierre diario (`daily_close.py`); si esta región nunca ha corrido, vuelve más tarde.'}
         </p>
-      ) : filtered.length === 0 ? (
-        <p className="empty-state">Ningún candidato cumple los filtros activos.</p>
-      ) : viewMode === 'list' ? (
-        <div className="radar-list">
-          {filtered.map((item) => (
-            <RadarRow key={item.ticker} item={item} onNavigateToTicker={onNavigateToTicker} />
-          ))}
-        </div>
-      ) : (
-        <div className="radar-list">
-          {groups.map(({ sector, percentile, items: sectorItems }) => {
-            const defaultCollapsed = percentile != null && percentile <= SECTOR_COLLAPSE_PERCENTILE
-            const collapsed = isCollapsed(sector, defaultCollapsed)
-            return (
-              <div key={sector} className="radar-sector-group">
+      </div>
+    )
+  }
+
+  return (
+    <div className="radar-view">
+      <RegimeHeader regime={body.regime} />
+
+      {shortTerm.length > 0 && (primary ? <PrimaryCard item={primary} /> : <NoPrimaryNotice />)}
+
+      <div className="radar-horizon-lists">
+        <HorizonList
+          title="Corto plazo (2-10 sesiones)"
+          items={shortTerm}
+          message={body.short_term_message}
+          onNavigateToTicker={onNavigateToTicker}
+        />
+        <HorizonList
+          title="Medio plazo (3-10 semanas, para vigilar)"
+          items={mediumTerm}
+          message={body.medium_term_message}
+          onNavigateToTicker={onNavigateToTicker}
+        />
+      </div>
+
+      <AboutToTriggerSection items={body.about_to_trigger ?? []} onNavigateToTicker={onNavigateToTicker} />
+      <BreakingDownSection items={body.breaking_down ?? []} onNavigateToTicker={onNavigateToTicker} />
+      <SectorMap items={items} />
+
+      <section className="radar-subsection">
+        <button type="button" className="timeframe-tab" onClick={toggleAllExpanded}>
+          {allExpanded ? 'Ocultar todos los candidatos' : `Ver todos los candidatos analizados (${items.length})`}
+        </button>
+        {allExpanded && (
+          <>
+            <div className="radar-chips">
+              {CHIPS.map((chip) => (
                 <button
+                  key={chip.id}
                   type="button"
-                  className="radar-sector-group__header"
-                  onClick={() => toggleSector(sector, defaultCollapsed)}
-                  aria-expanded={!collapsed}
+                  className={`radar-chip ${activeChips.has(chip.id) ? 'radar-chip--active' : ''}`}
+                  onClick={() => toggleChip(chip.id)}
                 >
-                  <span className="radar-sector-group__caret">{collapsed ? '▹' : '▸'}</span>
-                  <span className="radar-sector-group__title">{sector}</span>
-                  <span className="radar-sector-group__meta">
-                    {percentile != null && `RS ${percentile} · `}
-                    {sectorItems.length} candidato{sectorItems.length === 1 ? '' : 's'}
-                  </span>
+                  {chip.label}
                 </button>
-                {!collapsed && (
-                  <div className="radar-sector-group__body">
-                    {sectorItems.map((item) => (
-                      <RadarRow key={item.ticker} item={item} onNavigateToTicker={onNavigateToTicker} />
-                    ))}
-                  </div>
-                )}
+              ))}
+            </div>
+            {filteredItems.length === 0 ? (
+              <p className="empty-state">Ningún candidato cumple los filtros activos.</p>
+            ) : (
+              <div className="radar-list">
+                {filteredItems.map((item) => (
+                  <RadarRow key={item.ticker} item={item} onNavigateToTicker={onNavigateToTicker} />
+                ))}
               </div>
-            )
-          })}
-        </div>
-      )}
+            )}
+          </>
+        )}
+      </section>
+
+      <CoverageNote
+        source={body.source}
+        coverage={body.coverage}
+        partial={body.partial}
+        computedAt={body.computed_at}
+      />
     </div>
   )
 }

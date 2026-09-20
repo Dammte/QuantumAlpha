@@ -93,3 +93,12 @@ class TickerDailyState:
     relative_volume: float | None = None  # volumen de hoy / su propia media reciente
     next_earnings_date: date | None = None  # ya se pedía para `no_event_risk`, nunca se guardaba
     atr_pct: float | None = None  # ATR14 / precio - "qué tan volátil es este valor en concreto"
+    # Auditoria del Radar, bloque 10 (subsección G: "rompiendo por abajo") -
+    # niveles EMA21/EMA55/soporte cuyo estado es `LOST_CONFIRMED` con
+    # `bars_in_state` <= 3 en `ta.detect_levels` - "ha perdido un soporte, la
+    # EMA21 o la EMA55 en las últimas 3 sesiones" (literal). `[]` es el
+    # resultado normal (nada roto hoy); `None` solo para una fila anterior a
+    # esta columna. Cada elemento: `{"kind": "ema21"|"ema55"|"pivot_support",
+    # "price": float, "bars_since_loss": int}` - mismo criterio JSON-safe que
+    # `gate_conditions`/`setups`.
+    broken_levels: list[dict] | None = None

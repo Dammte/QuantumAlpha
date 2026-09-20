@@ -244,6 +244,8 @@ class TickerDailyStateORM(Base):
     relative_volume: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     next_earnings_date: Mapped[date | None] = mapped_column(nullable=True)
     atr_pct: Mapped[float | None] = mapped_column(Numeric(10, 6), nullable=True)
+    # Auditoria del Radar, bloque 10: ver `TickerDailyState.broken_levels`.
+    broken_levels: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class TickerIntradayStateORM(Base):

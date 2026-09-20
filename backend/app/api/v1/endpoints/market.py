@@ -1,8 +1,9 @@
 import statistics
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import (
@@ -27,6 +28,8 @@ from app.infrastructure.db.repositories.setup_ticker_history_repository import S
 from app.infrastructure.db.repositories.ticker_daily_state_repository import TickerDailyStateRepository
 from app.infrastructure.db.repositories.trade_plan_repository import TradePlanRepository
 from app.schemas.market import (
+    BreakingDownItemResponse,
+    BrokenLevelResponse,
     EntryTriggerResponse,
     GateConditionResponse,
     GradeResponse,
@@ -55,10 +58,14 @@ from app.schemas.market import (
     TradeGeometryResponse,
     TrendBreadthResponse,
     TrendDetailResponse,
+    TrendRegimeResponse,
     UniverseResponse,
     VixSnapshotResponse,
 )
+from app.services import market_regime_service as mrs
+from app.services import multi_timeframe as mtf
 from app.services import portfolio_construction_service as pcs
+from app.services import technical_analysis as ta
 from app.services.market_context_service import MarketContextService, assess_market_regime
 from app.services.market_data_service import MarketDataService
 from app.services.market_screener_service import (
@@ -69,7 +76,14 @@ from app.services.market_screener_service import (
     get_trend_breadth,
     get_trend_detail,
 )
-from app.services.market_universe import currency_of, industries_by_sector, region_config, region_of, sector_of
+from app.services.market_universe import (
+    benchmark_for_region,
+    currency_of,
+    industries_by_sector,
+    region_config,
+    region_of,
+    sector_of,
+)
 from app.services.portfolio_service import PortfolioNotFoundError, PortfolioService
 from app.services.radar_fallback_service import RadarFallbackService, is_stale
 from app.services.relationship_map_service import build_relationship_map
@@ -464,17 +478,22 @@ def _build_horizon_list(
     return result, message
 
 
-def _mark_primary(short_term: list[RadarItemResponse]) -> None:
+def _mark_primary(
+    short_term: list[RadarItemResponse], threshold: float = tp.RADAR_PRIMARY_SCORE_THRESHOLD
+) -> None:
     """Auditoria del Radar, bloque E4: el primero de `short_term` (ya
-    ordenado por score) se marca `is_primary` solo si supera
-    `trading_params.RADAR_PRIMARY_SCORE_THRESHOLD` - "si el mejor candidato
-    del día no llega al umbral, ninguno es primario" (literal, "un sistema
-    que cada día me señala obligatoriamente un principal me empuja a operar
-    por operar"). Muta en sitio, igual que `_attach_scores`."""
+    ordenado por score) se marca `is_primary` solo si supera `threshold`
+    ("si el mejor candidato del día no llega al umbral, ninguno es primario",
+    literal - "un sistema que cada día me señala obligatoriamente un
+    principal me empuja a operar por operar"). `threshold` sube a
+    `RADAR_PRIMARY_SCORE_THRESHOLD_BEARISH` en régimen bajista (bloque G/10:
+    "el contexto tiene que tener consecuencia") - el llamador decide cuál
+    pasar, esta función no conoce el régimen. Muta en sitio, igual que
+    `_attach_scores`."""
     if not short_term:
         return
     leader = short_term[0]
-    if leader.score is None or leader.score.total < tp.RADAR_PRIMARY_SCORE_THRESHOLD:
+    if leader.score is None or leader.score.total < threshold:
         return
     leader.is_primary = True
     leading_setup = _leading_setup(leader)
@@ -491,6 +510,92 @@ def _mark_primary(short_term: list[RadarItemResponse]) -> None:
         risk_reward_net=geometry.risk_reward_net if geometry is not None else None,
         score_total=leader.score.total,
     )
+
+
+def _trigger_distance_atr(item: RadarItemResponse) -> float | None:
+    if item.entry_trigger is None or not item.atr_pct or item.price <= 0:
+        return None
+    atr14 = item.atr_pct * item.price
+    if not atr14:
+        return None
+    return abs(item.price - item.entry_trigger.trigger_price) / atr14
+
+
+def _build_about_to_trigger(
+    scored_sorted_items: list[RadarItemResponse],
+    short_term: list[RadarItemResponse],
+    medium_term: list[RadarItemResponse],
+) -> list[RadarItemResponse]:
+    """Auditoria del Radar, bloque G/10: "valores a menos de 0.3 ATR de su
+    disparador que no están todavía en las listas" (literal) - "es la lista
+    de alarmas para mañana". Nunca uno ya disparado hoy (`already_triggered`
+    - ese ya está, o debería estar, en una de las dos listas de horizonte si
+    tiene un setup real detrás) ni uno que ya aparece en `short_term`/
+    `medium_term`. Ordenado por distancia ascendente (el más inminente
+    primero), tope `RADAR_ABOUT_TO_TRIGGER_MAX_ITEMS`."""
+    excluded = {item.ticker for item in short_term} | {item.ticker for item in medium_term}
+    ranked = []
+    for item in scored_sorted_items:
+        if item.ticker in excluded or item.entry_trigger is None or item.entry_trigger.already_triggered:
+            continue
+        distance = _trigger_distance_atr(item)
+        if distance is not None and distance < tp.RADAR_ABOUT_TO_TRIGGER_MAX_DISTANCE_ATR:
+            ranked.append((distance, item))
+    ranked.sort(key=lambda pair: pair[0])
+    return [item for _, item in ranked[: tp.RADAR_ABOUT_TO_TRIGGER_MAX_ITEMS]]
+
+
+def _build_breaking_down(states: list[TickerDailyState], held_tickers: set[str]) -> list[BreakingDownItemResponse]:
+    """Auditoria del Radar, bloque G/10: "valores que han perdido un soporte,
+    la EMA21 o la EMA55 en las últimas 3 sesiones... marca visualmente los
+    que están en mi cartera" (literal) - de TODO lo analizado (`states`), no
+    solo lo que pasa el gate: una alarma bajista nunca pasaría el gate de
+    compra de todos modos, así que filtrar por `candidates` la dejaría
+    siempre vacía. Ordenado por la ruptura más reciente primero, tope
+    `RADAR_BREAKING_DOWN_MAX_ITEMS`. `held_tickers` vacío (nunca `None`)
+    cuando el request no trae `portfolio_id` - `held` sale `False` para
+    todos, honestamente, no "no se sabe"."""
+    matches = [s for s in states if s.broken_levels]
+    matches.sort(key=lambda s: min(bl["bars_since_loss"] for bl in s.broken_levels))
+    return [
+        BreakingDownItemResponse(
+            ticker=s.ticker,
+            sector=s.sector,
+            price=s.price,
+            currency=s.currency,
+            broken_levels=[BrokenLevelResponse(**bl) for bl in s.broken_levels],
+            held=s.ticker in held_tickers,
+        )
+        for s in matches[: tp.RADAR_BREAKING_DOWN_MAX_ITEMS]
+    ]
+
+
+def _index_above_weekly_ma30(market_data: MarketDataService, region: str) -> bool | None:
+    """Auditoria del Radar, bloque G/10: "estado del índice de la región...
+    por encima/debajo de su MA de 30 semanas" (literal) - UNA sola lectura en
+    vivo (el índice de referencia, nunca el universo) por request, la misma
+    clase de excepción, acotada de la misma forma, que
+    `radar_fallback_service.py` ya documenta para el propio Radar. `None`
+    ante cualquier fallo (histórico insuficiente, proveedor caído) - nunca
+    hace que el resto del Radar falle, el régimen simplemente queda
+    "desconocido" (ver `market_regime_service.assess_trend_regime`)."""
+    try:
+        index_ticker = benchmark_for_region(region)
+        end = date.today()
+        start = end - timedelta(days=400)  # de sobra para 30 semanas de barras semanales
+        df = market_data.get_bulk_ohlcv([index_ticker], start, end).get(index_ticker)
+        if df is None or df.empty:
+            return None
+        weekly_close = ta.resample_ohlcv(df, mtf.WEEKLY_RULE)["close"]
+        ma30 = ta.sma(weekly_close, mtf.WEEKLY_STAGE_MA_WINDOW)
+        if ma30.empty or ma30.isna().all():
+            return None
+        latest_ma30 = ma30.iloc[-1]
+        if pd.isna(latest_ma30):
+            return None
+        return float(weekly_close.iloc[-1]) > float(latest_ma30)
+    except Exception:
+        return None
 
 
 def _daily_state_to_radar_item(
@@ -641,7 +746,30 @@ def get_radar(
     items = _rank_and_cut_radar_items(scored_sorted)
     short_term, short_term_message = _build_horizon_list(scored_sorted, "short", RADAR_SHORT_TERM_MAX_PER_SECTOR)
     medium_term, medium_term_message = _build_horizon_list(scored_sorted, "medium", RADAR_MAX_PER_SECTOR)
-    _mark_primary(short_term)
+
+    # Auditoria del Radar, bloque G/10: cabecera de régimen de mercado - la
+    # amplitud sale de `timeframe_strip` ya persistido (`states`/hace ~5
+    # sesiones, ambos ya en BD, cero cómputo nuevo); el índice de la región
+    # es la ÚNICA lectura en vivo nueva de este bloque, acotada a un ticker.
+    # "7 días naturales" es una aproximación deliberada a "5 sesiones" (sin
+    # calendario de mercado exacto a este nivel, mismo criterio que
+    # `levels_engine.EVENT_RISK_WINDOW_DAYS` ya usa) - si esa fecha exacta no
+    # tiene fila (festivo/fin de semana), `breadth_change_5d` sale `None`,
+    # nunca un valor aproximado a partir de otra fecha.
+    latest_trade_date = max((s.trade_date for s in states), default=None)
+    states_5d_ago = (
+        ticker_daily_state_repo.for_region_and_date(region, latest_trade_date - timedelta(days=7))
+        if latest_trade_date is not None
+        else None
+    )
+    regime = mrs.assess_trend_regime(states, states_5d_ago, _index_above_weekly_ma30(market_data, region))
+    primary_threshold = (
+        tp.RADAR_PRIMARY_SCORE_THRESHOLD_BEARISH
+        if regime.status == mrs.REGIME_BEARISH
+        else tp.RADAR_PRIMARY_SCORE_THRESHOLD
+    )
+    _mark_primary(short_term, primary_threshold)
+    about_to_trigger = _build_about_to_trigger(scored_sorted, short_term, medium_term)
 
     # Parte 7 (later pass): "the Radar rendering for one portfolio" -
     # `trade_geometry.py`'s own docstring names this as the natural place to
@@ -653,6 +781,10 @@ def get_radar(
     # `GET /portfolios/{id}/construction` also does for the same portfolio.
     # Optional and additive: omitting `portfolio_id` keeps this endpoint the
     # same zero-network, pure-DB-read path it always was.
+    # Auditoria del Radar, bloque G/10: `held_tickers` se calcula ya mismo
+    # (no solo dentro del bloque de dimensionado) porque `breaking_down` de
+    # abajo también lo necesita, y ese bloque no depende de `portfolio_id`.
+    held_tickers: set[str] = set()
     if portfolio_id is not None:
         try:
             portfolio = portfolio_service.get_portfolio_summary(portfolio_id)
@@ -673,6 +805,7 @@ def get_radar(
         # position's trade plan, the same pattern `/construction` already
         # uses), never one per Radar candidate.
         held_positions = [p for p in portfolio.positions if p.quantity > 0]
+        held_tickers = {p.ticker for p in held_positions}
         weight_by_ticker = {
             p.ticker: p.market_value_base / capital_total
             for p in held_positions
@@ -707,7 +840,27 @@ def get_radar(
             narrowed = pcs.apply_portfolio_limits(
                 sized, sector_of(item.ticker), sector_concentrations, aggregate_risk, capital_total
             )
+            # Auditoria del Radar, bloque G/10: "si el régimen es bajista...
+            # el tamaño de posición sugerido se reduce a la mitad" (literal) -
+            # se aplica DESPUÉS de todos los demás límites (nunca los sustituye,
+            # solo los estrecha más), y vuelve a comprobar el mínimo viable -
+            # una posición que ya cabía justo podría dejar de tener sentido
+            # una vez reducida a la mitad.
+            if regime.status == mrs.REGIME_BEARISH and narrowed.viable and narrowed.shares_for_risk_budget:
+                halved_value = narrowed.position_value / 2 if narrowed.position_value is not None else None
+                halved_pct = narrowed.pct_of_portfolio / 2 if narrowed.pct_of_portfolio is not None else None
+                narrowed = replace(
+                    narrowed,
+                    shares_for_risk_budget=narrowed.shares_for_risk_budget / 2,
+                    position_value=halved_value,
+                    pct_of_portfolio=halved_pct,
+                )
+                if halved_value is not None and halved_value < tp.MIN_POSITION_USD:
+                    reason = "posición demasiado pequeña una vez reducida a la mitad por régimen bajista"
+                    narrowed = replace(narrowed, viable=False, rejection_reason=reason)
             item.entry_geometry = TradeGeometryResponse(**geometry_to_dict(narrowed))
+
+    breaking_down = _build_breaking_down(states, held_tickers)
 
     # Auditoria del Radar, bloque B.7: "el estado vacío deja de ser mudo" -
     # tres motivos distintos para un `items` vacío, nunca `message: None` en
@@ -740,6 +893,15 @@ def get_radar(
         source=source,
         coverage=RadarCoverageResponse(analyzed=len(states), universe=coverage_universe),
         partial=partial,
+        regime=TrendRegimeResponse(
+            status=regime.status,
+            index_above_weekly_ma30=regime.index_above_weekly_ma30,
+            breadth_pct=regime.breadth_pct,
+            breadth_change_5d=regime.breadth_change_5d,
+            headline=regime.headline,
+        ),
+        about_to_trigger=about_to_trigger,
+        breaking_down=breaking_down,
     )
 
 
