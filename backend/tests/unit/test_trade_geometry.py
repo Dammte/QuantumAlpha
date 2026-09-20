@@ -551,6 +551,64 @@ def test_geometry_erratic_microcap_profile_ceiling_no_longer_rejects():
     assert result.risk_pct == pytest.approx(0.11)
 
 
+def test_geometry_the_ceiling_shrinks_size_never_moves_the_stop():
+    # Bloque I, literal: "el techo reduce tamaño, no mueve el stop: con un
+    # stop anclado que excede el techo de riesgo, el stop se mantiene y el
+    # tamaño baja." Dos escenarios, mismo capital/entrada/anclaje EMA55, solo
+    # el ATR cambia (y por tanto el colchón y el riesgo natural resultante) -
+    # el que excede el techo informativo NUNCA recorta ni desplaza el stop;
+    # `size_position`'s propia fórmula (capital*RISK_PER_TRADE_PCT/riesgo_por_acción)
+    # ya encoge el tamaño de forma natural para un riesgo por acción más ancho,
+    # sin que compute_entry_geometry necesite tocar el stop para lograrlo.
+    within_ceiling = tg.compute_trade_geometry(
+        price=100.0, atr14=4.5, nearest_support=None, nearest_resistance=None,
+        ema21=80.0, ema55=95.4, trend=TrendState.UPTREND, capital_total=100_000.0,
+    )
+    exceeds_ceiling = tg.compute_trade_geometry(
+        price=100.0, atr14=6.0, nearest_support=None, nearest_resistance=None,
+        ema21=80.0, ema55=92.0, trend=TrendState.UPTREND, capital_total=100_000.0,
+    )
+    assert within_ceiling.risk_pct < within_ceiling.risk_ceiling_pct
+    assert exceeds_ceiling.risk_pct > exceeds_ceiling.risk_ceiling_pct
+    # El stop de `exceeds_ceiling` es el natural del cascade (92.0 - 0.5*6.0 =
+    # 89.0) - no un valor recortado hacia el techo de riesgo ni hacia ningún
+    # techo duro de ATR.
+    assert exceeds_ceiling.stop_price == pytest.approx(89.0)
+    # El riesgo por acción más ancho de `exceeds_ceiling` (11.0) produce,
+    # sin ningún ajuste especial, menos acciones que el riesgo más estrecho
+    # de `within_ceiling` para el mismo capital - el tamaño es lo que cede.
+    assert exceeds_ceiling.shares_for_risk_budget < within_ceiling.shares_for_risk_budget
+
+
+def test_geometry_cushion_is_proportional_to_atr_not_a_flat_amount():
+    # Bloque I, literal: "colchón proporcional: dos valores con el mismo
+    # precio y distinto ATR producen colchones distintos." Mismo ancla
+    # (soporte en 99.0), mismo precio, solo el ATR cambia - ambos caen en el
+    # perfil "normal" (2-4% de ATR/precio), así que el MULTIPLICADOR del
+    # colchón es el mismo (0.35), pero el colchón resultante en puntos de
+    # precio escala con el ATR, no es un monto fijo. atr14 elegido para que
+    # ambos casos sigan aclarando STOP_MIN_DISTANCE_ATR (0.8) - con solo un
+    # punto de distancia natural al soporte, un colchón fijo del 0.35x no
+    # basta por sí solo, hace falta la distancia natural + el colchón juntos.
+    support = PriceLevel(price=99.0, kind="support", strength=2, distance_pct=-0.01)
+    narrow_atr = tg.compute_entry_geometry(
+        price=100.0, atr14=2.0, nearest_support=support, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    wide_atr = tg.compute_entry_geometry(
+        price=100.0, atr14=2.2, nearest_support=support, nearest_resistance=None,
+        ema21=None, ema55=None, trend=TrendState.SIDEWAYS,
+    )
+    assert narrow_atr.viable is True
+    assert wide_atr.viable is True
+    assert narrow_atr.stop_price != wide_atr.stop_price
+    cushion_narrow = 99.0 - narrow_atr.stop_price
+    cushion_wide = 99.0 - wide_atr.stop_price
+    assert cushion_narrow == pytest.approx(0.35 * 2.0)
+    assert cushion_wide == pytest.approx(0.35 * 2.2)
+    assert cushion_wide > cushion_narrow
+
+
 # --- target selection: resistance vs fixed 2R vs rejection -------------------
 
 

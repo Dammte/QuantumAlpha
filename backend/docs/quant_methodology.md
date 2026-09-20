@@ -4557,3 +4557,50 @@ accesible en esta sesión - solo `WebFetch` (URLs remotas, no `localhost`). Se v
 con la misma seriedad: `npm run build`/`npm run lint` limpios, y los 1218 tests de backend (que
 validan exactamente la forma JSON que estos dos componentes consumen) en verde. Dicho explícitamente,
 no como un "ya funciona" fabricado - ver CLAUDE.md, "si no puedes probar la UI, dilo explícitamente".
+
+### 29.12 Bloque 11: auditoría contra la lista literal del bloque I
+
+Los 12 tests exigidos por el bloque I ya se habían cubierto de forma incremental, bloque a bloque, a
+medida que cada pieza se construía - este bloque es la auditoría explícita contra la lista literal,
+no trabajo nuevo salvo dos huecos genuinos encontrados al revisar con lupa:
+
+1. **Radar vacío nunca `{items: [], message: null}`** - `test_radar_shows_a_clear_message_when_...`
+   y las pruebas del bloque B.7 (bloque 7). ✅
+2. **Fallback acotado, timeout → `partial: true`** - `test_radar_fallback_service.py` (bloque 7). ✅
+3. **Sin relleno (3 candidatos → 3, no 10)** - `test_radar_short_term_shows_fewer_than_ten...`
+   (bloque 6). ✅
+4. **Sin primario forzado (65 < 70 → nadie es primario)** -
+   `test_radar_marks_no_primary_when_the_best_score_is_below_the_threshold` (bloque 6). ✅
+5. **Horizontes: VCP en formación → medio; ruptura confirmada a 0.4 ATR → corto** -
+   `test_a_forming_vcp_falls_in_medium_horizon`/`test_a_confirmed_breakout_at_0_4_atr_falls_in_short_horizon`
+   (bloque 4, nombres casi literales del propio encargo). ✅
+6. **Stop nunca ≥ precio, en cálculo Y en persistencia** - cálculo:
+   `raw_risk_per_share <= 0` descarta el candidato dentro de `_stop_cascade_candidates`/
+   `compute_entry_geometry` (bloque 8); persistencia: `test_trade_plan_repository.py` (bloque 8,
+   `TradePlanRepository.create` nunca persiste `initial_stop >= entry_price`). ✅ **El "test existente
+   que hoy afirma lo contrario" que pide actualizar NO se localizó** - se buscó explícitamente en
+   `test_trade_plan_service.py`, `test_portfolio_risk_service.py`, `test_trade_manager.py`,
+   `test_exit_engine.py`, `test_backtest_engine.py`, `test_technical_analysis.py` y
+   `test_setup_replay.py` sin encontrar ninguna aserción que trate un stop en o por encima del precio
+   de entrada como comportamiento correcto - todo lo encontrado (incluido
+   `test_label_triple_barrier_none_with_an_invalid_stop`) ya lo trata como inválido. Es posible que se
+   refiriera a una versión del código de una auditoría anterior a esta sesión, ya corregida antes de
+   empezar el bloque A. La garantía que pedía el punto 6 está cubierta de todos modos, en ambas capas.
+7. **Colchón proporcional (mismo precio, distinto ATR → colchones distintos)** - nuevo:
+   `test_geometry_cushion_is_proportional_to_atr_not_a_flat_amount` (mismo perfil de volatilidad,
+   mismo multiplicador, colchón en puntos de precio distinto).
+8. **El techo reduce tamaño, nunca mueve el stop** - nuevo: `test_geometry_the_ceiling_shrinks_size_never_moves_the_stop`
+   (dos escenarios, mismo capital/entrada; el que excede el techo informativo conserva el stop natural
+   de la cascada sin recortar, y produce menos acciones que el que queda dentro del techo, por la
+   propia fórmula de `size_position` - ningún ajuste especial hace falta).
+9. **Trailing conserva el inicial** - `test_update_trailing_leaves_the_basis_unchanged_when_none_is_given`/
+   `test_update_trailing_overwrites_the_basis_when_the_chandelier_takes_over` (bloque 8). ✅
+10. **Idempotencia de daily_close** - tests existentes de `test_daily_close_job.py` (bloque 2). ✅
+11. **Aislamiento por ticker, `job_runs` nunca en "running"** - tests existentes de
+    `test_daily_close.py`/`test_daily_close_job.py` (bloque 2). ✅
+12. **Escalón BREAKOUT alcanzable** - `test_geometry_breakout_rung_stop_below_the_broken_resistance`
+    (bloque 8, con un `Level` real en estado `BROKEN_CONFIRMED` - el caso que el diagnóstico H1
+    demostró estructuralmente inalcanzable con el `PriceLevel` simple de antes). ✅
+
+**Tests**: 2 nuevos en `test_trade_geometry.py` (puntos 7 y 8 de arriba, los únicos huecos genuinos).
+Suite completa (1220 tests) y ruff limpios.
